@@ -20,8 +20,9 @@ In scope: schema v0 including `includes:` and conditional values; the facts
 resolver; config loading, arm selection and rendering; `plan` (DAG, diff,
 terraform-style output, plan artifact); `apply` (managers, languages,
 packages, files, rc blocks, PATH); the state store. Ubuntu and macOS are
-tested execution targets. SUSE parses and plans correctly but is not a tested
-execution target until M2.
+tested execution targets. **SUSE became a tested execution target in M2**: a
+real `apply` against real zypper on `opensuse/tumbleweed` is part of the
+smoke suite.
 
 Out of scope, in expected order of arrival:
 
@@ -1090,7 +1091,11 @@ Recorded so the document going into M1 is truthful rather than aspirational.
 11. **Item ids are checked for uniqueness across the whole plan**, not only
     per kind. §7.2 mandated it; rc ids (`rc/{package}/{basename}`) collided
     within a single package and the collision was silently deduped.
-12. **The diff honours `status: incomplete`** (§8.3). It read presence in the
+12. **`facts.user` falls back to `id -un`, then to the home directory's own
+    name.** `$USER` is absent under most container runtimes and some CI, and an
+    empty `{{ user }}` rendered silently into whatever template used it. Found
+    by the SUSE container, which has no `$USER`.
+12b. **The diff honours `status: incomplete`** (§8.3). It read presence in the
     state map alone, so a half-installed item planned as a no-op and `plan`
     exited 0 claiming the machine matched the config.
 

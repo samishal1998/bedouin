@@ -187,6 +187,21 @@ pub fn facts_for(
     let (rc_file, rc_dir) = ShellFacts::paths_for(name, &home)
         .unwrap_or_else(|| (home.join(".profile"), home.join(".profile.d")));
 
+    // $USER is absent under most container runtimes and some CI, and an empty
+    // `{{ user }}` renders silently into whatever template used it. Ask the
+    // system, then fall back to the home directory's own name.
+    let user = env
+        .get("USER")
+        .or_else(|| env.get("LOGNAME"))
+        .cloned()
+        .or_else(|| capture(host, &["id", "-un"], &search))
+        .filter(|u| !u.is_empty())
+        .unwrap_or_else(|| {
+            home.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        });
+
     let hostname = env
         .get("HOSTNAME")
         .cloned()
@@ -206,7 +221,7 @@ pub fn facts_for(
         distro_version,
         arch,
         home,
-        user: env.get("USER").cloned().unwrap_or_default(),
+        user,
         hostname,
         shell: ShellFacts {
             name,
@@ -272,6 +287,28 @@ mod tests {
             FakeRun::ok("t:x:1000:1000::/home/t:/usr/bin/zsh"),
         );
         assert_eq!(facts(&h, None).unwrap().shell.detected, Shell::Zsh);
+    }
+
+    #[test]
+    fn the_user_is_found_even_without_the_environment_variable() {
+        // Containers routinely run without $USER, and an empty `{{ user }}`
+        // renders silently into whatever template asked for it.
+        let h = FakeHost::new()
+            .with_env("HOME", "/root")
+            .with_env("PATH", "/usr/bin")
+            .with_command("id -un", FakeRun::ok("root"));
+        assert_eq!(facts(&h, None).unwrap().user, "root");
+
+        // Nothing to ask: the home directory's own name is the last resort.
+        let bare = FakeHost::new().with_env("HOME", "/home/sam").with_env("PATH", "/usr/bin");
+        assert_eq!(facts(&bare, None).unwrap().user, "sam");
+
+        // And $USER still wins when it is there.
+        let normal = FakeHost::new()
+            .with_env("HOME", "/home/t")
+            .with_env("USER", "t")
+            .with_env("PATH", "/usr/bin");
+        assert_eq!(facts(&normal, None).unwrap().user, "t");
     }
 
     #[test]
