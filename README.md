@@ -5,6 +5,13 @@
 
 **One config. Every machine.**
 
+[Docs](https://samishal1998.github.io/bedouin/) ·
+[Install](https://samishal1998.github.io/bedouin/guides/install/) ·
+[Why](https://samishal1998.github.io/bedouin/guides/why/)
+
+[![ci](https://github.com/samishal1998/bedouin/actions/workflows/ci.yml/badge.svg)](https://github.com/samishal1998/bedouin/actions/workflows/ci.yml)
+[![release](https://img.shields.io/github/v/release/samishal1998/bedouin?color=A82A24)](https://github.com/samishal1998/bedouin/releases)
+
 </div>
 
 Bedouin is a declarative environment manager: a single static binary that takes
@@ -18,6 +25,10 @@ dependencies**. And Ansible's steps do not reload the environment, so
 installing Rust in one step leaves `cargo` off `PATH` for the next — so Bedouin
 **tracks where it put things** and builds each step's environment itself,
 rather than inheriting your shell's.
+
+```sh
+curl -fsSL https://samishal1998.github.io/bedouin/install.sh | sh
+```
 
 ```console
 $ bedouin plan
@@ -121,6 +132,15 @@ logic behind one `Host` trait; `bedouin-cli` is a thin clap wrapper.
 
 ## Design
 
+Full documentation: **https://samishal1998.github.io/bedouin/**
+
 `docs/superpowers/specs/2026-08-30-bedouin-m0-m1-design.md` is the design, and
 it is kept honest: §14a, §14b, §16 and §17 record every place the shipped code
 departs from the original plan, and why.
+
+## Status
+
+Everything here works and is tested on Ubuntu, SUSE and macOS: 173 tests, plus
+a real `apply` against real package managers inside containers on every push.
+The Tauri companion app is the one thing not built yet — the bootstrap binary
+must never need a webview, so it was always a separate, later concern.
