@@ -65,6 +65,7 @@ fn fresh() -> FakeHost {
         .with_command("curl --proto =https --tlsv1.2 -sSfL https://sh.rustup.rs -o /tmp/bedouin-rustup.sh", FakeRun::ok(""))
         .with_command("sh /tmp/bedouin-rustup.sh -y --no-modify-path", FakeRun::ok("rustup installed"))
         .with_command("rustup toolchain install 1.80", FakeRun::ok("toolchain 1.80 installed"))
+        .with_command("sudo -n apt-get update", FakeRun::ok("Reading package lists"))
         .with_command("sudo -n apt-get install -y jq", FakeRun::ok("Setting up jq"))
         .with_command("cargo install --locked zellij", FakeRun::ok("Installed zellij"))
 }

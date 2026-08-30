@@ -75,6 +75,22 @@ pub fn install(m: Manager, pkg: &str, version: Option<&str>) -> Cmd {
     cmd
 }
 
+/// Refresh a manager's package lists.
+///
+/// `None` where there is nothing to refresh. A freshly imaged machine has no
+/// apt lists at all, so without this the very first install on the very
+/// machine class Bedouin exists for fails with "Unable to locate package".
+pub fn refresh(m: Manager) -> Option<Cmd> {
+    let mut cmd = match m {
+        Manager::Apt => Cmd::new(["apt-get", "update"]),
+        Manager::Zypper => Cmd::new(["zypper", "--non-interactive", "refresh"]),
+        Manager::Brew => Cmd::new(["brew", "update"]),
+        _ => return None,
+    };
+    cmd.root = needs_root(m);
+    Some(cmd)
+}
+
 pub fn remove(m: Manager, pkg: &str) -> Cmd {
     let mut cmd = match m {
         Manager::Apt => Cmd::new(["apt-get", "remove", "-y", pkg]),
@@ -205,6 +221,14 @@ mod tests {
         assert!(!install(Manager::Brew, "jq", None).root);
         assert!(!install(Manager::Cargo, "zellij", None).root);
         assert!(!install(Manager::Mise, "node", None).root);
+    }
+
+    #[test]
+    fn the_managers_with_package_lists_know_how_to_refresh_them() {
+        assert_eq!(refresh(Manager::Apt).unwrap().argv, ["apt-get", "update"]);
+        assert!(refresh(Manager::Apt).unwrap().root);
+        assert!(refresh(Manager::Cargo).is_none(), "cargo has no index to refresh");
+        assert!(refresh(Manager::Rustup).is_none());
     }
 
     #[test]

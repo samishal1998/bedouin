@@ -108,6 +108,9 @@ fn step_env(state: &State, facts: &Facts) -> BTreeMap<String, String> {
 }
 
 struct Executor<'a> {
+    /// Managers whose lists have been refreshed this run. Once each, not once
+    /// per package.
+    refreshed: std::collections::BTreeSet<Manager>,
     host: &'a dyn Host,
     facts: &'a Facts,
     cfg: &'a Config,
@@ -139,6 +142,19 @@ impl Executor<'_> {
             cmd.argv = argv;
         }
         cmd
+    }
+
+    /// Refresh a manager's package lists, at most once per run.
+    fn refresh(&mut self, m: Manager) -> std::result::Result<(), (String, Vec<String>)> {
+        if !self.refreshed.insert(m) {
+            return Ok(());
+        }
+        let Some(cmd) = recipe::refresh(m) else {
+            return Ok(());
+        };
+        let mut cmd = self.escalate(cmd);
+        cmd.env = step_env(&self.state, self.facts);
+        self.run(&cmd)
     }
 
     fn run(&mut self, cmd: &Cmd) -> std::result::Result<(), (String, Vec<String>)> {
@@ -290,6 +306,7 @@ impl Executor<'_> {
                     cmd.env = step_env(&self.state, self.facts);
                     self.run(&cmd)?;
                 }
+                self.refresh(*manager)?;
                 let mut cmd =
                     self.escalate(recipe::install(*manager, &item.name, version.as_deref()));
                 cmd.env = step_env(&self.state, self.facts);
@@ -461,6 +478,7 @@ pub fn apply(
 
     let state_path = state::default_path(&facts.home);
     let mut ex = Executor {
+        refreshed: std::collections::BTreeSet::new(),
         host,
         facts,
         cfg,

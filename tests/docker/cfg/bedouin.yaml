@@ -1,0 +1,18 @@
+version: 0
+shell: bash
+
+vars:
+  editor: nano
+
+packages:
+  - name: jq
+    from: { debian-like: apt, suse-like: zypper }
+    path: ["{{ home }}/.local/bin"]
+    rc:
+      - file: "{{ shell.rc_dir }}/70-jq.bash"
+        content: |
+          export JQ_EDITOR={{ vars.editor }}
+
+files:
+  - src: templates/gitconfig.j2
+    dest: ~/.gitconfig
