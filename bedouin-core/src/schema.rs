@@ -102,6 +102,22 @@ pub struct RawConfig {
     pub packages: Vec<RawPackage>,
     #[serde(default)]
     pub files: Vec<RawFile>,
+    /// Configuration that lives in a git repository -- a neovim config is a
+    /// directory with its own history, and templating it would be absurd.
+    #[serde(default)]
+    pub repos: Vec<RawRepo>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawRepo {
+    pub url: Val,
+    pub dest: Val,
+    /// A branch or tag. Defaults to whatever the remote's HEAD is.
+    #[serde(default)]
+    pub r#ref: Option<Val>,
+    #[serde(default)]
+    pub only: Option<OneOrMany<String>>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -208,6 +224,14 @@ pub struct Language {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Repo {
+    pub url: String,
+    pub dest: String,
+    pub r#ref: Option<String>,
+    pub resolved_from: Provenance,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileSpec {
     pub src: String,
     pub dest: String,
@@ -225,6 +249,7 @@ pub struct Config {
     pub languages: Vec<Language>,
     pub packages: Vec<Package>,
     pub files: Vec<FileSpec>,
+    pub repos: Vec<Repo>,
     /// Items dropped by `only:`, for `plan -v`.
     pub pruned: Vec<String>,
 }
@@ -551,6 +576,32 @@ pub fn resolve(raw: &RawConfig, vocab: &Vocabulary, facts: &Facts) -> Result<Con
         });
     }
 
+    let mut repos = Vec::new();
+    for repo in &raw.repos {
+        let mut prov = Provenance::new();
+        let item = format!("repo `{}`", tmpl_hint(&repo.url));
+        if !keeps(&repo.only, vocab, facts).map_err(|e| e.in_item(&item))? {
+            pruned.push(format!("repo/{}", tmpl_hint(&repo.url)));
+            continue;
+        }
+        let url = r
+            .one(&repo.url, "url", &mut prov)
+            .map_err(|e| e.in_item(&item))?;
+        let dest = r
+            .one(&repo.dest, "dest", &mut prov)
+            .map_err(|e| e.in_item(&item))?;
+        let reference = match &repo.r#ref {
+            Some(v) => Some(r.one(v, "ref", &mut prov).map_err(|e| e.in_item(&item))?),
+            None => None,
+        };
+        repos.push(Repo {
+            url,
+            dest,
+            r#ref: reference,
+            resolved_from: prov,
+        });
+    }
+
     let shell = match &raw.shell {
         None => facts.shell.name,
         Some(s) => Shell::parse(s).ok_or_else(|| {
@@ -580,6 +631,7 @@ pub fn resolve(raw: &RawConfig, vocab: &Vocabulary, facts: &Facts) -> Result<Con
         languages,
         packages,
         files,
+        repos,
         pruned,
     })
 }

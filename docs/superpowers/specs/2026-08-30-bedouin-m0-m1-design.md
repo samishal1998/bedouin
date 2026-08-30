@@ -1355,6 +1355,53 @@ split turns `{{ shell.name }}` into three arguments and the template stops
 being one. Anything with real shell syntax should use the `--` form, which
 needs no guessing at all.
 
+## 20. `repos:` — configuration that lives in a git repository
+
+`files:` renders one file from one template. A neovim configuration is a
+directory with a hundred files and its own history, and templating it would be
+absurd. It wants cloning.
+
+```yaml
+repos:
+  - url: https://github.com/samishal1998/nvim-config
+    dest: ~/.config/nvim
+    ref: main          # optional; a branch or tag
+    only: linux        # optional, like everywhere else
+```
+
+### Semantics, pinned
+
+- **Absent** → `git clone --depth 1 [--branch ref]`.
+- **Present and bedouin-owned** → nothing. Present is done, the same rule as
+  `version: latest` (§7.2). Pulling on every apply would make `plan` claim a
+  change it cannot know about without going to the network, and it would never
+  converge. **`bedouin sync` pulls** — the config repository and every declared
+  repo — with `--ff-only`, because what happens to your commits is your call.
+  A pull that cannot fast-forward is a reported failure, not a guess.
+- **Present and NOT in state** → **adopted, never touched.** Your hand-managed
+  nvim config is not Bedouin's to clobber, and doing so is precisely the
+  data-loss class §14b was written about.
+- **Removed from the config** → the clone is deleted, but only if Bedouin
+  cloned it.
+- **A changed `url`** → `Reinstall`: the old clone comes out, the new one goes
+  in. Two remotes at one path is not a thing.
+
+### Bounds
+
+`dest` must be under `$HOME`. No submodule recursion. No credential handling —
+it inherits whatever git setup you have, exactly like `sync`.
+
+`doctor` reports a repo whose tree is dirty or whose HEAD is ahead of its
+remote, via `git status --porcelain` and a rev comparison. Read-only, and it
+reports rather than resolves: those are your commits.
+
+### The §16.2 boundary again
+
+This runs git at apply time. It is the same argument as completions: not
+user-supplied code determining a plan, but a fixed, auditable tool producing
+file content, invoked through the same argv-only path. Bedouin never passes a
+repository URL to a shell.
+
 ## 15. Departures from the handoff
 
 The handoff is approved; these are the places this spec knowingly differs.

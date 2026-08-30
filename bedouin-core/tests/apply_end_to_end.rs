@@ -754,3 +754,132 @@ packages:
     let rust = &v["items"]["language/rust"];
     assert_eq!(rust["bin_dirs"][0], "/home/t/.cargo/bin");
 }
+
+// ---- repos: config that lives in a git repository (§20) -------------------
+
+#[test]
+fn a_repo_is_cloned_once_and_then_left_alone() {
+    // Present is done, the same rule as `version: latest`. Pulling on every
+    // apply would make plan claim a change it cannot know about without going
+    // to the network, and it would never converge.
+    let cfg = r#"
+version: 0
+shell: zsh
+packages: [{ name: jq, from: apt }]
+repos:
+  - url: https://example.invalid/nvim-config
+    dest: ~/.config/nvim
+    ref: main
+"#;
+    let h = with_config(fresh(), cfg).with_command(
+        "git clone --depth 1 --branch main https://example.invalid/nvim-config /home/t/.config/nvim",
+        FakeRun::ok("Cloning into '/home/t/.config/nvim'..."),
+    );
+    let report = apply_on(&h);
+    assert!(report.ok(), "{:?}", report.failure);
+    assert!(h
+        .ran
+        .borrow()
+        .iter()
+        .any(|c| c.display().contains("git clone")));
+
+    // FakeHost has no real filesystem, so stand in for the clone's marker.
+    h.files
+        .borrow_mut()
+        .insert("/home/t/.config/nvim/.git".into(), b"x".to_vec());
+    let after = plan_on(&h);
+    let repo = after
+        .plan
+        .items
+        .iter()
+        .find(|i| i.id.contains("nvim"))
+        .expect("the repo item");
+    assert_eq!(repo.action, Action::NoOp, "present and ours is done");
+}
+
+#[test]
+fn a_directory_that_was_already_there_is_adopted_not_clobbered() {
+    // Someone's hand-managed nvim config is not bedouin's to overwrite --
+    // exactly the data-loss class the M1 review was about.
+    let cfg = r#"
+version: 0
+shell: zsh
+packages: [{ name: jq, from: apt }]
+repos:
+  - url: https://example.invalid/nvim-config
+    dest: ~/.config/nvim
+"#;
+    let h =
+        with_config(fresh(), cfg).with_file("/home/t/.config/nvim/init.lua", "-- mine, by hand\n");
+    let o = plan_on(&h);
+    let repo = o.plan.items.iter().find(|i| i.id.contains("nvim")).unwrap();
+    assert_eq!(repo.action, Action::NoOp);
+    assert!(repo.detail.contains("adopted"), "{}", repo.detail);
+
+    apply_on(&h);
+    assert_eq!(
+        read(&h, "/home/t/.config/nvim/init.lua").as_deref(),
+        Some("-- mine, by hand\n"),
+        "untouched"
+    );
+    assert!(
+        !h.ran
+            .borrow()
+            .iter()
+            .any(|c| c.display().contains("git clone")),
+        "and nothing was cloned over it"
+    );
+}
+
+#[test]
+fn a_repo_may_not_be_cloned_outside_your_home() {
+    let cfg = r#"
+version: 0
+shell: zsh
+packages: [{ name: jq, from: apt }]
+repos:
+  - url: https://example.invalid/x
+    dest: /etc/nvim
+"#;
+    let h = with_config(fresh(), cfg);
+    let e = run::plan_for(
+        &h,
+        Some(Path::new("/cfg/bedouin.yaml")),
+        Path::new("/cfg"),
+        Os::Linux,
+        Arch::X86_64,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(e.contains("outside your home directory"), "{e}");
+}
+
+#[test]
+fn changing_the_remote_replaces_the_clone_rather_than_pulling_into_it() {
+    // Two remotes at one path is not a thing.
+    let one = r#"
+version: 0
+shell: zsh
+packages: [{ name: jq, from: apt }]
+repos:
+  - url: https://example.invalid/old
+    dest: ~/.config/nvim
+"#;
+    let h = with_config(fresh(), one).with_command(
+        "git clone --depth 1 https://example.invalid/old /home/t/.config/nvim",
+        FakeRun::ok(""),
+    );
+    apply_on(&h);
+
+    let h = with_config(h, &one.replace("/old", "/new")).with_command(
+        "git clone --depth 1 https://example.invalid/new /home/t/.config/nvim",
+        FakeRun::ok(""),
+    );
+    let o = plan_on(&h);
+    let repo = o.plan.items.iter().find(|i| i.id.contains("nvim")).unwrap();
+    assert!(
+        matches!(repo.action, Action::Reinstall { .. }),
+        "a changed remote is a reinstall, got {:?}",
+        repo.action
+    );
+}

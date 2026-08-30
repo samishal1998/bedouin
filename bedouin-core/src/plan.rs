@@ -101,6 +101,12 @@ pub enum Payload {
         file: PathBuf,
         entries: Vec<String>,
     },
+    /// Clone or fast-forward a git repository.
+    Repo {
+        url: String,
+        dest: PathBuf,
+        reference: Option<String>,
+    },
     /// Run a tool's own completion generator and write its stdout. The output
     /// is a file Bedouin wholly owns: no sentinels, never evaluated.
     Completions {
@@ -651,6 +657,61 @@ pub fn build(
                             0o644
                         },
                     ),
+            },
+        });
+        declared_ids.insert(id);
+    }
+
+    // ---- repos: config that lives in a git repository
+    for repo in &cfg.repos {
+        let dest = normalize(&repo.dest, &facts.home, &facts.home);
+        if !dest.starts_with(&facts.home) {
+            return Err(ConfigError::new(format!(
+                "repo `{}` would clone to {}, which is outside your home directory",
+                repo.url,
+                dest.display()
+            )));
+        }
+        let id = format!("repo/{}", dest.display());
+        let on_disk = host
+            .symlink_meta(&dest)
+            .map_err(|e| ConfigError::new(e.to_string()))?
+            .is_some();
+        let known = state.done(&id);
+        let action = match (known, on_disk) {
+            // A different remote at the same path is not an update.
+            (Some(st), _) if st.method.as_deref() != Some(repo.url.as_str()) => Action::Reinstall {
+                from_method: st.method.clone().unwrap_or_default(),
+                to_method: repo.url.clone(),
+            },
+            // Present and ours is done. Pulling on every apply would mean
+            // `plan` never converges and would make it claim a change it
+            // cannot know about without going to the network -- the same rule
+            // as `version: latest` (§7.2). `bedouin sync` is what pulls.
+            (Some(_), true) => Action::NoOp,
+            (Some(_), false) => Action::Create,
+            // Already there and not ours: adopted, never touched. Clobbering
+            // someone's hand-managed config is the data-loss class §14b is
+            // about.
+            (None, true) => Action::NoOp,
+            (None, false) => Action::Create,
+        };
+        items.push(Item {
+            id: id.clone(),
+            kind: ItemKind::Dir,
+            name: display_home(&dest, facts),
+            action,
+            detail: match (&repo.r#ref, known.is_none() && on_disk) {
+                (_, true) => "already here; adopted, not touched".to_string(),
+                (Some(r), _) => format!("{} @ {r}", repo.url),
+                (None, _) => repo.url.clone(),
+            },
+            needs_root: false,
+            arms: arms_of(&repo.resolved_from),
+            payload: Payload::Repo {
+                url: repo.url.clone(),
+                dest,
+                reference: repo.r#ref.clone(),
             },
         });
         declared_ids.insert(id);

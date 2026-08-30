@@ -127,6 +127,9 @@ pub trait Host {
     fn write(&self, p: &Path, bytes: &[u8], mode: u32) -> Result<()>;
     fn remove(&self, p: &Path) -> Result<()>;
     fn mkdir_p(&self, p: &Path) -> Result<()>;
+    /// Remove a directory and everything in it. Only ever called on a path
+    /// state records bedouin as owning.
+    fn remove_dir_all(&self, p: &Path) -> Result<()>;
     /// Remove a directory only if it is empty. Bedouin created the drop-in
     /// directory; it does not follow that everything now inside it is ours.
     fn remove_dir(&self, p: &Path) -> Result<()>;
@@ -321,6 +324,14 @@ impl Host for OsHost {
         std::fs::create_dir_all(p).map_err(|e| io_err(p, e))
     }
 
+    fn remove_dir_all(&self, p: &Path) -> Result<()> {
+        match std::fs::remove_dir_all(p) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(io_err(p, e)),
+        }
+    }
+
     fn remove_dir(&self, p: &Path) -> Result<()> {
         match std::fs::remove_dir(p) {
             Ok(()) => Ok(()),
@@ -501,6 +512,14 @@ impl Host for FakeHost {
         Ok(())
     }
 
+    fn remove_dir_all(&self, p: &Path) -> Result<()> {
+        let prefix = p.to_path_buf();
+        self.files
+            .borrow_mut()
+            .retain(|k, _| !k.starts_with(&prefix));
+        Ok(())
+    }
+
     fn read_dir(&self, p: &Path) -> Result<Vec<PathBuf>> {
         let mut out: Vec<PathBuf> = self
             .files
@@ -521,11 +540,29 @@ impl Host for FakeHost {
                 mode: 0o777,
             }));
         }
-        Ok(self.files.borrow().get(p).map(|_| Meta {
-            is_dir: false,
-            is_symlink: false,
-            mode: 0o644,
-        }))
+        if self.files.borrow().contains_key(p) {
+            return Ok(Some(Meta {
+                is_dir: false,
+                is_symlink: false,
+                mode: 0o644,
+            }));
+        }
+        // A path that is a prefix of stored files is a directory. Without this
+        // the fake cannot represent one at all, which matters now that a repo
+        // clone IS a directory.
+        if self
+            .files
+            .borrow()
+            .keys()
+            .any(|k| k.starts_with(p) && k != p)
+        {
+            return Ok(Some(Meta {
+                is_dir: true,
+                is_symlink: false,
+                mode: 0o755,
+            }));
+        }
+        Ok(None)
     }
 
     fn env(&self) -> &BTreeMap<String, String> {

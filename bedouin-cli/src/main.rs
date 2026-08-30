@@ -602,6 +602,30 @@ fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             }
+            // Declared repos are pulled here rather than on every apply: a
+            // repo that is present is done, and this is the command whose job
+            // is "go and get what changed".
+            for repo in &outcome.config.repos {
+                let dest = bedouin_core::loader::normalize(
+                    &repo.dest,
+                    &outcome.facts.home,
+                    &outcome.facts.home,
+                );
+                if !dest.join(".git").exists() {
+                    continue;
+                }
+                match git(&dest, &["pull", "--ff-only"]) {
+                    Ok(out) => {
+                        println!("{}: {}", dest.display(), out.lines().next().unwrap_or("ok"))
+                    }
+                    Err(e) => {
+                        // Not fatal: one repo that diverged should not stop
+                        // the rest, and it is the user's call what to do.
+                        eprintln!("bedouin: {}: {e}", dest.display());
+                    }
+                }
+            }
+
             // Re-plan against what was just pulled. The plan IS the diff.
             let after = match run::plan(&host, cli.config.as_deref(), &cwd) {
                 Ok(o) => o,

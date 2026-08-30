@@ -39,6 +39,7 @@ export default defineConfig({
             { label: 'Conditional values', slug: 'config/conditionals' },
             { label: 'Packages & languages', slug: 'config/packages' },
             { label: 'Files, rc blocks & PATH', slug: 'config/files' },
+            { label: 'Repos', slug: 'config/repos' },
             { label: 'Aliases & completions', slug: 'config/aliases' },
             { label: 'Facts reference', slug: 'config/facts' },
           ],

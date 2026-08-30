@@ -1,0 +1,56 @@
+---
+title: Repos
+description: Configuration that lives in a git repository -- a neovim config, a tmux setup, a plugin.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+`files:` renders one file from one template. A neovim configuration is a
+directory with a hundred files and its own history, and templating it would be
+absurd. It wants cloning.
+
+```yaml
+repos:
+  - url: https://github.com/you/nvim-config
+    dest: ~/.config/nvim
+    ref: main          # optional -- a branch or tag
+    only: linux        # optional, like everywhere else
+```
+
+## What apply does
+
+| State | Action |
+|---|---|
+| Not there | `git clone --depth 1 [--branch ref]` |
+| There, and bedouin cloned it | **nothing** |
+| There, and bedouin did *not* | **adopted — never touched** |
+| Dropped from the config | the clone is deleted, if bedouin made it |
+| `url:` changed | the old clone comes out, the new one goes in |
+
+<Aside type="caution" title="Your directory stays yours">
+A `dest` that already exists and is not in bedouin's state is **adopted**: it
+is recorded and never written to. Your hand-managed nvim config is not
+bedouin's to clobber.
+</Aside>
+
+## Present is done
+
+A repo bedouin cloned is a no-op on later runs, the same rule as
+[`version: latest`](/bedouin/config/packages/). Pulling on every apply would
+make `plan` claim a change it cannot know about without going to the network,
+and it would never converge.
+
+**`bedouin sync` is what pulls** — the config repository and every declared
+repo, with `--ff-only`. What happens to your commits is your call, so a pull
+that cannot fast-forward is reported and the rest continue.
+
+## Bounds
+
+`dest` must be under `$HOME`. No submodule recursion. No credential handling —
+it inherits whatever git setup you already have, exactly like `sync`.
+
+## Coexisting with chezmoi or stow
+
+This is the seam. Move one directory at a time: point a `repos:` entry at it,
+let bedouin adopt what is already there, and delete it from the other tool when
+you are ready. Nothing has to happen at once.

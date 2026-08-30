@@ -334,11 +334,24 @@ impl Executor<'_> {
                     }
                 }
 
-                // Files Bedouin created outright.
+                // Files Bedouin created outright -- or, for a repo, the whole
+                // clone.
                 for f in &prev.owned_files {
-                    self.host
-                        .remove(Path::new(f))
-                        .map_err(|e| (e.to_string(), Vec::new()))?;
+                    let p = Path::new(f);
+                    let is_dir = self
+                        .host
+                        .symlink_meta(p)
+                        .map_err(|e| (e.to_string(), Vec::new()))?
+                        .is_some_and(|m| m.is_dir);
+                    if is_dir {
+                        self.host
+                            .remove_dir_all(p)
+                            .map_err(|e| (e.to_string(), Vec::new()))?;
+                    } else {
+                        self.host
+                            .remove(p)
+                            .map_err(|e| (e.to_string(), Vec::new()))?;
+                    }
                 }
 
                 // A managed file that displaced one of the user's gives it
@@ -508,6 +521,61 @@ impl Executor<'_> {
                     hash: writers::block_digest(content),
                     superseded: u.superseded,
                 }];
+            }
+
+            (
+                action,
+                Payload::Repo {
+                    url,
+                    dest,
+                    reference,
+                },
+            ) => {
+                let git = |args: Vec<String>| {
+                    let mut c = Cmd::new(args);
+                    c.env = step_env(&self.state, self.facts);
+                    c
+                };
+                // A changed remote: the old clone comes out first. Two remotes
+                // at one path is not a thing.
+                if matches!(action, Action::Reinstall { .. }) {
+                    self.host
+                        .remove_dir_all(dest)
+                        .map_err(|e| (e.to_string(), Vec::new()))?;
+                }
+                let exists = self
+                    .host
+                    .symlink_meta(&dest.join(".git"))
+                    .map_err(|e| (e.to_string(), Vec::new()))?
+                    .is_some();
+                if exists {
+                    // --ff-only: what happens to your commits is your call.
+                    // A pull that cannot fast-forward is a reported failure.
+                    self.run(&git(vec![
+                        "git".into(),
+                        "-C".into(),
+                        dest.display().to_string(),
+                        "pull".into(),
+                        "--ff-only".into(),
+                    ]))?;
+                } else {
+                    let mut argv = vec![
+                        "git".to_string(),
+                        "clone".into(),
+                        "--depth".into(),
+                        "1".into(),
+                    ];
+                    if let Some(r) = reference {
+                        argv.push("--branch".into());
+                        argv.push(r.clone());
+                    }
+                    argv.push(url.clone());
+                    argv.push(dest.display().to_string());
+                    self.run(&git(argv))?;
+                }
+                rec.method = Some(url.clone());
+                rec.version = reference.clone();
+                rec.owned_files = vec![dest.display().to_string()];
             }
 
             (_, Payload::Completions { argv, dest }) => {
