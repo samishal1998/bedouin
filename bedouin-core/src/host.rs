@@ -434,11 +434,15 @@ impl Host for FakeHost {
         let Some(program) = cmd.argv.first() else {
             return Err(HostError::new("empty command"));
         };
-        let run = self.commands.get(&cmd.display()).cloned().unwrap_or(FakeRun {
-            code: 127,
-            stderr: vec![format!("{program}: command not found")],
-            ..Default::default()
-        });
+        let run = self
+            .commands
+            .get(&cmd.display())
+            .cloned()
+            .unwrap_or(FakeRun {
+                code: 127,
+                stderr: vec![format!("{program}: command not found")],
+                ..Default::default()
+            });
         for l in &run.stdout {
             out(Line::Out(l.clone()));
         }
@@ -462,7 +466,9 @@ impl Host for FakeHost {
     }
 
     fn write(&self, p: &Path, bytes: &[u8], _mode: u32) -> Result<()> {
-        self.files.borrow_mut().insert(p.to_path_buf(), bytes.to_vec());
+        self.files
+            .borrow_mut()
+            .insert(p.to_path_buf(), bytes.to_vec());
         Ok(())
     }
 
@@ -531,7 +537,10 @@ mod tests {
     #[test]
     fn failure_modes_a_real_machine_has_are_all_expressible() {
         let h = FakeHost::new()
-            .with_command("apt-get install -y jq", FakeRun::fails(100, "E: Unable to locate package jq"))
+            .with_command(
+                "apt-get install -y jq",
+                FakeRun::fails(100, "E: Unable to locate package jq"),
+            )
             .with_command("cargo install zellij", FakeRun::times_out())
             .with_command("brew --version", FakeRun::ok("Homebrew 4.3.0"));
 
@@ -542,10 +551,11 @@ mod tests {
                 .code,
             100
         );
-        assert!(h
-            .run(&Cmd::new(["cargo", "install", "zellij"]), &mut sink)
-            .unwrap()
-            .timed_out);
+        assert!(
+            h.run(&Cmd::new(["cargo", "install", "zellij"]), &mut sink)
+                .unwrap()
+                .timed_out
+        );
         assert!(h
             .run(&Cmd::new(["brew", "--version"]), &mut sink)
             .unwrap()

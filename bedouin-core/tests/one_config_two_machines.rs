@@ -73,7 +73,10 @@ fn machine(os: Os) -> FakeHost {
         .with_file("/cfg/bedouin.yaml", CONFIG)
         // `src:` resolves against the config root, and plan refuses to name a
         // source that is not there -- a plan apply cannot keep is not a plan.
-        .with_file("/cfg/templates/gitconfig.j2", "[core]\n\teditor = {{ vars.editor }}\n")
+        .with_file(
+            "/cfg/templates/gitconfig.j2",
+            "[core]\n\teditor = {{ vars.editor }}\n",
+        )
         .with_env("HOME", "/home/t")
         .with_env("USER", "t")
         .with_env("HOSTNAME", "khaymah")
@@ -94,8 +97,14 @@ fn machine(os: Os) -> FakeHost {
 
 fn plan_on(os: Os, arch: Arch) -> run::Outcome {
     let h = machine(os);
-    run::plan_for(&h, Some(Path::new("/cfg/bedouin.yaml")), Path::new("/cfg"), os, arch)
-        .unwrap_or_else(|e| panic!("planning on {os} failed: {e}"))
+    run::plan_for(
+        &h,
+        Some(Path::new("/cfg/bedouin.yaml")),
+        Path::new("/cfg"),
+        os,
+        arch,
+    )
+    .unwrap_or_else(|e| panic!("planning on {os} failed: {e}"))
 }
 
 fn named<'a>(o: &'a run::Outcome, name: &str) -> Option<&'a bedouin_core::plan::Item> {
@@ -110,16 +119,26 @@ fn one_config_covers_ubuntu_and_macos() {
     // `only:` decides membership, which arms cannot express. Without it this
     // single config could not cover both machines at all.
     assert!(named(&linux, "xclip").is_some(), "xclip is a Linux package");
-    assert!(named(&linux, "mas").is_none(), "mas must not appear on Linux");
+    assert!(
+        named(&linux, "mas").is_none(),
+        "mas must not appear on Linux"
+    );
     assert!(linux.config.pruned.iter().any(|p| p == "package/mas"));
 
     assert!(named(&mac, "mas").is_some(), "mas is a macOS package");
-    assert!(named(&mac, "xclip").is_none(), "xclip must not appear on macOS");
+    assert!(
+        named(&mac, "xclip").is_none(),
+        "xclip must not appear on macOS"
+    );
     assert!(mac.config.pruned.iter().any(|p| p == "package/xclip"));
 
     // A pruned item's other fields are never resolved, so `from: apt` on a
     // Linux-only package costs nothing on a machine with no apt.
-    assert!(mac.config.pruned.iter().any(|p| p == "package/build-essential"));
+    assert!(mac
+        .config
+        .pruned
+        .iter()
+        .any(|p| p == "package/build-essential"));
 }
 
 #[test]
@@ -136,7 +155,10 @@ fn arms_and_targets_pick_the_right_source_per_machine() {
     assert!(named(&mac, "neovim").unwrap().detail.contains("cargo"));
 
     // A manager that cannot exist on this OS is dropped rather than planned.
-    assert!(named(&mac, "apt").is_none(), "apt must never be planned on macOS");
+    assert!(
+        named(&mac, "apt").is_none(),
+        "apt must never be planned on macOS"
+    );
     assert!(named(&linux, "brew").is_none());
 }
 
@@ -187,7 +209,10 @@ fn build_prerequisites_are_ordered_before_what_needs_them() {
 #[test]
 fn a_fresh_machine_plans_everything_and_exits_two() {
     let linux = plan_on(Os::Linux, Arch::X86_64);
-    assert!(linux.state.items.is_empty(), "no state file means a first run");
+    assert!(
+        linux.state.items.is_empty(),
+        "no state file means a first run"
+    );
     // Every package is new. `apt` is a no-op because a fresh Ubuntu already
     // has it -- and it is never bootstrapped, only used.
     assert!(
@@ -199,12 +224,18 @@ fn a_fresh_machine_plans_everything_and_exits_two() {
             .all(|i| i.action == Action::Create),
         "nothing is installed yet, so every package is a create"
     );
-    assert_eq!(named(&linux, "apt").map(|i| i.action.clone()), Some(Action::NoOp));
+    assert_eq!(
+        named(&linux, "apt").map(|i| i.action.clone()),
+        Some(Action::NoOp)
+    );
     // Exit 2 is what makes `plan` usable as a CI drift check.
     assert_eq!(linux.plan.exit_code(), 2);
 
     let out = linux.plan.render(false);
-    assert!(out.contains("Bedouin will make the following changes:"), "{out}");
+    assert!(
+        out.contains("Bedouin will make the following changes:"),
+        "{out}"
+    );
     assert!(out.contains("+ package"), "{out}");
     assert!(out.contains("to add"), "{out}");
     assert_eq!(linux.facts.privilege, Privilege::Passwordless);
@@ -258,12 +289,19 @@ fn paths_and_rc_files_render_against_resolved_facts() {
     assert_eq!(path_item.name, "~/.zshrc.d/00-bedouin-path.zsh");
     match &path_item.payload {
         bedouin_core::plan::Payload::PathFile { entries, .. } => {
-            assert_eq!(entries, &["/home/t/.cargo/bin".to_string()], "rendered from {{{{ home }}}}")
+            assert_eq!(
+                entries,
+                &["/home/t/.cargo/bin".to_string()],
+                "rendered from {{{{ home }}}}"
+            )
         }
         other => panic!("expected a PathFile payload, got {other:?}"),
     }
     assert!(named(&linux, "~/.gitconfig").is_some(), "the managed file");
-    assert_eq!(linux.config.vars.get("editor").map(String::as_str), Some("nvim"));
+    assert_eq!(
+        linux.config.vars.get("editor").map(String::as_str),
+        Some("nvim")
+    );
 }
 
 #[test]

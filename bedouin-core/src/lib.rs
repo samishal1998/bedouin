@@ -1,9 +1,9 @@
-pub mod daemon;
-pub mod artifact;
-pub mod edit;
-pub mod doctor;
 pub mod apply;
 pub mod arm;
+pub mod artifact;
+pub mod daemon;
+pub mod doctor;
+pub mod edit;
 pub mod facts;
 pub mod host;
 pub mod loader;

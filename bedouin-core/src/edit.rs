@@ -64,9 +64,7 @@ fn value_is(raw: &str, name: &str) -> bool {
 /// `trim_start()` instead found `packages:` written *inside* a `vars:` banner
 /// and scanned the wrong region of the file entirely.
 fn section_head(lines: &[&str], section: Section) -> Option<usize> {
-    lines
-        .iter()
-        .position(|l| *l == section.key())
+    lines.iter().position(|l| *l == section.key())
 }
 
 /// The line ending the file actually uses.
@@ -96,7 +94,8 @@ fn entry_names(lines: &[&str], at: usize, name: &str) -> bool {
     };
     let rest = rest.trim();
     let matches_here = |s: &str| {
-        s.split_once("name:").is_some_and(|(_, v)| value_is(v, name))
+        s.split_once("name:")
+            .is_some_and(|(_, v)| value_is(v, name))
     };
     if rest.contains("name:") {
         return matches_here(rest);
@@ -280,7 +279,10 @@ pub fn add_package(text: &str, name: &str, from: &str, version: Option<&str>) ->
                 }
                 end += 1;
             }
-            let mut kept: Vec<String> = lines[..=last_content].iter().map(|s| (*s).to_string()).collect();
+            let mut kept: Vec<String> = lines[..=last_content]
+                .iter()
+                .map(|s| (*s).to_string())
+                .collect();
             kept.push(entry.trim_end().to_string());
             kept.extend(lines[last_content + 1..].iter().map(|s| (*s).to_string()));
             kept.join("\n")
@@ -325,7 +327,9 @@ pub fn set_rc_content(
         .ok_or_else(|| ConfigError::new("this config has no `packages:` section"))?;
 
     let start = (head + 1..lines.len())
-        .take_while(|i| lines[*i].trim().is_empty() || indent_of(lines[*i]) > indent_of(lines[head]))
+        .take_while(|i| {
+            lines[*i].trim().is_empty() || indent_of(lines[*i]) > indent_of(lines[head])
+        })
         .find(|i| entry_names(&lines, *i, package))
         .ok_or_else(|| ConfigError::new(format!("no package named `{package}` in this config")))?;
     let (from, to) = entry_span(&lines, start);
@@ -359,7 +363,10 @@ pub fn set_rc_content(
     }
 
     let body_indent = " ".repeat(content_indent + 2);
-    let mut out: Vec<String> = lines[..content_line].iter().map(|s| (*s).to_string()).collect();
+    let mut out: Vec<String> = lines[..content_line]
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
     out.push(format!("{}content: |", " ".repeat(content_indent)));
     for l in new_content.trim_end_matches('\n').lines() {
         out.push(if l.trim().is_empty() {
@@ -474,7 +481,10 @@ files:
         let out = remove_entry(CFG, Section::Packages, "jq").unwrap();
         assert!(!out.contains("name: jq"));
         assert!(out.contains("name: zellij"), "the next entry survives");
-        assert!(out.contains("eval \"$(zellij setup)\""), "and its nested block");
+        assert!(
+            out.contains("eval \"$(zellij setup)\""),
+            "and its nested block"
+        );
     }
 
     #[test]
@@ -520,7 +530,11 @@ files:
         let doc: serde_yaml_ng::Value = serde_yaml_ng::from_str(&out).unwrap();
         let last = doc["packages"].as_sequence().unwrap().last().unwrap();
         assert_eq!(last["name"].as_str(), Some("zoxide"));
-        assert_eq!(last["version"].as_str(), Some("0.9.4"), "quoted, so 1.80 stays 1.80");
+        assert_eq!(
+            last["version"].as_str(),
+            Some("0.9.4"),
+            "quoted, so 1.80 stays 1.80"
+        );
     }
 
     #[test]
@@ -578,7 +592,10 @@ files:
         let out = set_rc_content(CFG, "zellij", "70-zellij.zsh", tricky).unwrap();
         let doc: serde_yaml_ng::Value = serde_yaml_ng::from_str(&out).unwrap();
         assert_eq!(
-            doc["packages"][1]["rc"][0]["content"].as_str().unwrap().trim_end(),
+            doc["packages"][1]["rc"][0]["content"]
+                .as_str()
+                .unwrap()
+                .trim_end(),
             tricky
         );
     }
@@ -609,7 +626,9 @@ files:
         let cfg = "version: 0\npackages:\n  - name: jq\n    from: apt\nfiles: []\n";
         let out = remove_entry(cfg, Section::Packages, "jq").unwrap();
         let doc: serde_yaml_ng::Value = serde_yaml_ng::from_str(&out).unwrap();
-        assert!(doc["packages"].is_null() || doc["packages"].as_sequence().is_none_or(|s| s.is_empty()));
+        assert!(
+            doc["packages"].is_null() || doc["packages"].as_sequence().is_none_or(|s| s.is_empty())
+        );
     }
 }
 
@@ -644,29 +663,43 @@ packages:
         // the config at all.
         let e = remove_entry(PROSE, Section::Packages, "ripgrep").unwrap_err();
         assert!(
-            e.message.contains("no package named") || e.message.contains("more than that one entry"),
+            e.message.contains("no package named")
+                || e.message.contains("more than that one entry"),
             "{e}"
         );
         // The real entries still come out cleanly.
         let out = remove_entry(PROSE, Section::Packages, "jq").unwrap();
-        assert!(out.contains("carefully tuned zellij setup"), "prose survives");
-        assert!(out.contains("- name: ripgrep"), "and so does the note about it");
+        assert!(
+            out.contains("carefully tuned zellij setup"),
+            "prose survives"
+        );
+        assert!(
+            out.contains("- name: ripgrep"),
+            "and so does the note about it"
+        );
     }
 
     #[test]
     fn a_packages_key_inside_a_block_scalar_is_not_the_section() {
         let cfg = "version: 0\nvars:\n  banner: |\n    packages:\n      - name: fd\n        from: apt\npackages:\n  - name: jq\n    from: apt\n";
         let e = remove_entry(cfg, Section::Packages, "fd").unwrap_err();
-        assert!(e.message.contains("no package named") || e.message.contains("more than"), "{e}");
+        assert!(
+            e.message.contains("no package named") || e.message.contains("more than"),
+            "{e}"
+        );
         // And the banner is untouched by a legitimate removal.
         let out = remove_entry(cfg, Section::Packages, "jq").unwrap();
-        assert!(out.contains("      - name: fd"), "the banner survives: {out}");
+        assert!(
+            out.contains("      - name: fd"),
+            "the banner survives: {out}"
+        );
     }
 
     #[test]
     fn a_name_yaml_reads_as_a_number_or_bool_is_still_guarded() {
         // `as_str()` returns None for these, which made the old guard vacuous.
-        let cfg = "version: 0\npackages:\n  - name: 8\n    from: apt\n  - name: jq\n    from: apt\n";
+        let cfg =
+            "version: 0\npackages:\n  - name: 8\n    from: apt\n  - name: jq\n    from: apt\n";
         let out = remove_entry(cfg, Section::Packages, "8").unwrap();
         let doc: serde_yaml_ng::Value = serde_yaml_ng::from_str(&out).unwrap();
         assert_eq!(doc["packages"].as_sequence().unwrap().len(), 1);
@@ -679,7 +712,10 @@ packages:
         let cfg = "version: 0\r\npackages:\r\n  - name: jq\r\n    from: apt\r\n  - name: fd\r\n    from: apt\r\n";
         let out = remove_entry(cfg, Section::Packages, "fd").unwrap();
         assert!(out.contains("\r\n"), "CRLF preserved");
-        assert!(!out.replace("\r\n", "").contains('\n'), "no bare LF introduced: {out:?}");
+        assert!(
+            !out.replace("\r\n", "").contains('\n'),
+            "no bare LF introduced: {out:?}"
+        );
         let doc: serde_yaml_ng::Value = serde_yaml_ng::from_str(&out).unwrap();
         assert_eq!(doc["packages"].as_sequence().unwrap().len(), 1);
     }

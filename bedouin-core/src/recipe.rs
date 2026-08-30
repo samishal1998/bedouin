@@ -64,7 +64,9 @@ pub fn install(m: Manager, pkg: &str, version: Option<&str>) -> Cmd {
             "install".into(),
             v.map_or_else(|| pkg.to_string(), |ver| pinned(m, pkg, ver)),
         ]),
-        (Manager::Cargo, Some(ver)) => Cmd::new(["cargo", "install", "--locked", "--version", ver, pkg]),
+        (Manager::Cargo, Some(ver)) => {
+            Cmd::new(["cargo", "install", "--locked", "--version", ver, pkg])
+        }
         (Manager::Cargo, None) => Cmd::new(["cargo", "install", "--locked", pkg]),
         (Manager::Mise, Some(ver)) => Cmd::new(["mise", "use", "-g", &format!("{pkg}@{ver}")]),
         (Manager::Mise, None) => Cmd::new(["mise", "use", "-g", pkg]),
@@ -115,7 +117,16 @@ pub fn bootstrap(m: Manager, facts: &Facts) -> Option<Vec<Cmd>> {
         Manager::Rustup | Manager::Cargo => {
             let script = tmp("rustup.sh");
             Some(vec![
-                Cmd::new(["curl", "--proto", "=https", "--tlsv1.2", "-sSfL", "https://sh.rustup.rs", "-o", &script]),
+                Cmd::new([
+                    "curl",
+                    "--proto",
+                    "=https",
+                    "--tlsv1.2",
+                    "-sSfL",
+                    "https://sh.rustup.rs",
+                    "-o",
+                    &script,
+                ]),
                 // Downloaded, then run as a file. The upstream one-liner pipes
                 // curl into sh; keeping the two apart is what lets every step
                 // stay argv.
@@ -125,7 +136,13 @@ pub fn bootstrap(m: Manager, facts: &Facts) -> Option<Vec<Cmd>> {
         Manager::Brew => {
             let script = tmp("brew.sh");
             Some(vec![
-                Cmd::new(["curl", "-fsSL", "https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh", "-o", &script]),
+                Cmd::new([
+                    "curl",
+                    "-fsSL",
+                    "https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh",
+                    "-o",
+                    &script,
+                ]),
                 Cmd::new(["bash", &script]),
             ])
         }
@@ -148,7 +165,10 @@ pub fn bin_dirs(name: &str, facts: &Facts) -> Vec<PathBuf> {
     let home = &facts.home;
     match name {
         "rust" | "rustup" | "cargo" => vec![home.join(".cargo/bin")],
-        "mise" => vec![home.join(".local/bin"), home.join(".local/share/mise/shims")],
+        "mise" => vec![
+            home.join(".local/bin"),
+            home.join(".local/share/mise/shims"),
+        ],
         "brew" => vec![PathBuf::from(if facts.os == Os::Macos {
             "/opt/homebrew/bin"
         } else {
@@ -186,7 +206,14 @@ mod tests {
         );
         assert_eq!(
             install(Manager::Cargo, "zellij", Some("0.40.1")).argv,
-            ["cargo", "install", "--locked", "--version", "0.40.1", "zellij"]
+            [
+                "cargo",
+                "install",
+                "--locked",
+                "--version",
+                "0.40.1",
+                "zellij"
+            ]
         );
         assert_eq!(
             install(Manager::Zypper, "jq", Some("1.7")).argv,
@@ -227,7 +254,10 @@ mod tests {
     fn the_managers_with_package_lists_know_how_to_refresh_them() {
         assert_eq!(refresh(Manager::Apt).unwrap().argv, ["apt-get", "update"]);
         assert!(refresh(Manager::Apt).unwrap().root);
-        assert!(refresh(Manager::Cargo).is_none(), "cargo has no index to refresh");
+        assert!(
+            refresh(Manager::Cargo).is_none(),
+            "cargo has no index to refresh"
+        );
         assert!(refresh(Manager::Rustup).is_none());
     }
 

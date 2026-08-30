@@ -110,9 +110,9 @@ enum Command {
 fn run_apply(host: &OsHost, outcome: run::Outcome, _verbose: bool) -> ExitCode {
     // Exclusive for the length of the run: two applies sharing one state file
     // is how an item ends up owned by neither.
-    let _lock = match bedouin_core::host::StateLock::acquire(
-        &bedouin_core::state::default_path(&outcome.facts.home),
-    ) {
+    let _lock = match bedouin_core::host::StateLock::acquire(&bedouin_core::state::default_path(
+        &outcome.facts.home,
+    )) {
         Ok(l) => l,
         Err(e) => {
             eprintln!("bedouin: {e}");
@@ -122,8 +122,7 @@ fn run_apply(host: &OsHost, outcome: run::Outcome, _verbose: bool) -> ExitCode {
 
     // sudo's timestamp expires after 15 minutes by default and a real apply can
     // outlast that, so "one prompt, up front" needs refreshing to stay true.
-    let _keepalive = (outcome.facts.privilege
-        == bedouin_core::facts::Privilege::Password
+    let _keepalive = (outcome.facts.privilege == bedouin_core::facts::Privilege::Password
         && outcome.plan.changes().any(|i| i.needs_root))
     .then(bedouin_core::host::SudoKeepalive::start);
 
@@ -265,7 +264,10 @@ fn main() -> ExitCode {
 
     // `init` has no config to load yet, so it runs before the pipeline.
     if matches!(cli.command, Command::Init) {
-        let target = cli.config.clone().unwrap_or_else(|| cwd.join("bedouin.yaml"));
+        let target = cli
+            .config
+            .clone()
+            .unwrap_or_else(|| cwd.join("bedouin.yaml"));
         if target.exists() {
             eprintln!(
                 "bedouin: {} already exists. Refusing to overwrite it",
@@ -319,7 +321,10 @@ fn main() -> ExitCode {
             // fail or bury them. Neither is ours to decide.
             match git(root, &["status", "--porcelain"]) {
                 Err(e) => {
-                    eprintln!("bedouin: {} is not a git repository, or git failed: {e}", root.display());
+                    eprintln!(
+                        "bedouin: {} is not a git repository, or git failed: {e}",
+                        root.display()
+                    );
                     return ExitCode::FAILURE;
                 }
                 Ok(s) if !s.is_empty() => {
@@ -379,7 +384,10 @@ fn main() -> ExitCode {
                     .iter()
                     .map(|m| m.as_str())
                     .collect();
-                eprintln!("bedouin: unknown manager `{manager}`\n  known: {}", known.join(", "));
+                eprintln!(
+                    "bedouin: unknown manager `{manager}`\n  known: {}",
+                    known.join(", ")
+                );
                 return ExitCode::FAILURE;
             }
 
@@ -398,19 +406,14 @@ fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
-            let after = match write_config_verified(
-                &host,
-                entry,
-                &edited,
-                cli.config.as_deref(),
-                &cwd,
-            ) {
-                Ok(o) => o,
-                Err(e) => {
-                    eprintln!("bedouin: {e}");
-                    return ExitCode::FAILURE;
-                }
-            };
+            let after =
+                match write_config_verified(&host, entry, &edited, cli.config.as_deref(), &cwd) {
+                    Ok(o) => o,
+                    Err(e) => {
+                        eprintln!("bedouin: {e}");
+                        return ExitCode::FAILURE;
+                    }
+                };
             println!("Added `{name}` from `{manager}` to {}.", entry.display());
             if no_apply {
                 return ExitCode::SUCCESS;
@@ -479,7 +482,11 @@ fn main() -> ExitCode {
                         &config,
                         interval,
                     )];
-                    units.extend(bedouin_core::daemon::service_for(&outcome.facts, &exe, &config));
+                    units.extend(bedouin_core::daemon::service_for(
+                        &outcome.facts,
+                        &exe,
+                        &config,
+                    ));
                     for u in &units {
                         if let Some(d) = u.path.parent() {
                             let _ = std::fs::create_dir_all(d);
@@ -490,8 +497,7 @@ fn main() -> ExitCode {
                         }
                         println!("Wrote {}", u.path.display());
                     }
-                    let enable: Vec<&String> =
-                        units.iter().flat_map(|u| u.enable.iter()).collect();
+                    let enable: Vec<&String> = units.iter().flat_map(|u| u.enable.iter()).collect();
                     if !enable.is_empty() {
                         // Printed, not run: enabling a background service that
                         // mutates the machine is the user's decision.
@@ -503,8 +509,17 @@ fn main() -> ExitCode {
                     ExitCode::SUCCESS
                 }
                 DaemonAction::Uninstall => {
-                    let mut units = vec![bedouin_core::daemon::unit_for(&outcome.facts, &exe, &config, 900)];
-                    units.extend(bedouin_core::daemon::service_for(&outcome.facts, &exe, &config));
+                    let mut units = vec![bedouin_core::daemon::unit_for(
+                        &outcome.facts,
+                        &exe,
+                        &config,
+                        900,
+                    )];
+                    units.extend(bedouin_core::daemon::service_for(
+                        &outcome.facts,
+                        &exe,
+                        &config,
+                    ));
                     for u in &units {
                         match std::fs::remove_file(&u.path) {
                             Ok(()) => println!("Removed {}", u.path.display()),
@@ -565,7 +580,9 @@ fn main() -> ExitCode {
                     continue;
                 };
                 if package == "bedouin" {
-                    println!("  ? {id}\n      bedouin owns this block itself; nothing to absorb into");
+                    println!(
+                        "  ? {id}\n      bedouin owns this block itself; nothing to absorb into"
+                    );
                     continue;
                 }
                 let current = match std::fs::read_to_string(file) {
@@ -602,8 +619,7 @@ fn main() -> ExitCode {
                 println!("\nNothing absorbed.");
                 return ExitCode::SUCCESS;
             }
-            if let Err(e) =
-                write_config_verified(&host, &entry, &text, cli.config.as_deref(), &cwd)
+            if let Err(e) = write_config_verified(&host, &entry, &text, cli.config.as_deref(), &cwd)
             {
                 eprintln!("bedouin: {e}");
                 return ExitCode::FAILURE;
@@ -652,10 +668,7 @@ fn main() -> ExitCode {
             // A package that was already on the machine is adopted, never
             // owned -- dropping it from the config must not read as a promise
             // to uninstall it.
-            let id = format!(
-                "{}/{name}",
-                if language { "language" } else { "package" }
-            );
+            let id = format!("{}/{name}", if language { "language" } else { "package" });
             if outcome
                 .state
                 .items
@@ -685,20 +698,19 @@ fn main() -> ExitCode {
             };
             // Re-plan against the edited config: the removal is a plan outcome
             // like any other, not a special path. Verified before it sticks.
-            let after = match write_config_verified(
-                &host,
-                entry,
-                &edited,
-                cli.config.as_deref(),
-                &cwd,
-            ) {
-                Ok(o) => o,
-                Err(e) => {
-                    eprintln!("bedouin: {e}");
-                    return ExitCode::FAILURE;
-                }
-            };
-            println!("Removed {} `{name}` from {}.", section.label(), entry.display());
+            let after =
+                match write_config_verified(&host, entry, &edited, cli.config.as_deref(), &cwd) {
+                    Ok(o) => o,
+                    Err(e) => {
+                        eprintln!("bedouin: {e}");
+                        return ExitCode::FAILURE;
+                    }
+                };
+            println!(
+                "Removed {} `{name}` from {}.",
+                section.label(),
+                entry.display()
+            );
             if no_apply {
                 println!("Config edited only. Run `bedouin apply` when ready.");
                 return ExitCode::SUCCESS;

@@ -332,7 +332,10 @@ mod tests {
     #[test]
     fn did_you_mean_finds_the_near_miss() {
         let names = || builtins().keys().cloned();
-        assert_eq!(suggest("mcaos", names()).first().map(String::as_str), Some("macos"));
+        assert_eq!(
+            suggest("mcaos", names()).first().map(String::as_str),
+            Some("macos")
+        );
         assert!(suggest("ubunut", names()).contains(&"ubuntu".to_string()));
         assert!(suggest("zzzzzzzzzz", names()).is_empty());
     }

@@ -54,11 +54,10 @@ pub fn plan_for(
     os: Os,
     arch: Arch,
 ) -> Result<Outcome> {
-    let home = PathBuf::from(
-        host.env()
-            .get("HOME")
-            .ok_or_else(|| ConfigError::new("$HOME is not set, so there is no home to configure"))?,
-    );
+    let home =
+        PathBuf::from(host.env().get("HOME").ok_or_else(|| {
+            ConfigError::new("$HOME is not set, so there is no home to configure")
+        })?);
 
     let entry = loader::locate(explicit, host, cwd, &home)?;
     let loaded = loader::load(&entry, host)?;

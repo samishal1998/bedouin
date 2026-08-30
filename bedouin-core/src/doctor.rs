@@ -13,7 +13,7 @@
 
 use crate::facts::Facts;
 use crate::host::Host;
-use crate::schema::{ConfigError, Config, Result};
+use crate::schema::{Config, ConfigError, Result};
 use crate::state::{ItemKind, Owner, State};
 use crate::writers;
 use std::path::Path;
@@ -33,7 +33,11 @@ pub enum Drift {
     },
     /// A block Bedouin owns was opened and never closed, so nothing can safely
     /// rewrite that file.
-    Unterminated { id: String, file: String, why: String },
+    Unterminated {
+        id: String,
+        file: String,
+        why: String,
+    },
     /// A step recorded its intent and never finished. The next apply redoes it.
     Incomplete { id: String },
 }
@@ -61,14 +65,16 @@ impl std::fmt::Display for Drift {
                 f,
                 "  - {id}\n      {file} is gone; `apply` would put it back"
             ),
-            Self::Resolved { id, field, was, now } => write!(
+            Self::Resolved {
+                id,
+                field,
+                was,
+                now,
+            } => write!(
                 f,
                 "  ! {id}\n      `{field}` resolved to `{was}` last apply and to `{now}` now"
             ),
-            Self::Unterminated { id, file, why } => write!(
-                f,
-                "  x {id}\n      {file}: {why}"
-            ),
+            Self::Unterminated { id, file, why } => write!(f, "  x {id}\n      {file}: {why}"),
             Self::Incomplete { id } => write!(
                 f,
                 "  ! {id}\n      a previous run started this and did not finish; \
@@ -105,7 +111,11 @@ impl Report {
                 self.checked
             ));
         } else {
-            out.push_str(&format!("Drift in {} of {} items:\n\n", self.drift.len(), self.checked));
+            out.push_str(&format!(
+                "Drift in {} of {} items:\n\n",
+                self.drift.len(),
+                self.checked
+            ));
             for d in &self.drift {
                 out.push_str(&format!("{d}\n"));
             }

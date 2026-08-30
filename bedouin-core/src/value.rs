@@ -144,7 +144,9 @@ impl<'de, T: serde::de::DeserializeOwned> Deserialize<'de> for OneOrMany<T> {
             }
 
             fn visit_map<A: MapAccess<'de>>(self, _: A) -> Result<Self::Value, A::Error> {
-                Err(de::Error::custom("expected a value or a list, found a mapping"))
+                Err(de::Error::custom(
+                    "expected a value or a list, found a mapping",
+                ))
             }
 
             fn visit_some<D: Deserializer<'de>>(self, d: D) -> Result<Self::Value, D::Error> {
@@ -172,7 +174,9 @@ impl<'de, T: serde::de::DeserializeOwned> Deserialize<'de> for OneOrMany<T> {
         fn one<T: serde::de::DeserializeOwned, E: de::Error>(
             v: serde_yaml_ng::Value,
         ) -> Result<OneOrMany<T>, E> {
-            T::deserialize(v).map(OneOrMany::One).map_err(de::Error::custom)
+            T::deserialize(v)
+                .map(OneOrMany::One)
+                .map_err(de::Error::custom)
         }
 
         d.deserialize_any(V::<T>(std::marker::PhantomData))
@@ -597,7 +601,9 @@ impl<'de, T: serde::de::DeserializeOwned> Deserialize<'de> for Value<T> {
         fn konst<T: serde::de::DeserializeOwned, E: de::Error>(
             v: serde_yaml_ng::Value,
         ) -> Result<Value<T>, E> {
-            T::deserialize(v).map(Value::Const).map_err(de::Error::custom)
+            T::deserialize(v)
+                .map(Value::Const)
+                .map_err(de::Error::custom)
         }
 
         d.deserialize_any(V::<T>(std::marker::PhantomData))
@@ -664,7 +670,10 @@ mod tests {
     #[test]
     fn a_scalar_is_a_literal_and_a_mapping_is_branches() {
         let v = vocab(vec![]);
-        assert_eq!(parse("latest", &v).unwrap(), Value::Const(Tmpl::from("latest")));
+        assert_eq!(
+            parse("latest", &v).unwrap(),
+            Value::Const(Tmpl::from("latest"))
+        );
         assert!(parse("{ macos: brew, default: apt }", &v)
             .unwrap()
             .is_conditional());
@@ -712,7 +721,10 @@ mod tests {
     fn rejected_keys_name_their_replacement_rather_than_reading_as_unknown() {
         let v = vocab(vec![]);
         let env = parse("{ fromEnv: ZELLIJ_VERSION, fallback: latest }", &v).unwrap_err();
-        assert!(env.contains("env.NAME"), "must point at the replacement: {env}");
+        assert!(
+            env.contains("env.NAME"),
+            "must point at the replacement: {env}"
+        );
 
         let script = parse("{ fromScript: \"doctor determine-version\" }", &v).unwrap_err();
         assert!(
@@ -775,7 +787,10 @@ mod tests {
         // Linuxes" was a parse error with no expressible fix.
         let v = vocab(vec![]);
         let val = parse("{ ubuntu: apt, linux: cargo, default: brew }", &v).unwrap();
-        assert!(validate_arms(&val, &v).is_ok(), "this must not be ambiguous");
+        assert!(
+            validate_arms(&val, &v).is_ok(),
+            "this must not be ambiguous"
+        );
 
         let ubuntu = Facts::fixture(Os::Linux, Distro::Ubuntu, Arch::X86_64);
         assert_eq!(won(&val, &v, &ubuntu), "apt");
@@ -837,11 +852,19 @@ mod tests {
         f.env.insert("P".into(), "1".into()); // both targets now active
 
         assert_eq!(
-            won(&parse("{ laptop: a, work: b }", &first).unwrap(), &first, &f),
+            won(
+                &parse("{ laptop: a, work: b }", &first).unwrap(),
+                &first,
+                &f
+            ),
             "a"
         );
         assert_eq!(
-            won(&parse("{ laptop: a, work: b }", &second).unwrap(), &second, &f),
+            won(
+                &parse("{ laptop: a, work: b }", &second).unwrap(),
+                &second,
+                &f
+            ),
             "b"
         );
     }
@@ -895,17 +918,20 @@ mod tests {
         let val = parse("{ debian-like: apt, arm64: cargo, default: brew }", &v).unwrap();
         let err = validate_arms(&val, &v).unwrap_err();
         assert_eq!(err.conjunction.as_deref(), Some("debian-like-arm64"));
-        assert!(!err.to_string().contains("ubuntu"), "must not narrow: {err}");
+        assert!(
+            !err.to_string().contains("ubuntu"),
+            "must not narrow: {err}"
+        );
     }
 
     #[test]
     fn arms_that_can_never_co_occur_are_not_ambiguous() {
         let v = vocab(vec![]);
         for yaml in [
-            "{ macos: a, ubuntu: b, default: c }",   // different os
-            "{ ubuntu: a, fedora: b, default: c }",  // different distro
-            "{ ubuntu: a, linux: b, default: c }",   // comparable
-            "{ x86_64: a, arm64: b, default: c }",   // different arch
+            "{ macos: a, ubuntu: b, default: c }",  // different os
+            "{ ubuntu: a, fedora: b, default: c }", // different distro
+            "{ ubuntu: a, linux: b, default: c }",  // comparable
+            "{ x86_64: a, arm64: b, default: c }",  // different arch
         ] {
             let val = parse(yaml, &v).unwrap();
             assert!(validate_arms(&val, &v).is_ok(), "{yaml} should be fine");

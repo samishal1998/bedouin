@@ -52,7 +52,9 @@ pub fn unit_for(facts: &Facts, exe: &str, config: &str, interval_secs: u64) -> U
             }
         }
         Os::Linux => Unit {
-            path: facts.home.join(".config/systemd/user/bedouin-reconcile.timer"),
+            path: facts
+                .home
+                .join(".config/systemd/user/bedouin-reconcile.timer"),
             contents: format!(
                 "# Written by `bedouin daemon install`.\n\
                  # The service unit sits beside this file.\n\
@@ -104,14 +106,18 @@ mod tests {
     fn a_linux_install_is_a_timer_plus_a_oneshot_service() {
         let f = Facts::fixture(Os::Linux, Distro::Ubuntu, Arch::X86_64);
         let t = unit_for(&f, "/usr/local/bin/bedouin", "/cfg/bedouin.yaml", 900);
-        assert!(t.path.ends_with(".config/systemd/user/bedouin-reconcile.timer"));
+        assert!(t
+            .path
+            .ends_with(".config/systemd/user/bedouin-reconcile.timer"));
         assert!(t.contents.contains("OnUnitActiveSec=900s"));
         // Persistent, so a laptop that was asleep still reconciles on waking.
         assert!(t.contents.contains("Persistent=true"));
 
         let s = service_for(&f, "/usr/local/bin/bedouin", "/cfg/bedouin.yaml").unwrap();
         assert!(s.contents.contains("Type=oneshot"));
-        assert!(s.contents.contains("ExecStart=/usr/local/bin/bedouin --config /cfg/bedouin.yaml reconcile"));
+        assert!(s
+            .contents
+            .contains("ExecStart=/usr/local/bin/bedouin --config /cfg/bedouin.yaml reconcile"));
         assert!(t.enable.iter().any(|c| c.contains("--user enable")));
     }
 
@@ -119,12 +125,19 @@ mod tests {
     fn a_macos_install_is_one_launch_agent() {
         let f = Facts::fixture(Os::Macos, Distro::Macos, Arch::Arm64);
         let u = unit_for(&f, "/usr/local/bin/bedouin", "/cfg/bedouin.yaml", 900);
-        assert!(u.path.ends_with("Library/LaunchAgents/dev.bedouin.reconcile.plist"));
-        assert!(u.contents.contains("<key>StartInterval</key><integer>900</integer>"));
+        assert!(u
+            .path
+            .ends_with("Library/LaunchAgents/dev.bedouin.reconcile.plist"));
+        assert!(u
+            .contents
+            .contains("<key>StartInterval</key><integer>900</integer>"));
         // Not at login: a reconcile that runs while the machine is still
         // coming up is a reconcile against a half-ready machine.
         assert!(u.contents.contains("<key>RunAtLoad</key><false/>"));
-        assert!(service_for(&f, "x", "y").is_none(), "launchd needs no second unit");
+        assert!(
+            service_for(&f, "x", "y").is_none(),
+            "launchd needs no second unit"
+        );
     }
 
     #[test]

@@ -411,12 +411,17 @@ pub fn resolve(raw: &RawConfig, vocab: &Vocabulary, facts: &Facts) -> Result<Con
         let item = format!("language `{}`", l.name);
         let mut prov = Provenance::new();
         let version = match &l.version {
-            Some(v) => Some(r.one(v, "version", &mut prov).map_err(|e| e.in_item(&item))?),
+            Some(v) => Some(
+                r.one(v, "version", &mut prov)
+                    .map_err(|e| e.in_item(&item))?,
+            ),
             None => None,
         };
         let installer = match &l.installer {
             Some(v) => {
-                let name = r.one(v, "installer", &mut prov).map_err(|e| e.in_item(&item))?;
+                let name = r
+                    .one(v, "installer", &mut prov)
+                    .map_err(|e| e.in_item(&item))?;
                 let m = r
                     .managers(std::slice::from_ref(&name), "installer")
                     .map_err(|e| e.in_item(&item))?[0];
@@ -449,8 +454,12 @@ pub fn resolve(raw: &RawConfig, vocab: &Vocabulary, facts: &Facts) -> Result<Con
         }
         let item = format!("package `{}`", p.name);
         let mut prov = Provenance::new();
-        let from_names = r.many(&p.from, "from", &mut prov).map_err(|e| e.in_item(&item))?;
-        let from = r.managers(&from_names, "from").map_err(|e| e.in_item(&item))?;
+        let from_names = r
+            .many(&p.from, "from", &mut prov)
+            .map_err(|e| e.in_item(&item))?;
+        let from = r
+            .managers(&from_names, "from")
+            .map_err(|e| e.in_item(&item))?;
         // rustup installs toolchains, not packages: `from: rustup` would have
         // run `rustup toolchain install`, ignoring the package name entirely
         // and reporting success.
@@ -461,7 +470,10 @@ pub fn resolve(raw: &RawConfig, vocab: &Vocabulary, facts: &Facts) -> Result<Con
             .in_item(&item));
         }
         let version = match &p.version {
-            Some(v) => Some(r.one(v, "version", &mut prov).map_err(|e| e.in_item(&item))?),
+            Some(v) => Some(
+                r.one(v, "version", &mut prov)
+                    .map_err(|e| e.in_item(&item))?,
+            ),
             None => None,
         };
         let path = match &p.path {
@@ -521,8 +533,12 @@ pub fn resolve(raw: &RawConfig, vocab: &Vocabulary, facts: &Facts) -> Result<Con
             pruned.push(format!("file/{}", tmpl_hint(&f.src)));
             continue;
         }
-        let src = r.one(&f.src, "src", &mut prov).map_err(|e| e.in_item(&item))?;
-        let dest = r.one(&f.dest, "dest", &mut prov).map_err(|e| e.in_item(&item))?;
+        let src = r
+            .one(&f.src, "src", &mut prov)
+            .map_err(|e| e.in_item(&item))?;
+        let dest = r
+            .one(&f.dest, "dest", &mut prov)
+            .map_err(|e| e.in_item(&item))?;
         let mode = match &f.mode {
             Some(v) => Some(r.one(v, "mode", &mut prov).map_err(|e| e.in_item(&item))?),
             None => None,

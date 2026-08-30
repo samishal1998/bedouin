@@ -231,8 +231,7 @@ mod tests {
 
     #[test]
     fn only_the_variables_the_config_reads_are_found() {
-        let r = raw(
-            r#"
+        let r = raw(r#"
 version: 0
 vars:
   v: "{{ env.EDITOR_CHOICE }}"
@@ -249,8 +248,7 @@ packages:
 files:
   - src: templates/g.j2
     dest: "{{ env.CONFIG_HOME }}/git"
-"#,
-        );
+"#);
         let found = referenced_env(&r);
         for want in [
             "EDITOR_CHOICE",

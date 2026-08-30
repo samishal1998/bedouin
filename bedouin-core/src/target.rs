@@ -81,7 +81,13 @@ impl MatchSpec {
             Ok(())
         }
         let names = |v: &[&'static str]| v.to_vec();
-        check(&self.os, "os", target, Os::parse, &names(&["macos", "linux"]))?;
+        check(
+            &self.os,
+            "os",
+            target,
+            Os::parse,
+            &names(&["macos", "linux"]),
+        )?;
         check(
             &self.distro,
             "distro",
@@ -94,7 +100,10 @@ impl MatchSpec {
             "distro_like",
             target,
             DistroLike::parse,
-            &DistroLike::ALL.iter().map(|d| d.as_str()).collect::<Vec<_>>(),
+            &DistroLike::ALL
+                .iter()
+                .map(|d| d.as_str())
+                .collect::<Vec<_>>(),
         )?;
         check(
             &self.arch,
@@ -338,7 +347,10 @@ mod tests {
         let mut f = Facts::fixture(Os::Linux, Distro::Ubuntu, Arch::X86_64);
         assert!(noble.matches(&f));
         f.distro_version = "22.04".into();
-        assert!(!noble.matches(&f), "22.04 is the case noble exists to exclude");
+        assert!(
+            !noble.matches(&f),
+            "22.04 is the case noble exists to exclude"
+        );
         f.distro_version = "24.04".into();
         f.distro = Distro::Debian;
         assert!(!noble.matches(&f));

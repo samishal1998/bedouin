@@ -59,14 +59,14 @@ impl Report {
             }
             None => out.push_str(&format!("Applied {} changes.\n", self.completed.len())),
             Some(f) => {
-                out.push_str(&format!(
-                    "\nFailed at {}: {}\n",
-                    f.id, f.message
-                ));
+                out.push_str(&format!("\nFailed at {}: {}\n", f.id, f.message));
                 for l in &f.output_tail {
                     out.push_str(&format!("    {l}\n"));
                 }
-                out.push_str(&format!("\n{} applied before the failure.\n", self.completed.len()));
+                out.push_str(&format!(
+                    "\n{} applied before the failure.\n",
+                    self.completed.len()
+                ));
                 if !self.not_attempted.is_empty() {
                     out.push_str("Not attempted:\n");
                     for id in &self.not_attempted {
@@ -99,7 +99,14 @@ fn step_env(state: &State, facts: &Facts) -> BTreeMap<String, String> {
     // Package managers get noisy or interactive without these.
     env.insert("DEBIAN_FRONTEND".into(), "noninteractive".into());
     env.insert("LC_ALL".into(), "C".into());
-    for keep in ["TERM", "SSL_CERT_FILE", "SSL_CERT_DIR", "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY"] {
+    for keep in [
+        "TERM",
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+        "HTTPS_PROXY",
+        "HTTP_PROXY",
+        "NO_PROXY",
+    ] {
         if let Some(v) = facts.env.get(keep) {
             env.insert(keep.into(), v.clone());
         }
@@ -173,15 +180,17 @@ impl Executor<'_> {
             return Err((format!("`{}` timed out", cmd.display()), tail));
         }
         if !status.ok() {
-            return Err((
-                format!("`{}` exited {}", cmd.display(), status.code),
-                tail,
-            ));
+            return Err((format!("`{}` exited {}", cmd.display(), status.code), tail));
         }
         Ok(())
     }
 
-    fn write_text(&self, p: &Path, text: &str, mode: u32) -> std::result::Result<(), (String, Vec<String>)> {
+    fn write_text(
+        &self,
+        p: &Path,
+        text: &str,
+        mode: u32,
+    ) -> std::result::Result<(), (String, Vec<String>)> {
         self.host
             .write(p, text.as_bytes(), mode)
             .map_err(|e| (e.to_string(), Vec::new()))
@@ -239,7 +248,10 @@ impl Executor<'_> {
             Ok(Some(b)) => String::from_utf8(b)
                 .map_err(|_| (format!("{} is not valid UTF-8", p.display()), Vec::new())),
             Ok(None) => Err((
-                format!("{} has gone missing, so there is nothing to restore", p.display()),
+                format!(
+                    "{} has gone missing, so there is nothing to restore",
+                    p.display()
+                ),
                 Vec::new(),
             )),
             Err(e) => Err((e.to_string(), Vec::new())),
@@ -365,7 +377,14 @@ impl Executor<'_> {
                     .collect();
             }
 
-            (_, Payload::Language { installer, version, bin_dirs }) => {
+            (
+                _,
+                Payload::Language {
+                    installer,
+                    version,
+                    bin_dirs,
+                },
+            ) => {
                 let mut cmd =
                     self.escalate(recipe::install(*installer, &item.name, version.as_deref()));
                 cmd.env = step_env(&self.state, self.facts);
@@ -375,7 +394,14 @@ impl Executor<'_> {
                 rec.bin_dirs = bin_dirs.iter().map(|p| p.display().to_string()).collect();
             }
 
-            (action, Payload::Package { manager, version, previous }) => {
+            (
+                action,
+                Payload::Package {
+                    manager,
+                    version,
+                    previous,
+                },
+            ) => {
                 // A changed method means the old copy comes out first;
                 // installing twice would leave two, one of them unowned.
                 if let (Action::Reinstall { .. }, Some(old)) = (action, previous) {
@@ -415,27 +441,26 @@ impl Executor<'_> {
                     .symlink_meta(dest)
                     .map_err(|e| (e.to_string(), Vec::new()))?
                     .is_some()
+                    && *action == Action::Adopt
                 {
-                    if *action == Action::Adopt {
-                        // `with_extension` REPLACES the extension, so
-                        // `init.lua` backed up to `init.bedouin-bak` and two
-                        // managed files sharing a stem collided on one backup.
-                        let backup = PathBuf::from(format!("{}.bedouin-bak", dest.display()));
-                        // Never overwrite a backup that already exists: on a
-                        // re-adopt the "existing" content is bedouin's own
-                        // render, and saving that over the real backup destroys
-                        // the only copy of the user's file.
-                        let already = self
-                            .host
-                            .symlink_meta(&backup)
-                            .map_err(|e| (e.to_string(), Vec::new()))?
-                            .is_some();
-                        if !already {
-                            let existing = self.read_text(dest)?;
-                            self.write_text(&backup, &existing, *mode)?;
-                        }
-                        rec.backup = Some(backup.display().to_string());
+                    // `with_extension` REPLACES the extension, so
+                    // `init.lua` backed up to `init.bedouin-bak` and two
+                    // managed files sharing a stem collided on one backup.
+                    let backup = PathBuf::from(format!("{}.bedouin-bak", dest.display()));
+                    // Never overwrite a backup that already exists: on a
+                    // re-adopt the "existing" content is bedouin's own
+                    // render, and saving that over the real backup destroys
+                    // the only copy of the user's file.
+                    let already = self
+                        .host
+                        .symlink_meta(&backup)
+                        .map_err(|e| (e.to_string(), Vec::new()))?
+                        .is_some();
+                    if !already {
+                        let existing = self.read_text(dest)?;
+                        self.write_text(&backup, &existing, *mode)?;
                     }
+                    rec.backup = Some(backup.display().to_string());
                 }
                 self.write_text(dest, &rendered, *mode)?;
                 rec.owned_files = vec![dest.display().to_string()];
@@ -446,7 +471,14 @@ impl Executor<'_> {
                 rec.mode = Some(format!("{mode:o}"));
             }
 
-            (_, Payload::RcBlock { file, marker, content }) => {
+            (
+                _,
+                Payload::RcBlock {
+                    file,
+                    marker,
+                    content,
+                },
+            ) => {
                 // ALWAYS read what is there. Writing a drop-in from an empty
                 // base truncated whatever the path pointed at: an rc block
                 // aimed at the user's own ~/.zshrc replaced it with a single
@@ -637,8 +669,7 @@ pub fn apply(
                     message,
                     output_tail,
                 });
-                report.not_attempted =
-                    changes[i + 1..].iter().map(|x| x.id.clone()).collect();
+                report.not_attempted = changes[i + 1..].iter().map(|x| x.id.clone()).collect();
                 break;
             }
         }
@@ -648,9 +679,10 @@ pub fn apply(
     // rather than claimed: it must survive being dropped from the config.
     for item in &plan.items {
         if item.action == Action::NoOp && !ex.state.items.contains_key(&item.id) {
-            ex.state
-                .items
-                .insert(item.id.clone(), StateItem::new(item.kind, Owner::Preexisting));
+            ex.state.items.insert(
+                item.id.clone(),
+                StateItem::new(item.kind, Owner::Preexisting),
+            );
         }
     }
     ex.flush()?;

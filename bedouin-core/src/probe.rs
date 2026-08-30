@@ -39,12 +39,7 @@ fn capture(host: &dyn Host, argv: &[&str], path: &[PathBuf]) -> Option<String> {
 fn os_release(text: &str) -> BTreeMap<String, String> {
     text.lines()
         .filter_map(|l| l.split_once('='))
-        .map(|(k, v)| {
-            (
-                k.trim().to_string(),
-                v.trim().trim_matches('"').to_string(),
-            )
-        })
+        .map(|(k, v)| (k.trim().to_string(), v.trim().trim_matches('"').to_string()))
         .collect()
 }
 
@@ -156,13 +151,15 @@ pub fn facts_for(
         // lattice and the resolver cannot disagree about what `ubuntu` implies.
         let like = kv
             .get("ID_LIKE")
-            .and_then(|l| l.split_whitespace().find_map(|w| match w {
-                "debian" => Some(DistroLike::Debian),
-                "rhel" | "fedora" => Some(DistroLike::Rhel),
-                "suse" | "opensuse" => Some(DistroLike::Suse),
-                "arch" => Some(DistroLike::Arch),
-                _ => None,
-            }))
+            .and_then(|l| {
+                l.split_whitespace().find_map(|w| match w {
+                    "debian" => Some(DistroLike::Debian),
+                    "rhel" | "fedora" => Some(DistroLike::Rhel),
+                    "suse" | "opensuse" => Some(DistroLike::Suse),
+                    "arch" => Some(DistroLike::Arch),
+                    _ => None,
+                })
+            })
             .unwrap_or_else(|| distro_like_of(distro));
         (
             distro,
@@ -259,7 +256,10 @@ mod tests {
     fn id_like_is_believed_over_the_built_in_table() {
         // A derivative Bedouin has never heard of still lands in the right
         // family, which is the point of `distro: other` being representable.
-        let h = base().with_file("/etc/os-release", "ID=pop\nID_LIKE=ubuntu debian\nVERSION_ID=22.04\n");
+        let h = base().with_file(
+            "/etc/os-release",
+            "ID=pop\nID_LIKE=ubuntu debian\nVERSION_ID=22.04\n",
+        );
         let f = facts(&h, None).unwrap();
         assert_eq!(f.distro, Distro::Other);
         assert_eq!(f.distro_like, DistroLike::Debian);
@@ -300,7 +300,9 @@ mod tests {
         assert_eq!(facts(&h, None).unwrap().user, "root");
 
         // Nothing to ask: the home directory's own name is the last resort.
-        let bare = FakeHost::new().with_env("HOME", "/home/sam").with_env("PATH", "/usr/bin");
+        let bare = FakeHost::new()
+            .with_env("HOME", "/home/sam")
+            .with_env("PATH", "/usr/bin");
         assert_eq!(facts(&bare, None).unwrap().user, "sam");
 
         // And $USER still wins when it is there.
@@ -319,7 +321,10 @@ mod tests {
         let free = base()
             .with_command("id -u", FakeRun::ok("1000"))
             .with_command("sudo -n true", FakeRun::ok(""));
-        assert_eq!(facts(&free, None).unwrap().privilege, Privilege::Passwordless);
+        assert_eq!(
+            facts(&free, None).unwrap().privilege,
+            Privilege::Passwordless
+        );
 
         // A real machine: in the sudo group, but sudo wants a password. Both
         // `sudo -n true` and `sudo -n -l` fail here, which is why the group is
@@ -335,7 +340,10 @@ mod tests {
         let none = base()
             .with_command("id -u", FakeRun::ok("1000"))
             .with_command("id -nG", FakeRun::ok("someone users"));
-        assert_eq!(facts(&none, None).unwrap().privilege, Privilege::Unavailable);
+        assert_eq!(
+            facts(&none, None).unwrap().privilege,
+            Privilege::Unavailable
+        );
     }
 
     #[test]
@@ -346,6 +354,9 @@ mod tests {
         let f = facts(&h, None).unwrap();
         assert!(f.managers.contains(&Manager::Apt), "{:?}", f.managers);
         assert!(f.managers.contains(&Manager::Mise));
-        assert!(!f.managers.contains(&Manager::Brew), "a fresh box has no brew");
+        assert!(
+            !f.managers.contains(&Manager::Brew),
+            "a fresh box has no brew"
+        );
     }
 }

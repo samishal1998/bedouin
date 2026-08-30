@@ -40,9 +40,9 @@ fn plan(config: &str) -> Result<run::Outcome, String> {
 }
 
 fn err(config: &str) -> String {
-    plan(config).err().unwrap_or_else(|| {
-        panic!("expected this config to be refused, but it planned cleanly")
-    })
+    plan(config)
+        .err()
+        .unwrap_or_else(|| panic!("expected this config to be refused, but it planned cleanly"))
 }
 
 #[test]
@@ -63,8 +63,10 @@ fn an_absolute_src_cannot_escape_the_config_root() {
 fn an_include_cannot_climb_out_with_dot_dot() {
     // `Path::starts_with` is lexical, so `/cfg/../evil` "starts with" `/cfg`.
     // Both sides are collapsed before the comparison now.
-    let h = machine("version: 0\nincludes: [\"../evil/*.yaml\"]\n")
-        .with_file("/evil/x.yaml", "packages:\n  - {name: outside, from: apt}\n");
+    let h = machine("version: 0\nincludes: [\"../evil/*.yaml\"]\n").with_file(
+        "/evil/x.yaml",
+        "packages:\n  - {name: outside, from: apt}\n",
+    );
     let e = run::plan_for(
         &h,
         Some(Path::new("/cfg/bedouin.yaml")),
@@ -85,8 +87,7 @@ fn two_items_may_not_share_one_state_key() {
     // rc ids are `rc/{package}/{basename}`, so two blocks in one package whose
     // files share a basename collapsed to one id. With a state file present,
     // both then reported as already done -- including the one never written.
-    let e = err(
-        r#"
+    let e = err(r#"
 version: 0
 shell: zsh
 packages:
@@ -95,8 +96,7 @@ packages:
     rc:
       - { file: "{{ home }}/.zshrc.d/70-z.zsh", content: a }
       - { file: "{{ home }}/other.d/70-z.zsh", content: b }
-"#,
-    );
+"#);
     assert!(e.contains("same id"), "{e}");
     assert!(e.contains("70-z.zsh"), "{e}");
 
@@ -135,7 +135,10 @@ fn an_include_that_matches_nothing_is_refused() {
     .unwrap_err()
     .to_string();
     assert!(e.contains("matches no files"), "{e}");
-    assert!(e.contains("silently drop"), "should say why it matters: {e}");
+    assert!(
+        e.contains("silently drop"),
+        "should say why it matters: {e}"
+    );
 }
 
 #[test]
@@ -160,7 +163,11 @@ fn fact_values_have_one_spelling_everywhere() {
     )
     .expect("plans");
     let jq = o.plan.items.iter().find(|i| i.name == "jq").unwrap();
-    assert!(jq.detail.contains("apt"), "the target must match: {}", jq.detail);
+    assert!(
+        jq.detail.contains("apt"),
+        "the target must match: {}",
+        jq.detail
+    );
 }
 
 #[test]
@@ -233,7 +240,12 @@ fn a_long_needs_chain_does_not_overflow_the_stack() {
     assert_eq!(o.plan.items.len(), N);
     // And the order is still correct: every dependency precedes its dependent.
     let first = o.plan.items.iter().position(|i| i.name == "p0").unwrap();
-    let last = o.plan.items.iter().position(|i| i.name == format!("p{}", N - 1)).unwrap();
+    let last = o
+        .plan
+        .items
+        .iter()
+        .position(|i| i.name == format!("p{}", N - 1))
+        .unwrap();
     assert!(last < first, "the deepest prerequisite comes first");
 }
 

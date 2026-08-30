@@ -16,7 +16,10 @@ use std::path::Path;
 fn machine(cfg: &str) -> FakeHost {
     FakeHost::new()
         .with_file("/cfg/bedouin.yaml", cfg)
-        .with_file("/etc/os-release", "ID=ubuntu\nID_LIKE=debian\nVERSION_ID=\"24.04\"\n")
+        .with_file(
+            "/etc/os-release",
+            "ID=ubuntu\nID_LIKE=debian\nVERSION_ID=\"24.04\"\n",
+        )
         .with_env("HOME", "/home/t")
         .with_env("USER", "t")
         .with_env("SHELL", "/bin/zsh")
@@ -28,8 +31,14 @@ fn machine(cfg: &str) -> FakeHost {
 }
 
 fn outcome(h: &FakeHost) -> run::Outcome {
-    run::plan_for(h, Some(Path::new("/cfg/bedouin.yaml")), Path::new("/cfg"), Os::Linux, Arch::X86_64)
-        .unwrap_or_else(|e| panic!("plan failed: {e}"))
+    run::plan_for(
+        h,
+        Some(Path::new("/cfg/bedouin.yaml")),
+        Path::new("/cfg"),
+        Os::Linux,
+        Arch::X86_64,
+    )
+    .unwrap_or_else(|e| panic!("plan failed: {e}"))
 }
 
 fn apply_on(h: &FakeHost) -> apply::Report {
@@ -38,7 +47,9 @@ fn apply_on(h: &FakeHost) -> apply::Report {
 }
 
 fn read(h: &FakeHost, p: &str) -> Option<String> {
-    h.read(Path::new(p)).unwrap().map(|b| String::from_utf8_lossy(&b).into_owned())
+    h.read(Path::new(p))
+        .unwrap()
+        .map(|b| String::from_utf8_lossy(&b).into_owned())
 }
 
 const CFG: &str = r#"
@@ -69,7 +80,10 @@ fn aliases_land_in_their_own_scope() {
     // Global aliases are bedouin's own block.
     let global = read(&h, "/home/t/.zshrc.d/10-bedouin-aliases.zsh").expect("global block");
     assert!(global.contains("alias ll='ls -alh'"));
-    assert!(!global.contains("alias j="), "a package's aliases are not global");
+    assert!(
+        !global.contains("alias j="),
+        "a package's aliases are not global"
+    );
 
     // A package's aliases live with the package.
     let pkg = read(&h, "/home/t/.zshrc.d/30-jq-aliases.zsh").expect("package block");
@@ -137,7 +151,10 @@ fn completions_are_generated_by_the_tool_and_written_not_evaluated() {
 
     // Generated through the same argv path as every other step -- no shell.
     let ran = h.ran.borrow();
-    let step = ran.iter().find(|c| c.display().contains("--completion")).unwrap();
+    let step = ran
+        .iter()
+        .find(|c| c.display().contains("--completion"))
+        .unwrap();
     assert_eq!(step.argv, ["jq", "--completion", "zsh"]);
     assert!(!step.root, "generating completions needs no privilege");
 }
@@ -149,7 +166,10 @@ fn zsh_gets_its_completions_directory_onto_fpath() {
     let h = fresh();
     apply_on(&h);
     let rc = read(&h, "/home/t/.zshrc").unwrap();
-    assert!(rc.contains("fpath=(\"/home/t/.zshrc.d/completions\" $fpath)"), "{rc}");
+    assert!(
+        rc.contains("fpath=(\"/home/t/.zshrc.d/completions\" $fpath)"),
+        "{rc}"
+    );
 }
 
 #[test]
@@ -163,7 +183,12 @@ fn a_generator_that_fails_or_says_nothing_is_an_error() {
     // like success and break completion for that tool.
     let h = machine(CFG).with_command("jq --completion zsh", FakeRun::ok(""));
     let report = apply_on(&h);
-    assert!(report.failure.as_ref().unwrap().message.contains("no completions"));
+    assert!(report
+        .failure
+        .as_ref()
+        .unwrap()
+        .message
+        .contains("no completions"));
 }
 
 #[test]
@@ -175,16 +200,31 @@ fn editing_the_generator_command_re_runs_it() {
     apply_on(&h);
     assert_eq!(outcome(&h).plan.exit_code(), 0);
 
-    let h2 = h.with_file(
-        "/cfg/bedouin.yaml",
-        &CFG.replace("\"--completion\"", "\"--completion-v2\""),
-    )
-    .with_command("jq --completion-v2 zsh", FakeRun::ok("#compdef jq\n_v2() { :; }"));
+    let h2 = h
+        .with_file(
+            "/cfg/bedouin.yaml",
+            &CFG.replace("\"--completion\"", "\"--completion-v2\""),
+        )
+        .with_command(
+            "jq --completion-v2 zsh",
+            FakeRun::ok("#compdef jq\n_v2() { :; }"),
+        );
     let o = outcome(&h2);
-    let comp = o.plan.items.iter().find(|i| i.id == "completion/jq").unwrap();
-    assert!(comp.action.is_change(), "the edit must be visible: {:?}", comp.action);
+    let comp = o
+        .plan
+        .items
+        .iter()
+        .find(|i| i.id == "completion/jq")
+        .unwrap();
+    assert!(
+        comp.action.is_change(),
+        "the edit must be visible: {:?}",
+        comp.action
+    );
     apply_on(&h2);
-    assert!(read(&h2, "/home/t/.zshrc.d/completions/_jq").unwrap().contains("_v2"));
+    assert!(read(&h2, "/home/t/.zshrc.d/completions/_jq")
+        .unwrap()
+        .contains("_v2"));
 }
 
 #[test]
@@ -192,7 +232,11 @@ fn a_hand_edited_alias_block_reads_as_drift_and_is_repaired() {
     let h = fresh();
     apply_on(&h);
     let o = outcome(&h);
-    assert!(bedouin_core::doctor::check(&o.state, &o.config, &o.facts, &h).unwrap().is_clean());
+    assert!(
+        bedouin_core::doctor::check(&o.state, &o.config, &o.facts, &h)
+            .unwrap()
+            .is_clean()
+    );
 
     let f = "/home/t/.zshrc.d/10-bedouin-aliases.zsh";
     let edited = read(&h, f).unwrap().replace("ls -alh", "ls -la --color");
@@ -204,8 +248,19 @@ fn a_hand_edited_alias_block_reads_as_drift_and_is_repaired() {
     assert_eq!(report.exit_code(), 2);
 
     // ...and plan agrees, which is the promise doctor's message makes.
-    let g = o.plan.items.iter().find(|i| i.id == "rc/bedouin/aliases").unwrap();
-    assert_eq!(g.action, Action::Upgrade { from: "edited on disk".into(), to: "managed".into() });
+    let g = o
+        .plan
+        .items
+        .iter()
+        .find(|i| i.id == "rc/bedouin/aliases")
+        .unwrap();
+    assert_eq!(
+        g.action,
+        Action::Upgrade {
+            from: "edited on disk".into(),
+            to: "managed".into()
+        }
+    );
     apply_on(&h);
     assert!(read(&h, f).unwrap().contains("ls -alh"));
 }

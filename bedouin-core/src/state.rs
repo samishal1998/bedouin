@@ -160,7 +160,9 @@ impl State {
     /// a broken machine whose state stays wedged, because a no-op step never
     /// runs and so never flips the status to complete.
     pub fn interrupted(&self, id: &str) -> bool {
-        self.items.get(id).is_some_and(|i| i.status == Status::Incomplete)
+        self.items
+            .get(id)
+            .is_some_and(|i| i.status == Status::Incomplete)
     }
 
     pub fn owned_by_bedouin(&self) -> impl Iterator<Item = (&String, &StateItem)> {
@@ -185,8 +187,8 @@ pub fn load(host: &dyn Host, path: &Path) -> Result<State> {
         return Ok(State::empty());
     };
     let text = String::from_utf8(bytes).map_err(|_| corrupt(path, "not valid UTF-8"))?;
-    let state: State =
-        serde_json::from_str(&text).map_err(|e| corrupt(path, &format!("cannot be parsed: {e}")))?;
+    let state: State = serde_json::from_str(&text)
+        .map_err(|e| corrupt(path, &format!("cannot be parsed: {e}")))?;
     if state.schema_version > SCHEMA_VERSION {
         return Err(ConfigError::new(format!(
             "state file is version {} but this build understands {}.\n  \

@@ -56,7 +56,11 @@ pub fn locate(
     let mut tried = Vec::new();
     let mut candidates: Vec<PathBuf> = Vec::new();
     if let Some(p) = explicit {
-        candidates.push(if p.is_absolute() { p.into() } else { cwd.join(p) });
+        candidates.push(if p.is_absolute() {
+            p.into()
+        } else {
+            cwd.join(p)
+        });
     } else if let Some(p) = host.env().get("BEDOUIN_CONFIG") {
         candidates.push(PathBuf::from(p));
     } else {
@@ -191,7 +195,10 @@ fn expand(host: &dyn Host, root: &Path, pattern: &str) -> Result<Vec<PathBuf>> {
     let (dir, file_pat) = match rel.parent() {
         Some(d) if !d.as_os_str().is_empty() => (
             root.join(d),
-            rel.file_name().unwrap_or_default().to_string_lossy().into_owned(),
+            rel.file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned(),
         ),
         _ => (root.to_path_buf(), pattern.to_string()),
     };
@@ -286,8 +293,8 @@ pub fn load(entry: &Path, host: &dyn Host) -> Result<Loaded> {
 
     // 2. read: the entry file, then its includes.
     let entry_text = read_text(host, entry)?;
-    let head: TargetsOnly = serde_yaml_ng::from_str(&entry_text)
-        .map_err(|e| yaml_err(entry, &e))?;
+    let head: TargetsOnly =
+        serde_yaml_ng::from_str(&entry_text).map_err(|e| yaml_err(entry, &e))?;
 
     let mut files = vec![entry.to_path_buf()];
     let mut texts = vec![entry_text];
@@ -312,8 +319,7 @@ pub fn load(entry: &Path, host: &dyn Host) -> Result<Loaded> {
     // the ordering statement in a single place.
     let mut targets: Vec<Target> = Vec::new();
     for (path, text) in files.iter().zip(&texts) {
-        let t: TargetsOnly =
-            serde_yaml_ng::from_str(text).map_err(|e| yaml_err(path, &e))?;
+        let t: TargetsOnly = serde_yaml_ng::from_str(text).map_err(|e| yaml_err(path, &e))?;
         targets.extend(t.targets);
     }
     let vocab = Vocabulary::new(targets).map_err(|e| ConfigError::new(e.to_string()))?;
@@ -487,10 +493,22 @@ mod tests {
     #[test]
     fn includes_expand_in_sorted_order_not_filesystem_order() {
         let h = host_with(&[
-            ("/cfg/bedouin.yaml", "version: 0\nincludes: [conf.d/*.yaml]\n"),
-            ("/cfg/conf.d/30-c.yaml", "packages:\n  - { name: c, from: apt }\n"),
-            ("/cfg/conf.d/10-a.yaml", "packages:\n  - { name: a, from: apt }\n"),
-            ("/cfg/conf.d/20-b.yaml", "packages:\n  - { name: b, from: apt }\n"),
+            (
+                "/cfg/bedouin.yaml",
+                "version: 0\nincludes: [conf.d/*.yaml]\n",
+            ),
+            (
+                "/cfg/conf.d/30-c.yaml",
+                "packages:\n  - { name: c, from: apt }\n",
+            ),
+            (
+                "/cfg/conf.d/10-a.yaml",
+                "packages:\n  - { name: a, from: apt }\n",
+            ),
+            (
+                "/cfg/conf.d/20-b.yaml",
+                "packages:\n  - { name: b, from: apt }\n",
+            ),
         ]);
         let loaded = load(Path::new("/cfg/bedouin.yaml"), &h).unwrap();
         let names: Vec<_> = loaded.raw.packages.iter().map(|p| p.name.clone()).collect();
@@ -500,9 +518,18 @@ mod tests {
     #[test]
     fn the_same_package_in_two_files_is_an_error_naming_both() {
         let h = host_with(&[
-            ("/cfg/bedouin.yaml", "version: 0\nincludes: [conf.d/*.yaml]\n"),
-            ("/cfg/conf.d/10-a.yaml", "packages:\n  - { name: jq, from: apt }\n"),
-            ("/cfg/conf.d/20-b.yaml", "packages:\n  - { name: jq, from: brew }\n"),
+            (
+                "/cfg/bedouin.yaml",
+                "version: 0\nincludes: [conf.d/*.yaml]\n",
+            ),
+            (
+                "/cfg/conf.d/10-a.yaml",
+                "packages:\n  - { name: jq, from: apt }\n",
+            ),
+            (
+                "/cfg/conf.d/20-b.yaml",
+                "packages:\n  - { name: jq, from: brew }\n",
+            ),
         ]);
         let err = load(Path::new("/cfg/bedouin.yaml"), &h).unwrap_err();
         assert!(err.message.contains("declared twice"), "{err}");
@@ -526,27 +553,45 @@ mod tests {
     #[test]
     fn an_unknown_arm_inside_an_include_still_reports_its_own_file() {
         let h = host_with(&[
-            ("/cfg/bedouin.yaml", "version: 0\nincludes: [conf.d/*.yaml]\n"),
+            (
+                "/cfg/bedouin.yaml",
+                "version: 0\nincludes: [conf.d/*.yaml]\n",
+            ),
             (
                 "/cfg/conf.d/10-p.yaml",
                 "packages:\n  - name: fd\n    from: { mcaos: brew, default: apt }\n",
             ),
         ]);
         let err = load(Path::new("/cfg/bedouin.yaml"), &h).unwrap_err();
-        assert!(err.at.as_deref().unwrap_or("").contains("10-p.yaml"), "{err}");
+        assert!(
+            err.at.as_deref().unwrap_or("").contains("10-p.yaml"),
+            "{err}"
+        );
         assert!(err.message.contains("macos"), "{}", err.message);
     }
 
     #[test]
     fn an_include_cannot_climb_out_of_the_config_root() {
         let h = host_with(&[
-            ("/cfg/bedouin.yaml", "version: 0\nincludes: [\"../evil/x.yaml\"]\n"),
+            (
+                "/cfg/bedouin.yaml",
+                "version: 0\nincludes: [\"../evil/x.yaml\"]\n",
+            ),
             // FakeHost is a literal map; the real filesystem resolves `..` for us.
-            ("/cfg/../evil/x.yaml", "packages:\n  - { name: outside, from: apt }\n"),
+            (
+                "/cfg/../evil/x.yaml",
+                "packages:\n  - { name: outside, from: apt }\n",
+            ),
         ]);
         let err = load(Path::new("/cfg/bedouin.yaml"), &h).unwrap_err();
-        assert!(err.message.contains("reaches outside the config root"), "{err}");
-        assert!(contained_in(Path::new("/cfg/conf.d/../a.yaml"), Path::new("/cfg")));
+        assert!(
+            err.message.contains("reaches outside the config root"),
+            "{err}"
+        );
+        assert!(contained_in(
+            Path::new("/cfg/conf.d/../a.yaml"),
+            Path::new("/cfg")
+        ));
     }
 
     #[test]

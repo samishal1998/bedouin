@@ -168,7 +168,10 @@ mod tests {
     fn a_rendered_file_keeps_its_trailing_newline() {
         let f = ctx_facts();
         let vars = BTreeMap::from([("editor".to_string(), "nvim".to_string())]);
-        let c = Context { facts: &f, vars: &vars };
+        let c = Context {
+            facts: &f,
+            vars: &vars,
+        };
         assert_eq!(
             render(&"[core]\n\teditor = {{ vars.editor }}\n".into(), &c).unwrap(),
             "[core]\n\teditor = nvim\n"

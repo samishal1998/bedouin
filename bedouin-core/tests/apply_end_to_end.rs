@@ -62,12 +62,30 @@ fn fresh() -> FakeHost {
         .with_command("id -u", FakeRun::ok("1000"))
         .with_command("sudo -n true", FakeRun::ok(""))
         // What the executor will actually run.
-        .with_command("curl --proto =https --tlsv1.2 -sSfL https://sh.rustup.rs -o /tmp/bedouin-rustup.sh", FakeRun::ok(""))
-        .with_command("sh /tmp/bedouin-rustup.sh -y --no-modify-path", FakeRun::ok("rustup installed"))
-        .with_command("rustup toolchain install 1.80", FakeRun::ok("toolchain 1.80 installed"))
-        .with_command("sudo -n apt-get update", FakeRun::ok("Reading package lists"))
-        .with_command("sudo -n apt-get install -y jq", FakeRun::ok("Setting up jq"))
-        .with_command("cargo install --locked zellij", FakeRun::ok("Installed zellij"))
+        .with_command(
+            "curl --proto =https --tlsv1.2 -sSfL https://sh.rustup.rs -o /tmp/bedouin-rustup.sh",
+            FakeRun::ok(""),
+        )
+        .with_command(
+            "sh /tmp/bedouin-rustup.sh -y --no-modify-path",
+            FakeRun::ok("rustup installed"),
+        )
+        .with_command(
+            "rustup toolchain install 1.80",
+            FakeRun::ok("toolchain 1.80 installed"),
+        )
+        .with_command(
+            "sudo -n apt-get update",
+            FakeRun::ok("Reading package lists"),
+        )
+        .with_command(
+            "sudo -n apt-get install -y jq",
+            FakeRun::ok("Setting up jq"),
+        )
+        .with_command(
+            "cargo install --locked zellij",
+            FakeRun::ok("Installed zellij"),
+        )
 }
 
 fn plan_on(h: &FakeHost) -> run::Outcome {
@@ -157,7 +175,9 @@ fn only_the_steps_that_need_root_are_escalated() {
         ran.iter().any(|c| c == "cargo install --locked zellij"),
         "a per-user manager must not be run as root: {ran:?}"
     );
-    assert!(!ran.iter().any(|c| c.starts_with("sudo") && c.contains("cargo")));
+    assert!(!ran
+        .iter()
+        .any(|c| c.starts_with("sudo") && c.contains("cargo")));
 }
 
 #[test]
@@ -170,7 +190,10 @@ fn what_was_written_is_what_the_config_asked_for() {
 
     let rc = read(&h, "/home/t/.zshrc.d/70-zellij.zsh").expect("the drop-in");
     assert!(rc.contains("zellij setup"));
-    assert!(rc.contains("# >>> bedouin: zellij >>>"), "sentinels present");
+    assert!(
+        rc.contains("# >>> bedouin: zellij >>>"),
+        "sentinels present"
+    );
 
     let path = read(&h, "/home/t/.zshrc.d/00-bedouin-path.zsh").expect("the PATH file");
     assert!(path.contains("export PATH=\"/home/t/.cargo/bin:$PATH\""));
@@ -195,8 +218,7 @@ fn state_records_ownership_versions_and_bin_dirs() {
     assert_eq!(items["language/rust"]["version"], "1.80");
     // The bin directory the step environment is assembled from.
     assert_eq!(
-        items["language/rust"]["bin_dirs"][0],
-        "/home/t/.cargo/bin",
+        items["language/rust"]["bin_dirs"][0], "/home/t/.cargo/bin",
         "without this the cargo step cannot find cargo"
     );
     // The snapshot M4's three-way absorb needs; unreconstructible later.
@@ -233,10 +255,7 @@ fn an_interrupted_step_is_recorded_before_it_runs() {
     // Recording only on success leaves a package bedouin installed looking
     // pre-existing -- permanently un-removable, silently. So the record goes in
     // first, and a failure leaves `incomplete` behind rather than nothing.
-    let h = fresh().with_command(
-        "sudo -n apt-get install -y jq",
-        FakeRun::fails(1, "boom"),
-    );
+    let h = fresh().with_command("sudo -n apt-get install -y jq", FakeRun::fails(1, "boom"));
     apply::apply(
         &plan_on(&h).plan,
         &plan_on(&h).config,
@@ -272,7 +291,11 @@ fn a_run_that_cannot_escalate_refuses_to_start() {
     assert!(e.contains("need root"), "{e}");
     assert!(e.contains("package/jq"), "names the steps: {e}");
     // Nothing ran beyond the read-only fact probes.
-    assert!(!h.ran.borrow().iter().any(|c| c.display().contains("apt-get")));
+    assert!(!h
+        .ran
+        .borrow()
+        .iter()
+        .any(|c| c.display().contains("apt-get")));
 }
 
 #[test]
@@ -281,13 +304,24 @@ fn an_existing_file_is_backed_up_before_it_is_overwritten() {
     // first apply used to destroy the user's own ~/.gitconfig.
     let h = fresh().with_file("/home/t/.gitconfig", "[user]\n\tname = mine\n");
     let before = plan_on(&h);
-    let git = before.plan.items.iter().find(|i| i.name == "~/.gitconfig").unwrap();
-    assert_eq!(git.action, Action::Adopt, "an existing file is adopted, not created");
+    let git = before
+        .plan
+        .items
+        .iter()
+        .find(|i| i.name == "~/.gitconfig")
+        .unwrap();
+    assert_eq!(
+        git.action,
+        Action::Adopt,
+        "an existing file is adopted, not created"
+    );
 
     apply_on(&h);
     let backup = read(&h, "/home/t/.gitconfig.bedouin-bak").expect("the original is kept");
     assert!(backup.contains("name = mine"));
-    assert!(read(&h, "/home/t/.gitconfig").unwrap().contains("editor = nvim"));
+    assert!(read(&h, "/home/t/.gitconfig")
+        .unwrap()
+        .contains("editor = nvim"));
 }
 
 #[test]
@@ -342,7 +376,9 @@ fn removing_a_managed_file_gives_the_user_theirs_back() {
     // and the backup kept -- the user's own content gone in all but name.
     let h = fresh().with_file("/home/t/.gitconfig", "[user]\n\tname = mine\n");
     apply_on(&h);
-    assert!(read(&h, "/home/t/.gitconfig").unwrap().contains("editor = nvim"));
+    assert!(read(&h, "/home/t/.gitconfig")
+        .unwrap()
+        .contains("editor = nvim"));
     assert!(read(&h, "/home/t/.gitconfig.bedouin-bak").is_some());
 
     let h = without_shell_files(h);
@@ -362,12 +398,17 @@ fn removing_a_managed_file_gives_the_user_theirs_back() {
 fn removing_a_block_leaves_the_rest_of_the_users_rc_file_alone() {
     let h = fresh().with_file("/home/t/.zshrc", "export EDITOR=vi\nalias ll='ls -l'\n");
     apply_on(&h);
-    assert!(read(&h, "/home/t/.zshrc").unwrap().contains("bedouin: source"));
+    assert!(read(&h, "/home/t/.zshrc")
+        .unwrap()
+        .contains("bedouin: source"));
 
     let h = without_shell_files(h);
     apply_on(&h);
     let rc = read(&h, "/home/t/.zshrc").unwrap();
-    assert_eq!(rc, "export EDITOR=vi\nalias ll='ls -l'\n", "restored exactly");
+    assert_eq!(
+        rc, "export EDITOR=vi\nalias ll='ls -l'\n",
+        "restored exactly"
+    );
 }
 
 #[test]
@@ -386,7 +427,10 @@ fn a_package_that_was_already_on_the_machine_is_never_removed() {
     );
     let o = plan_on(&h);
     assert!(
-        !o.plan.items.iter().any(|i| i.name == "jq" && i.action == Action::Remove),
+        !o.plan
+            .items
+            .iter()
+            .any(|i| i.name == "jq" && i.action == Action::Remove),
         "a pre-existing package must not be planned for removal"
     );
 }
@@ -420,10 +464,16 @@ packages:
     );
     apply_on(&h);
     let rc = read(&h, "/home/t/.zshrc").unwrap();
-    assert!(rc.contains("# my life's work"), "the user's file survives: {rc}");
+    assert!(
+        rc.contains("# my life's work"),
+        "the user's file survives: {rc}"
+    );
     assert!(rc.contains("export EDITOR=vim"));
     assert!(rc.contains("alias k=kubectl"));
-    assert!(rc.contains("bedouin: source"), "and bedouin's own block too");
+    assert!(
+        rc.contains("bedouin: source"),
+        "and bedouin's own block too"
+    );
 }
 
 #[test]
@@ -445,7 +495,10 @@ packages:
     rc: [{ file: "{{ shell.rc_dir }}/50-tools.zsh", content: "alias r=rg" }]
 "#,
     )
-    .with_command("sudo -n apt-get install -y ripgrep", FakeRun::ok("Setting up ripgrep"));
+    .with_command(
+        "sudo -n apt-get install -y ripgrep",
+        FakeRun::ok("Setting up ripgrep"),
+    );
     let report = apply_on(&h);
     assert!(report.ok(), "{:?}", report.failure);
     let f = read(&h, "/home/t/.zshrc.d/50-tools.zsh").unwrap();
@@ -461,13 +514,25 @@ fn editing_managed_content_actually_takes_effect() {
     // write-once: editing the template printed "No changes" forever.
     let h = fresh();
     apply_on(&h);
-    assert!(read(&h, "/home/t/.gitconfig").unwrap().contains("editor = nvim"));
+    assert!(read(&h, "/home/t/.gitconfig")
+        .unwrap()
+        .contains("editor = nvim"));
 
-    let h = h.with_file("/cfg/bedouin.yaml", &CONFIG.replace("editor: nvim", "editor: helix"));
+    let h = h.with_file(
+        "/cfg/bedouin.yaml",
+        &CONFIG.replace("editor: nvim", "editor: helix"),
+    );
     let o = plan_on(&h);
-    assert_eq!(o.plan.exit_code(), 2, "the edit must be visible:\n{}", o.plan.render(true));
+    assert_eq!(
+        o.plan.exit_code(),
+        2,
+        "the edit must be visible:\n{}",
+        o.plan.render(true)
+    );
     apply_on(&h);
-    assert!(read(&h, "/home/t/.gitconfig").unwrap().contains("editor = helix"));
+    assert!(read(&h, "/home/t/.gitconfig")
+        .unwrap()
+        .contains("editor = helix"));
 }
 
 #[test]
@@ -484,11 +549,14 @@ fn dropping_one_path_entry_does_not_delete_the_others() {
     let f = read(&h, "/home/t/.zshrc.d/00-bedouin-path.zsh").unwrap();
     assert!(f.contains(".cargo/bin") && f.contains(".local/bin"));
 
-    let h = with_config(h, &CONFIG);
+    let h = with_config(h, CONFIG);
     apply_on(&h);
     let f = read(&h, "/home/t/.zshrc.d/00-bedouin-path.zsh")
         .expect("the PATH file must survive dropping one entry");
-    assert!(f.contains(".cargo/bin"), "the surviving entry is still there: {f}");
+    assert!(
+        f.contains(".cargo/bin"),
+        "the surviving entry is still there: {f}"
+    );
     assert!(!f.contains(".local/bin"), "the dropped one is gone: {f}");
     assert_eq!(plan_on(&h).plan.exit_code(), 0);
 }
@@ -503,17 +571,26 @@ fn a_failed_step_does_not_erase_what_state_knew() {
     apply_on(&h);
 
     // Now make the *next* run fail on that same item, by changing its version.
-    let bumped = CONFIG.replace("  - name: jq\n    from: apt\n", "  - name: jq\n    from: apt\n    version: \"1.7\"\n");
-    let h = with_config(h, &bumped)
-        .with_command("sudo -n apt-get install -y jq=1.7", FakeRun::fails(100, "no such version"));
+    let bumped = CONFIG.replace(
+        "  - name: jq\n    from: apt\n",
+        "  - name: jq\n    from: apt\n    version: \"1.7\"\n",
+    );
+    let h = with_config(h, &bumped).with_command(
+        "sudo -n apt-get install -y jq=1.7",
+        FakeRun::fails(100, "no such version"),
+    );
     let o = plan_on(&h);
     apply::apply(&o.plan, &o.config, &o.facts, o.state, &h, &mut |_| {}).unwrap();
 
     let v: serde_json::Value =
-        serde_json::from_str(&read(&h, "/home/t/.local/state/bedouin/state.json").unwrap()).unwrap();
+        serde_json::from_str(&read(&h, "/home/t/.local/state/bedouin/state.json").unwrap())
+            .unwrap();
     let jq = &v["items"]["package/jq"];
     assert_eq!(jq["status"], "incomplete");
-    assert_eq!(jq["method"], "apt", "how it was installed must survive the failure");
+    assert_eq!(
+        jq["method"], "apt",
+        "how it was installed must survive the failure"
+    );
     assert_eq!(jq["owner"], "bedouin", "and so must ownership");
 }
 
@@ -528,9 +605,9 @@ fn a_backup_is_never_overwritten_by_bedouins_own_render() {
 
     // Force a second adopt by clearing state, which is what the tool's own
     // corrupt-state message tells a user to do.
-    h.files
-        .borrow_mut()
-        .remove(std::path::Path::new("/home/t/.local/state/bedouin/state.json"));
+    h.files.borrow_mut().remove(std::path::Path::new(
+        "/home/t/.local/state/bedouin/state.json",
+    ));
     apply_on(&h);
     assert!(
         read(&h, backup).unwrap().contains("name = mine"),
@@ -570,7 +647,10 @@ fn a_removal_whose_uninstaller_fails_does_not_wedge_every_future_run() {
     let h = fresh();
     apply_on(&h);
     let h = with_config(
-        h.with_command("sudo -n apt-get remove -y jq", FakeRun::fails(100, "not installed")),
+        h.with_command(
+            "sudo -n apt-get remove -y jq",
+            FakeRun::fails(100, "not installed"),
+        ),
         &CONFIG.replace("  - name: jq\n    from: apt\n", ""),
     );
     let report = apply_on(&h);
