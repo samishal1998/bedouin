@@ -431,6 +431,15 @@ pub fn resolve(raw: &RawConfig, vocab: &Vocabulary, facts: &Facts) -> Result<Con
         let mut prov = Provenance::new();
         let from_names = r.many(&p.from, "from", &mut prov).map_err(|e| e.in_item(&item))?;
         let from = r.managers(&from_names, "from").map_err(|e| e.in_item(&item))?;
+        // rustup installs toolchains, not packages: `from: rustup` would have
+        // run `rustup toolchain install`, ignoring the package name entirely
+        // and reporting success.
+        if let Some(bad) = from.iter().find(|m| **m == Manager::Rustup) {
+            return Err(ConfigError::new(format!(
+                "`from: {bad}` installs toolchains, not packages\n                   For a Rust toolchain use `languages:`; for a crate use `from: cargo`"
+            ))
+            .in_item(&item));
+        }
         let version = match &p.version {
             Some(v) => Some(r.one(v, "version", &mut prov).map_err(|e| e.in_item(&item))?),
             None => None,

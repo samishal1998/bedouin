@@ -1094,6 +1094,46 @@ Recorded so the document going into M1 is truthful rather than aspirational.
     state map alone, so a half-installed item planned as a no-op and `plan`
     exited 0 claiming the machine matched the config.
 
+## 14b. Deltas from the M1 executor review
+
+The review found 32 confirmed defects, 16 of them data-loss. What changed:
+
+13. **Bedouin owns rc *blocks*, never rc files.** §9 always said so; the code
+    had an `owns_file` flag that made every package `rc:` entry claim its whole
+    file, and the executor then upserted into an empty string. A block aimed at
+    the user's own `~/.zshrc` replaced it with one bedouin block and no backup,
+    and two packages sharing a drop-in file silently lost the first one's block.
+    The flag is gone. An emptied drop-in file is tidied only when it sits inside
+    `shell.rc_dir`.
+14. **The PATH file is one item, not one per entry.** Every `path/{entry}` item
+    recorded the same generated file as its own, so dropping one entry deleted
+    the whole file while the survivors — all `complete` — never rewrote it.
+    §7.4's per-entry lines move to `plan -v`.
+15. **The diff is content-addressed for files, rc blocks and the PATH file.**
+    It compared ids alone, so the hash the executor recorded was never read
+    back and editing a template or a `vars:` value did nothing, forever.
+16. **The intent marker flips `status`; it no longer replaces the record.**
+    §8.3 asks for a flip. Replacing it discarded `method`, `backup`,
+    `owned_files` and `rc_blocks`, so a step that failed left bedouin amnesiac
+    about a package it had installed — permanently unowned.
+17. **Backups append rather than replace the extension** (`init.lua.bedouin-bak`,
+    per §9.1), and an existing backup is never overwritten: a re-adopt was
+    saving Bedouin's own render over the user's only copy.
+18. **The symlink refusal covers every managed write**, not just `files:`.
+    `OsHost::write` renames over the path, which severs a dotfiles-repo symlink.
+19. **Non-UTF-8 is refused rather than decoded.** Reads went through
+    `from_utf8_lossy` and the result was written straight back, turning every
+    stray byte into U+FFFD — in the user's live rc file and in its backup.
+20. **A removal whose uninstaller fails drops the record and warns**, rather
+    than aborting. Stop-on-first-failure plus drop-only-on-success re-ran the
+    same doomed command first on every future apply.
+21. **`from: rustup` is a parse error.** It installs toolchains, not packages,
+    so it ignored the package name and reported success.
+22. **`OsHost::run` drains both pipes concurrently and enforces
+    `Cmd.timeout`.** It read stdout to EOF first, so a step filling the stderr
+    pipe deadlocked with nothing to break it; the timeout was accepted and
+    never armed.
+
 ## 15. Departures from the handoff
 
 The handoff is approved; these are the places this spec knowingly differs.

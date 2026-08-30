@@ -184,24 +184,62 @@ impl Host for OsHost {
             .spawn()
             .map_err(|e| HostError::new(format!("{}: {e}", cmd.display())))?;
 
-        // ponytail: stdout is drained first and stderr after the process ends,
-        // so a step that fills the stderr pipe while producing no stdout can
-        // block. Fine for package managers; give each stream a thread if a
-        // real step ever deadlocks here.
+        // Both pipes are drained concurrently. Reading stdout to EOF first --
+        // as this did -- deadlocks any step that fills the stderr pipe while
+        // producing no stdout, and there is nothing to break the deadlock.
+        let (tx, rx) = std::sync::mpsc::channel::<Line>();
+        let mut pumps = Vec::new();
         if let Some(so) = child.stdout.take() {
-            for line in BufReader::new(so).lines().map_while(std::result::Result::ok) {
-                out(Line::Out(line));
+            let tx = tx.clone();
+            pumps.push(std::thread::spawn(move || {
+                for l in BufReader::new(so).lines().map_while(std::result::Result::ok) {
+                    if tx.send(Line::Out(l)).is_err() {
+                        break;
+                    }
+                }
+            }));
+        }
+        if let Some(se) = child.stderr.take() {
+            let tx = tx.clone();
+            pumps.push(std::thread::spawn(move || {
+                for l in BufReader::new(se).lines().map_while(std::result::Result::ok) {
+                    if tx.send(Line::Err(l)).is_err() {
+                        break;
+                    }
+                }
+            }));
+        }
+        drop(tx);
+
+        let deadline = cmd.timeout.map(|d| std::time::Instant::now() + d);
+        let mut timed_out = false;
+        loop {
+            // Surface output as it arrives -- a twenty-minute build printing
+            // nothing is indistinguishable from a hang.
+            match rx.recv_timeout(std::time::Duration::from_millis(100)) {
+                Ok(line) => out(line),
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            }
+            if deadline.is_some_and(|d| std::time::Instant::now() > d) {
+                let _ = child.kill();
+                timed_out = true;
+                break;
             }
         }
-        let output = child
-            .wait_with_output()
-            .map_err(|e| HostError::new(format!("{}: {e}", cmd.display())))?;
-        for line in String::from_utf8_lossy(&output.stderr).lines() {
-            out(Line::Err(line.to_string()));
+        for line in rx.try_iter() {
+            out(line);
         }
+        for p in pumps {
+            let _ = p.join();
+        }
+
+        let status = child
+            .wait()
+            .map_err(|e| HostError::new(format!("{}: {e}", cmd.display())))?;
         Ok(ExitStatus {
-            code: output.status.code().unwrap_or(-1),
-            timed_out: false,
+            code: status.code().unwrap_or(-1),
+            timed_out,
         })
     }
 

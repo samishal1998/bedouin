@@ -187,10 +187,61 @@ impl Executor<'_> {
             .map_err(|e| (e.to_string(), Vec::new()))
     }
 
+    /// Writing through a symlink puts content somewhere the config does not
+    /// name -- and `OsHost::write` renames over the path, which would silently
+    /// sever a dotfiles-repo symlink.
+    fn refuse_symlink(&self, p: &Path) -> std::result::Result<(), (String, Vec<String>)> {
+        let meta = self
+            .host
+            .symlink_meta(p)
+            .map_err(|e| (e.to_string(), Vec::new()))?;
+        if meta.is_some_and(|m| m.is_symlink) {
+            return Err((
+                format!(
+                    "{} is a symlink; refusing to write through it -- that would \
+                     put content somewhere the config does not name, and replace \
+                     the link with a regular file",
+                    p.display()
+                ),
+                Vec::new(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Read a file that Bedouin is about to rewrite.
+    ///
+    /// Non-UTF-8 is an error rather than a lossy decode: `from_utf8_lossy`
+    /// turns every stray byte into U+FFFD, and the result was written straight
+    /// back -- corrupting the user's live rc file, and corrupting the backup an
+    /// adopt takes of it.
     fn read_text(&self, p: &Path) -> std::result::Result<String, (String, Vec<String>)> {
         match self.host.read(p) {
-            Ok(Some(b)) => Ok(String::from_utf8_lossy(&b).into_owned()),
+            Ok(Some(b)) => String::from_utf8(b).map_err(|_| {
+                (
+                    format!(
+                        "{} is not valid UTF-8. Refusing to rewrite it: decoding \
+                         it would replace those bytes and write the damage back",
+                        p.display()
+                    ),
+                    Vec::new(),
+                )
+            }),
             Ok(None) => Ok(String::new()),
+            Err(e) => Err((e.to_string(), Vec::new())),
+        }
+    }
+
+    /// Read a file that must exist. Used on the restore path, where treating a
+    /// missing backup as empty would write a zero-byte file over the user's data.
+    fn read_existing(&self, p: &Path) -> std::result::Result<String, (String, Vec<String>)> {
+        match self.host.read(p) {
+            Ok(Some(b)) => String::from_utf8(b)
+                .map_err(|_| (format!("{} is not valid UTF-8", p.display()), Vec::new())),
+            Ok(None) => Err((
+                format!("{} has gone missing, so there is nothing to restore", p.display()),
+                Vec::new(),
+            )),
             Err(e) => Err((e.to_string(), Vec::new())),
         }
     }
@@ -216,7 +267,22 @@ impl Executor<'_> {
                     if let Some(m) = prev.method.as_deref().and_then(Manager::parse) {
                         let mut cmd = self.escalate(recipe::remove(m, &item.name));
                         cmd.env = step_env(&self.state, self.facts);
-                        self.run(&cmd)?;
+                        // A package already gone by other means must not wedge
+                        // every future apply: stop-on-first-failure plus "drop
+                        // the entry only on success" would rerun the same
+                        // doomed command forever, and nothing after it would
+                        // ever run again.
+                        if let Err((msg, tail)) = self.run(&cmd) {
+                            (self.out)(Line::Err(format!(
+                                "could not uninstall {}: {msg}. Dropping bedouin's \
+                                 record of it -- the package, if still present, is \
+                                 now yours to remove",
+                                item.name
+                            )));
+                            for l in tail {
+                                (self.out)(Line::Err(l));
+                            }
+                        }
                     }
                 }
 
@@ -230,7 +296,18 @@ impl Executor<'_> {
                     let existing = self.read_text(&path)?;
                     let cleaned = writers::remove_block(&existing, &block.marker)
                         .map_err(|e| (e.to_string(), Vec::new()))?;
-                    self.write_text(&path, &cleaned.text, 0o644)?;
+                    // A drop-in file that is now empty is litter Bedouin made,
+                    // so tidy it -- but only inside the drop-in directory. The
+                    // same rule applied to `~/.zshrc` would delete a user's own
+                    // file for the crime of being blank.
+                    if cleaned.text.trim().is_empty() && path.starts_with(&self.facts.shell.rc_dir)
+                    {
+                        self.host
+                            .remove(&path)
+                            .map_err(|e| (e.to_string(), Vec::new()))?;
+                    } else {
+                        self.write_text(&path, &cleaned.text, 0o644)?;
+                    }
                 }
 
                 // Files Bedouin created outright.
@@ -247,7 +324,7 @@ impl Executor<'_> {
                 // restore -- deleting the file and keeping the backup, which is
                 // the user's own content lost in all but name.
                 if let (Some(backup), Some(dest)) = (&prev.backup, prev.owned_files.first()) {
-                    let saved = self.read_text(Path::new(backup))?;
+                    let saved = self.read_existing(Path::new(backup))?;
                     let mode = prev
                         .mode
                         .as_deref()
@@ -332,88 +409,76 @@ impl Executor<'_> {
                 )
                 .map_err(|e| (e.to_string(), Vec::new()))?;
 
-                if let Some(meta) = self
+                self.refuse_symlink(dest)?;
+                if self
                     .host
                     .symlink_meta(dest)
                     .map_err(|e| (e.to_string(), Vec::new()))?
+                    .is_some()
                 {
-                    // Writing through a symlink means writing somewhere the
-                    // config does not name.
-                    if meta.is_symlink {
-                        return Err((
-                            format!(
-                                "{} is a symlink; refusing to write through it -- \
-                                 that would put content somewhere the config does not name",
-                                dest.display()
-                            ),
-                            Vec::new(),
-                        ));
-                    }
                     if *action == Action::Adopt {
-                        // The user's file was here first. Keep it.
-                        let backup = dest.with_extension("bedouin-bak");
-                        let existing = self.read_text(dest)?;
-                        self.write_text(&backup, &existing, *mode)?;
+                        // `with_extension` REPLACES the extension, so
+                        // `init.lua` backed up to `init.bedouin-bak` and two
+                        // managed files sharing a stem collided on one backup.
+                        let backup = PathBuf::from(format!("{}.bedouin-bak", dest.display()));
+                        // Never overwrite a backup that already exists: on a
+                        // re-adopt the "existing" content is bedouin's own
+                        // render, and saving that over the real backup destroys
+                        // the only copy of the user's file.
+                        let already = self
+                            .host
+                            .symlink_meta(&backup)
+                            .map_err(|e| (e.to_string(), Vec::new()))?
+                            .is_some();
+                        if !already {
+                            let existing = self.read_text(dest)?;
+                            self.write_text(&backup, &existing, *mode)?;
+                        }
                         rec.backup = Some(backup.display().to_string());
                     }
                 }
                 self.write_text(dest, &rendered, *mode)?;
                 rec.owned_files = vec![dest.display().to_string()];
-                rec.hash = Some(digest(&rendered));
+                rec.hash = Some(writers::digest(&rendered));
                 // Kept so M4's three-way absorb has an original to compare
                 // against; unreconstructible later.
                 rec.render_snapshot = Some(rendered);
                 rec.mode = Some(format!("{mode:o}"));
             }
 
-            (_, Payload::RcBlock { file, marker, content, owns_file }) => {
-                let existing = if *owns_file {
-                    // A drop-in file is wholly Bedouin's; the user's rc file is
-                    // not, so only there does existing content survive.
-                    String::new()
-                } else {
-                    self.read_text(file)?
-                };
+            (_, Payload::RcBlock { file, marker, content }) => {
+                // ALWAYS read what is there. Writing a drop-in from an empty
+                // base truncated whatever the path pointed at: an rc block
+                // aimed at the user's own ~/.zshrc replaced it with a single
+                // bedouin block and no backup, and two packages sharing one
+                // drop-in file silently lost the first one's block. §9 owns the
+                // *block*, never the file.
+                self.refuse_symlink(file)?;
+                let existing = self.read_text(file)?;
                 let u = writers::upsert_block(&existing, marker, content)
                     .map_err(|e| (e.to_string(), Vec::new()))?;
                 self.write_text(file, &u.text, 0o644)?;
                 rec.rc_blocks = vec![state::RcRecord {
                     file: file.display().to_string(),
                     marker: marker.clone(),
-                    hash: digest(content),
+                    hash: writers::digest(content),
                     superseded: u.superseded,
                 }];
-                if *owns_file {
-                    rec.owned_files = vec![file.display().to_string()];
-                }
             }
 
             (_, Payload::PathFile { file, entries }) => {
+                self.refuse_symlink(file)?;
                 let text = writers::path_file(entries, self.cfg.shell);
                 self.write_text(file, &text, 0o644)?;
                 rec.path = entries.clone();
                 rec.owned_files = vec![file.display().to_string()];
-                rec.hash = Some(digest(&text));
+                rec.hash = Some(writers::digest(&text));
             }
 
             (_, Payload::None) => {}
         }
         Ok(rec)
     }
-}
-
-/// A content hash. Not cryptographic -- it answers "did this change", which is
-/// all §9's drift check asks of it.
-//
-// ponytail: FNV-1a to avoid a sha2 dependency in a zero-dependency binary.
-// Swap for SHA-256 if state files ever need to be compared across machines.
-fn digest(s: &str) -> String {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in s.as_bytes() {
-        h ^= u64::from(*b);
-        h = h.wrapping_mul(0x1000_0000_01b3);
-    }
-    format!("fnv1a:{h:016x}")
 }
 
 /// Execute a plan.
@@ -491,9 +556,18 @@ pub fn apply(
     for (i, item) in changes.iter().enumerate() {
         // Intent first: if the run dies here, the record says so.
         if item.action != Action::Remove {
-            let mut pending = StateItem::new(item.kind, Owner::Bedouin);
+            // Flip the status on whatever is already recorded. Replacing the
+            // record wholesale discarded `method`, `backup`, `owned_files` and
+            // `rc_blocks`, so a step that then failed left bedouin amnesiac
+            // about a package it had installed -- permanently unowned, and its
+            // backup unreachable.
+            let pending = ex
+                .state
+                .items
+                .entry(item.id.clone())
+                .or_insert_with(|| StateItem::new(item.kind, Owner::Bedouin));
             pending.status = Status::Incomplete;
-            ex.state.items.insert(item.id.clone(), pending);
+            pending.owner = Owner::Bedouin;
             ex.flush()?;
         }
 
@@ -502,6 +576,13 @@ pub fn apply(
                 if item.action == Action::Remove {
                     ex.state.items.remove(&item.id);
                 } else {
+                    // Carry forward the backup an earlier adopt recorded: a
+                    // later rewrite does not take a new one, and losing the
+                    // pointer strands the user's original file.
+                    let mut rec = rec;
+                    if rec.backup.is_none() {
+                        rec.backup = ex.state.items.get(&item.id).and_then(|p| p.backup.clone());
+                    }
                     ex.state.items.insert(item.id.clone(), rec);
                 }
                 ex.flush()?;

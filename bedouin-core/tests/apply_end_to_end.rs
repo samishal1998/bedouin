@@ -390,3 +390,244 @@ fn a_package_that_was_already_on_the_machine_is_never_removed() {
         "a pre-existing package must not be planned for removal"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Regressions from the M1 executor review. Sixteen of its findings were
+// data-loss; these are the ones that destroyed something a user cannot get
+// back, or left a machine no re-run could fix.
+// ---------------------------------------------------------------------------
+
+fn with_config(h: FakeHost, cfg: &str) -> FakeHost {
+    h.with_file("/cfg/bedouin.yaml", cfg)
+}
+
+#[test]
+fn an_rc_block_never_truncates_the_file_it_writes_into() {
+    // The worst bug in the milestone. Every package rc block was planned as
+    // "bedouin owns this whole file", and the executor then upserted into an
+    // EMPTY string -- so a block aimed at the user's own ~/.zshrc replaced it
+    // with a single bedouin block, no backup, and `apply` reported success.
+    let h = with_config(
+        fresh().with_file("/home/t/.zshrc", "# my life's work\nexport EDITOR=vim\n"),
+        r#"
+version: 0
+shell: zsh
+packages:
+  - name: jq
+    from: apt
+    rc: [{ file: "{{ home }}/.zshrc", content: "alias k=kubectl" }]
+"#,
+    );
+    apply_on(&h);
+    let rc = read(&h, "/home/t/.zshrc").unwrap();
+    assert!(rc.contains("# my life's work"), "the user's file survives: {rc}");
+    assert!(rc.contains("export EDITOR=vim"));
+    assert!(rc.contains("alias k=kubectl"));
+    assert!(rc.contains("bedouin: source"), "and bedouin's own block too");
+}
+
+#[test]
+fn two_packages_may_share_one_drop_in_file() {
+    // The documented `{{ shell.rc_dir }}/...` pattern, just shared. Both items
+    // believed they owned the whole file, so the first package's block was
+    // silently overwritten and `plan` reported convergence forever.
+    let h = with_config(
+        fresh(),
+        r#"
+version: 0
+shell: zsh
+packages:
+  - name: jq
+    from: apt
+    rc: [{ file: "{{ shell.rc_dir }}/50-tools.zsh", content: "alias j=jq" }]
+  - name: ripgrep
+    from: apt
+    rc: [{ file: "{{ shell.rc_dir }}/50-tools.zsh", content: "alias r=rg" }]
+"#,
+    )
+    .with_command("sudo -n apt-get install -y ripgrep", FakeRun::ok("Setting up ripgrep"));
+    let report = apply_on(&h);
+    assert!(report.ok(), "{:?}", report.failure);
+    let f = read(&h, "/home/t/.zshrc.d/50-tools.zsh").unwrap();
+    assert!(f.contains("alias j=jq"), "first package's block: {f}");
+    assert!(f.contains("alias r=rg"), "second package's block: {f}");
+    assert_eq!(plan_on(&h).plan.exit_code(), 0);
+}
+
+#[test]
+fn editing_managed_content_actually_takes_effect() {
+    // The diff asked only whether an id was in state, so the hash the executor
+    // recorded was never read back. Every managed file and rc block was
+    // write-once: editing the template printed "No changes" forever.
+    let h = fresh();
+    apply_on(&h);
+    assert!(read(&h, "/home/t/.gitconfig").unwrap().contains("editor = nvim"));
+
+    let h = h.with_file("/cfg/bedouin.yaml", &CONFIG.replace("editor: nvim", "editor: helix"));
+    let o = plan_on(&h);
+    assert_eq!(o.plan.exit_code(), 2, "the edit must be visible:\n{}", o.plan.render(true));
+    apply_on(&h);
+    assert!(read(&h, "/home/t/.gitconfig").unwrap().contains("editor = helix"));
+}
+
+#[test]
+fn dropping_one_path_entry_does_not_delete_the_others() {
+    // Each `path/{entry}` item recorded the same shared generated file as its
+    // own, so removing one entry deleted the whole file -- and the survivors
+    // were all `complete` in state, so nothing ever rewrote it.
+    let two = CONFIG.replace(
+        "    path: [\"{{ home }}/.cargo/bin\"]",
+        "    path: [\"{{ home }}/.cargo/bin\", \"{{ home }}/.local/bin\"]",
+    );
+    let h = with_config(fresh(), &two);
+    apply_on(&h);
+    let f = read(&h, "/home/t/.zshrc.d/00-bedouin-path.zsh").unwrap();
+    assert!(f.contains(".cargo/bin") && f.contains(".local/bin"));
+
+    let h = with_config(h, &CONFIG);
+    apply_on(&h);
+    let f = read(&h, "/home/t/.zshrc.d/00-bedouin-path.zsh")
+        .expect("the PATH file must survive dropping one entry");
+    assert!(f.contains(".cargo/bin"), "the surviving entry is still there: {f}");
+    assert!(!f.contains(".local/bin"), "the dropped one is gone: {f}");
+    assert_eq!(plan_on(&h).plan.exit_code(), 0);
+}
+
+#[test]
+fn a_failed_step_does_not_erase_what_state_knew() {
+    // The intent marker replaced the whole record instead of flipping its
+    // status, discarding `method`, `backup` and `owned_files`. A package
+    // bedouin installed then became permanently unowned: dropping it from the
+    // config ran no uninstaller.
+    let h = fresh();
+    apply_on(&h);
+
+    // Now make the *next* run fail on that same item, by changing its version.
+    let bumped = CONFIG.replace("  - name: jq\n    from: apt\n", "  - name: jq\n    from: apt\n    version: \"1.7\"\n");
+    let h = with_config(h, &bumped)
+        .with_command("sudo -n apt-get install -y jq=1.7", FakeRun::fails(100, "no such version"));
+    let o = plan_on(&h);
+    apply::apply(&o.plan, &o.config, &o.facts, o.state, &h, &mut |_| {}).unwrap();
+
+    let v: serde_json::Value =
+        serde_json::from_str(&read(&h, "/home/t/.local/state/bedouin/state.json").unwrap()).unwrap();
+    let jq = &v["items"]["package/jq"];
+    assert_eq!(jq["status"], "incomplete");
+    assert_eq!(jq["method"], "apt", "how it was installed must survive the failure");
+    assert_eq!(jq["owner"], "bedouin", "and so must ownership");
+}
+
+#[test]
+fn a_backup_is_never_overwritten_by_bedouins_own_render() {
+    // A re-adopt copied bedouin's rendered content over the real backup,
+    // destroying the only copy of the user's file.
+    let h = fresh().with_file("/home/t/.gitconfig", "[user]\n\tname = mine\n");
+    apply_on(&h);
+    let backup = "/home/t/.gitconfig.bedouin-bak";
+    assert!(read(&h, backup).unwrap().contains("name = mine"));
+
+    // Force a second adopt by clearing state, which is what the tool's own
+    // corrupt-state message tells a user to do.
+    h.files
+        .borrow_mut()
+        .remove(std::path::Path::new("/home/t/.local/state/bedouin/state.json"));
+    apply_on(&h);
+    assert!(
+        read(&h, backup).unwrap().contains("name = mine"),
+        "the user's original must still be the thing in the backup"
+    );
+}
+
+#[test]
+fn the_backup_path_appends_rather_than_replacing_the_extension() {
+    // `with_extension` turned `init.lua` into `init.bedouin-bak`, so two
+    // managed files in one directory sharing a stem collided on one backup.
+    let h = with_config(
+        fresh()
+            .with_file("/cfg/templates/a.j2", "A\n")
+            .with_file("/home/t/.config/x/init.lua", "the user's lua\n"),
+        r#"
+version: 0
+shell: zsh
+packages: [{ name: jq, from: apt }]
+files:
+  - src: templates/a.j2
+    dest: ~/.config/x/init.lua
+"#,
+    );
+    apply_on(&h);
+    assert_eq!(
+        read(&h, "/home/t/.config/x/init.lua.bedouin-bak").as_deref(),
+        Some("the user's lua\n")
+    );
+}
+
+#[test]
+fn a_removal_whose_uninstaller_fails_does_not_wedge_every_future_run() {
+    // Stop-on-first-failure plus "drop the record only on success" meant the
+    // same doomed command ran first on every future apply, and nothing after it
+    // ever executed again.
+    let h = fresh();
+    apply_on(&h);
+    let h = with_config(
+        h.with_command("sudo -n apt-get remove -y jq", FakeRun::fails(100, "not installed")),
+        &CONFIG.replace("  - name: jq\n    from: apt\n", ""),
+    );
+    let report = apply_on(&h);
+    assert!(report.ok(), "the run must continue: {:?}", report.failure);
+    assert_eq!(plan_on(&h).plan.exit_code(), 0, "and converge");
+}
+
+#[test]
+fn rc_and_path_writes_refuse_a_symlink_too() {
+    // The refusal existed only for `files:`, and OsHost::write renames over the
+    // path -- so a ~/.zshrc symlinked into a dotfiles repo was silently severed.
+    let h = fresh();
+    h.symlinks
+        .borrow_mut()
+        .insert("/home/t/.zshrc".into(), "/repo/zshrc".into());
+    let o = plan_on(&h);
+    let report = apply::apply(&o.plan, &o.config, &o.facts, o.state, &h, &mut |_| {}).unwrap();
+    let f = report.failure.as_ref().expect("must refuse");
+    assert!(f.message.contains("symlink"), "{}", f.message);
+}
+
+#[test]
+fn a_file_that_is_not_utf8_is_refused_rather_than_mangled() {
+    // Every read went through `from_utf8_lossy` and the result was written
+    // straight back, replacing each stray byte with U+FFFD.
+    let h = fresh();
+    h.files
+        .borrow_mut()
+        .insert("/home/t/.zshrc".into(), vec![0xff, 0xfe, b'\n']);
+    let o = plan_on(&h);
+    let report = apply::apply(&o.plan, &o.config, &o.facts, o.state, &h, &mut |_| {}).unwrap();
+    let f = report.failure.as_ref().expect("must refuse");
+    assert!(f.message.contains("UTF-8"), "{}", f.message);
+    assert_eq!(
+        h.files.borrow()[std::path::Path::new("/home/t/.zshrc")],
+        vec![0xff, 0xfe, b'\n'],
+        "and leave the bytes alone"
+    );
+}
+
+#[test]
+fn from_rustup_is_refused_rather_than_installing_a_toolchain() {
+    // `recipe::install(Rustup, ..)` ignores the package name entirely, so
+    // `from: rustup` installed the Rust toolchain in place of whatever the
+    // config asked for and reported success.
+    let h = with_config(
+        fresh(),
+        "version: 0\nshell: zsh\npackages: [{ name: ripgrep, from: rustup }]\n",
+    );
+    let e = run::plan_for(
+        &h,
+        Some(Path::new("/cfg/bedouin.yaml")),
+        Path::new("/cfg"),
+        Os::Linux,
+        Arch::X86_64,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(e.contains("toolchains, not packages"), "{e}");
+}

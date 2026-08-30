@@ -83,15 +83,13 @@ pub enum Payload {
         dest: PathBuf,
         mode: u32,
     },
-    /// A drop-in file wholly owned by Bedouin, or the block Bedouin writes
-    /// into the user's own rc file.
+    /// A block Bedouin owns inside a file. The file may be a drop-in Bedouin
+    /// created or the user's own rc file -- either way Bedouin owns the block
+    /// and never the file, which is what §9 actually says.
     RcBlock {
         file: PathBuf,
         marker: String,
         content: String,
-        /// True when Bedouin owns the whole file, false when it owns a block
-        /// inside a file that is the user's.
-        owns_file: bool,
     },
     PathFile {
         file: PathBuf,
@@ -207,6 +205,16 @@ impl Plan {
     }
 
     fn push_verbose(&self, out: &mut String) {
+        for i in &self.items {
+            if let crate::plan::Payload::PathFile { entries, .. } = &i.payload {
+                if i.action.is_change() {
+                    out.push_str("\nPATH entries:\n");
+                    for e in entries {
+                        out.push_str(&format!("  {e}\n"));
+                    }
+                }
+            }
+        }
         if !self.pruned.is_empty() {
             out.push_str("\nNot on this machine:\n");
             for p in &self.pruned {
@@ -546,19 +554,42 @@ pub fn build(
             .symlink_meta(&dest)
             .map_err(|e| ConfigError::new(e.to_string()))?
             .is_some();
+
+        // Render now, so the plan can tell whether the file would actually
+        // change. Comparing ids alone made every managed file write-once:
+        // editing the template or a `vars:` value printed "No changes" forever.
+        let template = String::from_utf8(
+            host.read(&src)
+                .map_err(|e| ConfigError::new(e.to_string()))?
+                .unwrap_or_default(),
+        )
+        .map_err(|_| ConfigError::new(format!("{} is not valid UTF-8", src.display())))?;
+        let want = crate::writers::digest(
+            &crate::render::render(
+                &crate::value::Tmpl(template),
+                &crate::render::Context {
+                    facts,
+                    vars: &cfg.vars,
+                },
+            )
+            .map_err(|e| ConfigError::new(e.to_string()))?,
+        );
+
         items.push(Item {
             id: id.clone(),
             kind: ItemKind::File,
             name: display_home(&dest, facts),
-            action: if state.done(&id).is_some() {
-                Action::NoOp
-            } else if exists {
+            action: match state.done(&id) {
+                Some(s) if s.hash.as_deref() == Some(want.as_str()) => Action::NoOp,
+                Some(_) => Action::Upgrade {
+                    from: "previous".into(),
+                    to: "current".into(),
+                },
                 // §9.1: back the user's file up before the first write. A
                 // create and an adopt are different work, so they are
                 // different actions.
-                Action::Adopt
-            } else {
-                Action::Create
+                None if exists => Action::Adopt,
+                None => Action::Create,
             },
             detail: format!("from {}", f.src),
             needs_root: !dest.starts_with(&facts.home),
@@ -629,14 +660,22 @@ pub fn build(
             // fish sources conf.d natively and needs no block.
             if cfg.shell != Shell::Fish {
                 let id = "rc/bedouin/source".to_string();
+                let snippet =
+                    crate::writers::source_dir_snippet(&dir.display().to_string(), cfg.shell);
+                let want = crate::writers::digest(&snippet);
                 items.push(Item {
                     id: id.clone(),
                     kind: ItemKind::Rc,
                     name: display_home(&facts.shell.rc_file, facts),
-                    action: if state.done(&id).is_some() {
-                        Action::NoOp
-                    } else {
-                        Action::Create
+                    action: match state.done(&id) {
+                        Some(s) if s.rc_blocks.first().map(|b| b.hash.as_str()) == Some(want.as_str()) => {
+                            Action::NoOp
+                        }
+                        Some(_) => Action::Upgrade {
+                            from: "previous".into(),
+                            to: "current".into(),
+                        },
+                        None => Action::Create,
                     },
                     detail: format!("managed block: source {}", display_home(dir, facts)),
                     needs_root: false,
@@ -648,9 +687,6 @@ pub fn build(
                             &dir.display().to_string(),
                             cfg.shell,
                         ),
-                        // The user's own rc file: Bedouin owns a block in it,
-                        // never the whole thing.
-                        owns_file: false,
                     },
                 });
                 declared_ids.insert(id);
@@ -667,14 +703,23 @@ pub fn build(
                 // The id carries the owning package: two packages may write
                 // files of the same basename.
                 let id = format!("rc/{}/{base}", p.name);
+                let want = crate::writers::digest(&block.content);
                 items.push(Item {
                     id: id.clone(),
                     kind: ItemKind::Rc,
                     name: display_home(&file, facts),
-                    action: if state.done(&id).is_some() {
-                        Action::NoOp
-                    } else {
-                        Action::Create
+                    action: match state.done(&id) {
+                        // Content-addressed, so editing `content:` in the
+                        // config actually takes effect. Presence alone made
+                        // every managed block write-once.
+                        Some(s) if s.rc_blocks.first().map(|b| b.hash.as_str()) == Some(want.as_str()) => {
+                            Action::NoOp
+                        }
+                        Some(_) => Action::Upgrade {
+                            from: "previous".into(),
+                            to: "current".into(),
+                        },
+                        None => Action::Create,
                     },
                     detail: format!("owned by {}", p.name),
                     needs_root: false,
@@ -683,7 +728,6 @@ pub fn build(
                         file: file.clone(),
                         marker: p.name.clone(),
                         content: block.content.clone(),
-                        owns_file: true,
                     },
                 });
                 declared_ids.insert(id);
@@ -702,34 +746,52 @@ pub fn build(
         }
         let all_path_entries: Vec<String> =
             path_entries.iter().map(|(k, _)| k.clone()).collect();
-        for (entry, owner) in path_entries {
-            let id = format!("path/{entry}");
+        if !all_path_entries.is_empty() {
+            let file = facts
+                .shell
+                .rc_dir
+                .join(format!("00-bedouin-path.{}", facts.shell.rc_ext()));
+            let id = format!("path/{}", file.display());
+            let want = crate::writers::digest(&crate::writers::path_file(
+                &all_path_entries,
+                cfg.shell,
+            ));
+            let owners: Vec<&str> = {
+                let mut o: Vec<&str> = path_entries.iter().map(|(_, p)| p.as_str()).collect();
+                o.dedup();
+                o
+            };
             items.push(Item {
                 id: id.clone(),
                 kind: ItemKind::Path,
-                name: display_home(std::path::Path::new(&entry), facts),
-                action: if state.done(&id).is_some() {
-                    Action::NoOp
-                } else {
-                    Action::Create
+                name: display_home(&file, facts),
+                action: match state.done(&id) {
+                    Some(s) if s.hash.as_deref() == Some(want.as_str()) => Action::NoOp,
+                    Some(_) => Action::Upgrade {
+                        from: "previous".into(),
+                        to: "current".into(),
+                    },
+                    None => Action::Create,
                 },
-                detail: format!("owned by {owner}"),
+                detail: format!(
+                    "{} {} from {}",
+                    all_path_entries.len(),
+                    if all_path_entries.len() == 1 { "entry" } else { "entries" },
+                    owners.join(", ")
+                ),
                 needs_root: false,
                 arms: BTreeMap::new(),
                 payload: Payload::PathFile {
-                    file: facts
-                        .shell
-                        .rc_dir
-                        .join(format!("00-bedouin-path.{}", facts.shell.rc_ext())),
-                    entries: all_path_entries.clone(),
+                    file,
+                    entries: all_path_entries,
                 },
             });
             declared_ids.insert(id);
         }
     }
 
-    // ---- one item, one id (§7.2): two nodes sharing a state key would
-    // fight over it, and one of the two would become unowned and unremovable.
+    // ---- one item, one id (§7.2): two nodes sharing a state key would fight
+    // over it, and one of the two would become unowned and unremovable.
     {
         let mut by_id: BTreeMap<&str, &str> = BTreeMap::new();
         for i in &items {

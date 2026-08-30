@@ -7,6 +7,21 @@
 
 use crate::facts::Shell;
 
+/// A content hash. Not cryptographic -- it answers "did this change", which is
+/// all the drift check asks of it. Lives here so the planner and the executor
+/// cannot disagree about whether something needs rewriting.
+//
+// ponytail: FNV-1a keeps the binary dependency-free. Swap for SHA-256 if state
+// files ever need comparing across machines.
+pub fn digest(s: &str) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in s.as_bytes() {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(0x1000_0000_01b3);
+    }
+    format!("fnv1a:{h:016x}")
+}
+
 pub fn start_marker(id: &str) -> String {
     format!("# >>> bedouin: {id} >>>")
 }

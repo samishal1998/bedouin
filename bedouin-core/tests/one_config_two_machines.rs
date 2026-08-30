@@ -246,10 +246,22 @@ fn a_template_outside_the_config_root_is_refused() {
 #[test]
 fn paths_and_rc_files_render_against_resolved_facts() {
     let linux = plan_on(Os::Linux, Arch::X86_64);
-    assert!(
-        named(&linux, "~/.cargo/bin").is_some(),
-        "the PATH entry rendered from {{{{ home }}}}"
-    );
+    // One item for the one generated file; the entries it carries are what
+    // rendered. Per-entry items each claimed the same shared file, so dropping
+    // one entry deleted the whole thing.
+    let path_item = linux
+        .plan
+        .items
+        .iter()
+        .find(|i| i.kind == bedouin_core::state::ItemKind::Path)
+        .expect("a PATH item");
+    assert_eq!(path_item.name, "~/.zshrc.d/00-bedouin-path.zsh");
+    match &path_item.payload {
+        bedouin_core::plan::Payload::PathFile { entries, .. } => {
+            assert_eq!(entries, &["/home/t/.cargo/bin".to_string()], "rendered from {{{{ home }}}}")
+        }
+        other => panic!("expected a PathFile payload, got {other:?}"),
+    }
     assert!(named(&linux, "~/.gitconfig").is_some(), "the managed file");
     assert_eq!(linux.config.vars.get("editor").map(String::as_str), Some("nvim"));
 }
@@ -297,12 +309,19 @@ fn an_interrupted_item_re_diffs_as_needing_work() {
     // half-install from a whole one. A no-op step never runs, so it would never
     // flip the status either: the item would stay wedged incomplete for good.
     const STATE: &str = "/home/t/.local/state/bedouin/state.json";
+    // The diff is content-addressed, so a completed record only reads as done
+    // when its hash matches what the config now renders. Compute it rather than
+    // pasting one in: a stale literal here would silently stop testing drift.
+    let path_hash = bedouin_core::writers::digest(&bedouin_core::writers::path_file(
+        &["/home/t/.cargo/bin".to_string()],
+        bedouin_core::facts::Shell::Zsh,
+    ));
     let state = |status: &str| {
         format!(
             r#"{{"schema_version":1,"items":{{
                  "package/zellij":{{"kind":"package","owner":"bedouin","status":"{status}","version":"latest"}},
                  "language/rust":{{"kind":"language","owner":"bedouin","status":"{status}"}},
-                 "path//home/t/.cargo/bin":{{"kind":"path","owner":"bedouin","status":"{status}"}}
+                 "path//home/t/.zshrc.d/00-bedouin-path.zsh":{{"kind":"path","owner":"bedouin","status":"{status}","hash":"{path_hash}"}}
                }}}}"#
         )
     };
@@ -323,7 +342,7 @@ fn an_interrupted_item_re_diffs_as_needing_work() {
     };
 
     let resumed = plan("incomplete");
-    for name in ["zellij", "rust", "~/.cargo/bin"] {
+    for name in ["zellij", "rust", "~/.zshrc.d/00-bedouin-path.zsh"] {
         assert_eq!(
             named(&resumed, name).map(|i| i.action.clone()),
             Some(Action::Create),
@@ -335,7 +354,7 @@ fn an_interrupted_item_re_diffs_as_needing_work() {
     // The same state, completed, is the no-op it should be -- otherwise the
     // check above would pass for the wrong reason.
     let done = plan("complete");
-    for name in ["zellij", "rust", "~/.cargo/bin"] {
+    for name in ["zellij", "rust", "~/.zshrc.d/00-bedouin-path.zsh"] {
         assert_eq!(
             named(&done, name).map(|i| i.action.clone()),
             Some(Action::NoOp),
