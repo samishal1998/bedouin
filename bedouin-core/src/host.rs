@@ -171,7 +171,23 @@ impl Host for OsHost {
             .argv
             .split_first()
             .ok_or_else(|| HostError::new("empty command"))?;
-        let mut c = Command::new(program);
+
+        // Resolve the program against the PATH bedouin BUILT, not the one this
+        // process happens to have. `Command::new` searches the caller's
+        // environment, so a toolchain that is only on the constructed path --
+        // which is the entire point of constructing one -- was not found.
+        let resolved = if program.contains('/') {
+            PathBuf::from(program)
+        } else {
+            let search: Vec<PathBuf> = cmd
+                .env
+                .get("PATH")
+                .map(|p| p.split(':').map(PathBuf::from).collect())
+                .unwrap_or_default();
+            self.which(program, &search)
+                .unwrap_or_else(|| PathBuf::from(program))
+        };
+        let mut c = Command::new(&resolved);
         c.args(args)
             .env_clear()
             .envs(&cmd.env)

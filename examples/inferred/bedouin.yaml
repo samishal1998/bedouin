@@ -1,0 +1,192 @@
+# Inferred from github.com/samishal1998/dotfiles -- the Ansible roles, the
+# chezmoi templates, and what is actually installed on ubuntu-8gb-hel1-2.
+version: 0
+shell: zsh
+
+# chezmoi asked `is_work` once and baked it into .chezmoi.toml. Bedouin asks
+# the machine instead, so the same config file covers both.
+targets:
+  - name: work
+    match: { env: { BEDOUIN_PROFILE: work } }
+  - name: server
+    match: { hostname: ubuntu-8gb-hel1-2 }
+
+vars:
+  editor: nvim
+  aws_region: us-east-1
+  aws_profile: { work: work, default: personal }
+
+# From 10-aliases.zsh, with 60-linux.zsh overriding ls/ll/la on Linux --
+# alias VALUES take arms, so the two files collapse into one block.
+aliases:
+  ll: { linux: ls -alF, default: ls -la }
+  la: ls -A
+  l: ls -CF
+  ls: { linux: ls --color=auto, default: ls -G }
+  grep: grep --color=auto
+  "..": cd ..
+  "...": cd ../..
+  "....": cd ../../..
+  cp: cp -i
+  mv: mv -i
+  rm: rm -i
+  mkdir: mkdir -p
+  lzg: lazygit
+  lzd: lazydocker
+  y: yazi
+  dev: cd ~/dev
+  dotfiles: cd ~/projects/dotfiles
+  # 60-linux.zsh only
+  ports: ss -tlnp
+  myip: curl -s https://api.ipify.org && echo
+  psg: ps aux | grep -v grep | grep
+  top: htop
+
+languages:
+  - name: rust
+    installer: rustup
+  # nvm and the Go tarball are shell installers in the Ansible roles. mise
+  # manages both, and bedouin knows mise.
+  - name: node
+    version: lts
+    installer: mise
+  - name: go
+    version: "1.21"
+    installer: mise
+
+package_managers:
+  macos: [brew, mise]
+  default: [apt, mise]
+
+packages:
+  # ---- common_packages, from roles/common/vars/main.yml
+  - name: git
+    from: { macos: brew, debian-like: apt, suse-like: zypper }
+  - name: curl
+    from: { macos: brew, debian-like: apt, suse-like: zypper }
+  - name: wget
+    from: { macos: brew, debian-like: apt, suse-like: zypper }
+  - name: jq
+    from: { macos: brew, debian-like: apt, suse-like: zypper }
+  - name: tree
+    from: { macos: brew, debian-like: apt, suse-like: zypper }
+  - name: htop
+    from: { macos: brew, debian-like: apt, suse-like: zypper }
+  - name: ripgrep
+    from: { macos: brew, debian-like: apt, suse-like: zypper }
+  - name: fzf
+    from: { macos: brew, debian-like: apt, suse-like: zypper }
+  - name: zoxide
+    from: { macos: brew, debian-like: apt, suse-like: zypper }
+    rc:
+      - file: "{{ shell.rc_dir }}/40-zoxide.zsh"
+        content: |
+          eval "$(zoxide init zsh)"
+  - name: ffmpeg
+    from: { macos: brew, debian-like: apt }
+  - name: imagemagick
+    from: { macos: brew, debian-like: apt }
+  - name: zsh
+    from: { macos: brew, debian-like: apt, suse-like: zypper }
+
+  - name: tmux
+    from: { macos: brew, debian-like: apt, suse-like: zypper }
+    aliases:
+      ta: tmux attach -t
+      tn: tmux new -s
+
+  # ---- packages Debian and Homebrew spell differently. `name:` is the state
+  # identity and cannot vary by machine, so each spelling is its own entry,
+  # scoped with `only:`. This is the documented workaround, not a limitation
+  # worked around.
+  - name: fd-find
+    from: apt
+    only: linux
+  - name: fd
+    from: brew
+    only: macos
+
+  # Same name on both, only the manager differs -- so this is `from:` arms,
+  # not two entries. Two entries sharing a name is an error even with
+  # disjoint `only:`, because they would compete for one state entry.
+  - name: bat
+    from: { macos: brew, debian-like: apt }
+    aliases:
+      cat: { linux: batcat, default: bat }   # Debian ships it as batcat
+
+  - name: 7zip
+    from: apt
+    only: linux
+  - name: sevenzip
+    from: brew
+    only: macos
+
+  - name: poppler-utils
+    from: apt
+    only: linux
+  - name: poppler
+    from: brew
+    only: macos
+
+  - name: git-delta
+    from: brew
+    only: macos
+  - name: delta
+    from: apt
+    only: linux
+
+  # ---- Linux build toolchain, from roles/linux
+  - name: build-essential
+    from: apt
+    only: linux
+  - name: cmake
+    from: { debian-like: apt, macos: brew }
+  - name: pkg-config
+    from: apt
+    only: linux
+  - name: libssl-dev
+    from: apt
+    only: linux
+  - name: libffi-dev
+    from: apt
+    only: linux
+  - name: python3-dev
+    from: apt
+    only: linux
+  - name: python3-pip
+    from: apt
+    only: linux
+
+  # ---- eza replaced the ls aliases you had; it is already a cargo install here
+  - name: eza
+    from: { macos: brew, default: cargo }
+    needs: [build-essential]
+    path: ["{{ home }}/.cargo/bin"]
+
+  - name: direnv
+    from: { macos: brew, default: cargo }
+    path: ["{{ home }}/.cargo/bin"]
+    rc:
+      - file: "{{ shell.rc_dir }}/40-direnv.zsh"
+        content: |
+          eval "$(direnv hook zsh)"
+
+  # ---- macOS-only, from roles/macos
+  - name: yazi
+    from: brew
+    only: macos
+  - name: lazydocker
+    from: brew
+    only: macos
+  - name: hub
+    from: brew
+    only: macos
+  - name: resvg
+    from: brew
+    only: macos
+
+files:
+  - src: templates/gitconfig.j2
+    dest: ~/.gitconfig
+  - src: templates/functions.zsh
+    dest: "{{ shell.rc_dir }}/50-functions.zsh"

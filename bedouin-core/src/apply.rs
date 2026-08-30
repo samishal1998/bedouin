@@ -88,6 +88,18 @@ fn step_env(state: &State, facts: &Facts) -> BTreeMap<String, String> {
     let mut path: Vec<String> = state
         .bin_dirs()
         .into_iter()
+        // Every place bedouin's own managers install to, whether or not state
+        // records one yet. Building PATH from state alone made a toolchain
+        // bedouin did NOT install invisible to every step -- so `installer:
+        // rustup` on a box that already had rustup failed with "No such file
+        // or directory", which is the confusing half of the very problem a
+        // constructed environment exists to solve. Naming the directories
+        // rather than trusting the ambient PATH is the point.
+        .chain(
+            crate::facts::Manager::ALL
+                .iter()
+                .flat_map(|m| crate::recipe::bin_dirs(m.as_str(), facts)),
+        )
         .chain(crate::plan::system_path(facts))
         .map(|p| p.display().to_string())
         .collect();

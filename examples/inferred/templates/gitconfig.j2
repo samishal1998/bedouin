@@ -1,0 +1,16 @@
+# Managed by bedouin. Identity comes from the environment rather than the
+# config, so this file is safe to commit.
+[user]
+	name = {{ env.GIT_USER_NAME | default(user) }}
+	email = {{ env.GIT_USER_EMAIL | default('') }}
+[core]
+	editor = {{ vars.editor }}
+	pager = delta
+[init]
+	defaultBranch = main
+[pull]
+	ff = only
+[interactive]
+	diffFilter = delta --color-only
+[delta]
+	navigate = true

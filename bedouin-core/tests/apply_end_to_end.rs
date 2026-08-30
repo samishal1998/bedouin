@@ -711,3 +711,46 @@ fn from_rustup_is_refused_rather_than_installing_a_toolchain() {
     .to_string();
     assert!(e.contains("toolchains, not packages"), "{e}");
 }
+
+#[test]
+fn a_toolchain_already_on_the_machine_is_on_every_later_step_path() {
+    // Found by inferring a config for a real machine. PATH was assembled from
+    // the state manifest alone, so a toolchain bedouin did NOT install
+    // contributed nothing -- and `installer: rustup` on a box that already had
+    // rustup failed with "No such file or directory", which is the confusing
+    // half of the very problem the constructed environment exists to solve.
+    let h = with_config(
+        fresh()
+            .with_binary("/home/t/.cargo/bin/rustup")
+            .with_binary("/home/t/.cargo/bin/cargo"),
+        r#"
+version: 0
+shell: zsh
+languages:
+  - name: rust
+    installer: rustup
+packages:
+  - name: zellij
+    from: cargo
+"#,
+    );
+    apply_on(&h);
+    let ran = h.ran.borrow();
+    let cargo_step = ran
+        .iter()
+        .find(|c| c.display().contains("cargo install"))
+        .expect("the cargo step ran");
+    assert!(
+        cargo_step.env["PATH"].contains("/home/t/.cargo/bin"),
+        "a pre-existing toolchain must still be reachable: {}",
+        cargo_step.env["PATH"]
+    );
+
+    // ...and it is adopted into state WITH its bin directories, so the next
+    // run does not depend on re-probing the machine.
+    let v: serde_json::Value =
+        serde_json::from_str(&read(&h, "/home/t/.local/state/bedouin/state.json").unwrap())
+            .unwrap();
+    let rust = &v["items"]["language/rust"];
+    assert_eq!(rust["bin_dirs"][0], "/home/t/.cargo/bin");
+}
