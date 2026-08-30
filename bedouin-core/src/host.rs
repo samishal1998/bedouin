@@ -543,3 +543,166 @@ mod tests {
         assert_eq!(h.which("cargo", &[PathBuf::from("/usr/bin")]), None);
     }
 }
+
+// ------------------------------------------------------------------ guards
+
+/// Exclusive access to the state file for the length of an apply.
+///
+/// A second `apply` must wait or refuse rather than interleave writes -- two
+/// runs sharing one state file is how an item ends up owned by neither.
+///
+/// A lockfile rather than `flock(2)`: the syscall needs libc or a crate, and
+/// this is one lock taken a handful of times per day. The cost is having to
+/// detect a stale lock ourselves, which is the `kill -0` below.
+//
+// ponytail: lockfile + liveness probe. Swap for flock via `rustix` if bedouin
+// ever runs often enough for the probe's ~1ms to matter.
+#[derive(Debug)]
+pub struct StateLock {
+    path: PathBuf,
+    held: bool,
+}
+
+impl StateLock {
+    pub fn acquire(state_path: &Path) -> Result<Self> {
+        let path = state_path.with_extension("lock");
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        for attempt in 0..2 {
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
+                Ok(mut f) => {
+                    use std::io::Write;
+                    let _ = write!(f, "{}", std::process::id());
+                    return Ok(Self { path, held: true });
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && attempt == 0 => {
+                    let owner = std::fs::read_to_string(&path).unwrap_or_default();
+                    let pid: u32 = owner.trim().parse().unwrap_or(0);
+                    if pid == 0 || !process_alive(pid) {
+                        // The holder is gone -- a killed run, or a reboot.
+                        let _ = std::fs::remove_file(&path);
+                        continue;
+                    }
+                    return Err(HostError::at(
+                        &path,
+                        format!("another bedouin (pid {pid}) is applying. Wait for it, or remove this file if you are sure it is gone"),
+                    ));
+                }
+                Err(e) => return Err(HostError::at(&path, e.to_string())),
+            }
+        }
+        Err(HostError::at(&path, "could not take the state lock"))
+    }
+}
+
+impl Drop for StateLock {
+    fn drop(&mut self) {
+        if self.held {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
+fn process_alive(pid: u32) -> bool {
+    if Path::new(&format!("/proc/{pid}")).exists() {
+        return true;
+    }
+    // macOS has no /proc; signal 0 tests for existence without sending one.
+    std::process::Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Keeps a validated sudo credential from expiring mid-run.
+///
+/// `apply` promises one prompt, up front. sudo's timestamp expires after 15
+/// minutes by default and a real apply can outlast that, so without this the
+/// promise is false for exactly the long runs it was made for.
+pub struct SudoKeepalive {
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl SudoKeepalive {
+    pub fn start() -> Self {
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = stop.clone();
+        let handle = std::thread::spawn(move || {
+            while !flag.load(std::sync::atomic::Ordering::Relaxed) {
+                // Well inside the default 15-minute window, and cheap.
+                for _ in 0..60 {
+                    if flag.load(std::sync::atomic::Ordering::Relaxed) {
+                        return;
+                    }
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                }
+                let _ = std::process::Command::new("sudo")
+                    .args(["-n", "true"])
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status();
+            }
+        });
+        Self {
+            stop,
+            handle: Some(handle),
+        }
+    }
+}
+
+impl Drop for SudoKeepalive {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(h) = self.handle.take() {
+            let _ = h.join();
+        }
+    }
+}
+
+#[cfg(test)]
+mod guard_tests {
+    use super::*;
+
+    #[test]
+    fn a_second_lock_is_refused_while_the_first_is_held() {
+        let dir = std::env::temp_dir().join(format!("bedouin-lock-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let state = dir.join("state.json");
+
+        let first = StateLock::acquire(&state).expect("first lock");
+        let err = StateLock::acquire(&state).unwrap_err();
+        assert!(err.message.contains("another bedouin"), "{err}");
+        assert!(err.message.contains("pid"), "names who holds it: {err}");
+
+        drop(first);
+        // ...and released on drop, so the next run is not blocked by a
+        // finished one.
+        let _second = StateLock::acquire(&state).expect("lock is free again");
+    }
+
+    #[test]
+    fn a_lock_left_by_a_dead_process_is_taken_over() {
+        // A killed apply must not wedge every future run.
+        let dir = std::env::temp_dir().join(format!("bedouin-stale-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let state = dir.join("state.json");
+        let lock = state.with_extension("lock");
+        // A pid that cannot be running: pid 0 is never a user process.
+        std::fs::write(&lock, "0").unwrap();
+
+        let _taken = StateLock::acquire(&state).expect("a stale lock is taken over");
+        assert_eq!(
+            std::fs::read_to_string(&lock).unwrap().trim(),
+            std::process::id().to_string()
+        );
+    }
+}

@@ -1,3 +1,4 @@
+pub mod artifact;
 pub mod edit;
 pub mod doctor;
 pub mod apply;

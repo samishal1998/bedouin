@@ -560,6 +560,9 @@ pub fn apply(
         )));
     }
 
+    // The state lock and the sudo keepalive are real-process concerns and live
+    // in the CLI, not here: they touch the actual filesystem and spawn actual
+    // processes, neither of which a `FakeHost` run should do.
     if !root_steps.is_empty() && facts.privilege == Privilege::Password {
         // Prompt once, before the work, naming what needs it -- not halfway
         // through, after twenty minutes of compiling.
@@ -579,10 +582,6 @@ pub fn apply(
             ));
         }
     }
-
-    // ponytail: sudo's timestamp expires (15 min by default), so a long run can
-    // still be asked again. A background `sudo -n true` keepalive is the fix
-    // when a real apply outlives the window.
 
     let state_path = state::default_path(&facts.home);
     let mut ex = Executor {

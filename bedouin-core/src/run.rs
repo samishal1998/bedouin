@@ -26,6 +26,25 @@ pub fn plan(host: &dyn Host, explicit: Option<&Path>, cwd: &Path) -> Result<Outc
     plan_for(host, explicit, cwd, os, arch)
 }
 
+/// Apply a previously written plan artifact.
+///
+/// Facts and config come from the artifact, not from this machine: that is
+/// what makes the plan you reviewed the plan that runs.
+pub fn apply_artifact(
+    host: &dyn Host,
+    artifact_path: &Path,
+    out: &mut dyn FnMut(crate::host::Line),
+) -> Result<crate::apply::Report> {
+    let a = crate::artifact::read(host, artifact_path)?;
+    let (os, arch) = probe::host_platform();
+    let live = probe::facts_for(host, Some(a.facts.shell.name), os, arch)?;
+    let state = state::load(host, &state::default_path(&a.facts.home))?;
+    crate::artifact::check_still_valid(&a, &live, &state)?;
+
+    let plan = plan::build(&a.config, &a.facts, &state, host, &a.config_root)?;
+    crate::apply::apply(&plan, &a.config, &a.facts, state, host, out)
+}
+
 /// As [`plan`], for a stated platform. Lets a test drive a fresh macOS from a
 /// Linux runner.
 pub fn plan_for(

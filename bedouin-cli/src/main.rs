@@ -23,7 +23,11 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Show what apply would do. Exits 2 when changes are pending.
-    Plan,
+    Plan {
+        /// Also write the plan, so `apply -f` can run exactly this one later.
+        #[arg(short, long, value_name = "FILE")]
+        out: Option<PathBuf>,
+    },
     /// Print the resolved facts for this machine.
     Facts,
     /// Report managed content that changed since the last apply.
@@ -43,6 +47,9 @@ enum Command {
     },
     /// Make the machine match the config.
     Apply {
+        /// Apply a plan written earlier by `plan -o`, rather than re-planning.
+        #[arg(short = 'f', long, value_name = "FILE")]
+        plan: Option<PathBuf>,
         /// Show what would change and stop. Same as `plan`.
         #[arg(long)]
         dry_run: bool,
@@ -53,6 +60,25 @@ enum Command {
 }
 
 fn run_apply(host: &OsHost, outcome: run::Outcome, _verbose: bool) -> ExitCode {
+    // Exclusive for the length of the run: two applies sharing one state file
+    // is how an item ends up owned by neither.
+    let _lock = match bedouin_core::host::StateLock::acquire(
+        &bedouin_core::state::default_path(&outcome.facts.home),
+    ) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("bedouin: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    // sudo's timestamp expires after 15 minutes by default and a real apply can
+    // outlast that, so "one prompt, up front" needs refreshing to stay true.
+    let _keepalive = (outcome.facts.privilege
+        == bedouin_core::facts::Privilege::Password
+        && outcome.plan.changes().any(|i| i.needs_root))
+    .then(bedouin_core::host::SudoKeepalive::start);
+
     println!();
     let report = match bedouin_core::apply::apply(
         &outcome.plan,
@@ -220,7 +246,32 @@ fn main() -> ExitCode {
             run_apply(&host, after, cli.verbose)
         }
 
-        Command::Apply { dry_run, yes } => {
+        Command::Apply {
+            plan: from_file,
+            dry_run,
+            yes,
+        } => {
+            if let Some(file) = from_file {
+                // Facts and config come from the artifact, so the environment
+                // it froze is the environment this run sees.
+                println!("Applying the plan in {}.\n", file.display());
+                let report = match run::apply_artifact(&host, &file, &mut |line| match line {
+                    bedouin_core::host::Line::Out(s) => println!("  {s}"),
+                    bedouin_core::host::Line::Err(s) => eprintln!("  {s}"),
+                }) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        eprintln!("bedouin: {e}");
+                        return ExitCode::FAILURE;
+                    }
+                };
+                print!("{}", report.render());
+                return if report.ok() {
+                    ExitCode::SUCCESS
+                } else {
+                    ExitCode::FAILURE
+                };
+            }
             if dry_run {
                 print!("{}", outcome.plan.render(cli.verbose));
                 return ExitCode::from(outcome.plan.exit_code() as u8);
@@ -236,8 +287,23 @@ fn main() -> ExitCode {
             }
             run_apply(&host, outcome, cli.verbose)
         }
-        Command::Plan => {
+        Command::Plan { out } => {
             print!("{}", outcome.plan.render(cli.verbose));
+            if let Some(to) = out {
+                let a = bedouin_core::artifact::build(
+                    &outcome.plan,
+                    &outcome.config,
+                    &outcome.facts,
+                    &outcome.loaded.raw,
+                    &outcome.state,
+                    &outcome.loaded.root,
+                );
+                if let Err(e) = bedouin_core::artifact::write(&a, &host, &to) {
+                    eprintln!("bedouin: {e}");
+                    return ExitCode::FAILURE;
+                }
+                println!("\nPlan written to {} (mode 0600).", to.display());
+            }
             // 0 nothing pending, 2 changes pending -- so a CI drift check can
             // just look at the exit status.
             ExitCode::from(outcome.plan.exit_code() as u8)

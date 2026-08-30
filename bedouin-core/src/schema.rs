@@ -180,7 +180,7 @@ pub struct RawFile {
 /// failure a conditional config otherwise makes invisible.
 pub type Provenance = BTreeMap<String, Winner>;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Package {
     pub name: String,
     pub from: Vec<Manager>,
@@ -193,13 +193,13 @@ pub struct Package {
     pub resolved_from: Provenance,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RcBlock {
     pub file: String,
     pub content: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Language {
     pub name: String,
     pub version: Option<String>,
@@ -207,7 +207,7 @@ pub struct Language {
     pub resolved_from: Provenance,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileSpec {
     pub src: String,
     pub dest: String,
@@ -216,7 +216,7 @@ pub struct FileSpec {
 }
 
 /// The planner's input. Contains no conditionals.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Config {
     pub shell: Shell,
     pub vars: BTreeMap<String, String>,
