@@ -356,6 +356,25 @@ impl fmt::Display for Winner {
     }
 }
 
+// Stored as its display form: `"version": "macos-arm64"` in state.json reads
+// as what it is, where a tagged enum would read as machinery.
+impl Serialize for Winner {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.collect_str(self)
+    }
+}
+
+impl<'de> Deserialize<'de> for Winner {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        Ok(match s.as_str() {
+            "literal" => Self::Literal,
+            "default" => Self::Default,
+            _ => Self::Arm(s),
+        })
+    }
+}
+
 impl<T> Value<T> {
     /// Reduce to the winning payload.
     ///
@@ -618,6 +637,7 @@ mod tests {
         Target {
             name: name.into(),
             r#match: m,
+            ..Default::default()
         }
     }
 

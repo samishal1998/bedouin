@@ -125,11 +125,15 @@ pub fn cmp_versions(a: &str, b: &str) -> Ordering {
 }
 
 /// A named condition. Its `name` doubles as an arm key everywhere below.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Target {
     pub name: String,
     #[serde(default)]
     pub r#match: MatchSpec,
+    /// Overrides folded into the base `vars:` block when this target is active.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub vars: BTreeMap<String, crate::value::Value<crate::value::Tmpl>>,
 }
 
 /// What an arm key turned out to be.
@@ -231,6 +235,7 @@ mod tests {
         Target {
             name: name.into(),
             r#match: m,
+            ..Default::default()
         }
     }
 
