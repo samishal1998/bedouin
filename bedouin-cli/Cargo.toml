@@ -1,0 +1,14 @@
+[package]
+name = "bedouin-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "bedouin"
+path = "src/main.rs"
+
+[dependencies]
+bedouin-core = { workspace = true }
+clap = { version = "4", features = ["derive"] }

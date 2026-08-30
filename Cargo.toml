@@ -1,0 +1,16 @@
+[workspace]
+resolver = "2"
+members = ["bedouin-core", "bedouin-cli"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.80"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+bedouin-core = { path = "bedouin-core" }
+serde = { version = "1", features = ["derive"] }
+serde_yaml_ng = "0.10"
+minijinja = { version = "2", default-features = false, features = ["builtins"] }
+thiserror = "2"

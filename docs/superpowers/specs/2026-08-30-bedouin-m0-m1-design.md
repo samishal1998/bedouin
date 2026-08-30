@@ -295,7 +295,7 @@ Built-in names, and the facts each **implies**:
 | `other-distro` | distro=other, os=linux |
 | `debian-like`, `rhel-like`, `suse-like`, `arch-like` | distro_like=…, os=linux |
 | `x86_64`, `arm64` | arch=… |
-| `{os}-{arch}`, `{distro}-{arch}` | the union of both |
+| `{name}-{arch}` for every name above | the union of both |
 
 Not included, per §3.2: shell names, manager names.
 
@@ -382,6 +382,11 @@ version:
 This is a parse error naming both arms and suggesting `macos-arm64`, which
 exists in the vocabulary precisely for it.
 
+The suggested conjunction is the arm pinning *exactly* the union of the two,
+never merely a superset: `ubuntu-arm64` also contains both `debian-like` and
+`arm64`, but proposing it would quietly drop Debian from an arm the user wrote
+for the whole family.
+
 Subset inclusion rather than set size is load-bearing, and a size rule looks
 right until it isn't: `{ debian-like: apt, arm64: cargo }` implies sets of
 size 2 and 1 that are nonetheless **disjoint**, and both are active on a
@@ -389,7 +394,7 @@ Debian ARM box. Under a size rule `debian-like` would win silently — exactly
 the shadowing class this section exists to eliminate, reintroduced across
 axes. Under subset inclusion it is the parse error it should be. Where no
 conjunction exists in §6.1's vocabulary for the pair (there are no
-`{distro_like}-{arch}` names), the error says to declare a target.
+names for the pair), the error says to declare a target instead.
 
 Written order of arms is irrelevant throughout. The map reads like a set
 because it is one, and a formatter that sorts keys cannot change meaning.
