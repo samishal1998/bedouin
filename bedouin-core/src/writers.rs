@@ -209,13 +209,71 @@ pub fn path_file(entries: &[String], shell: Shell) -> String {
     out
 }
 
+/// Quote an alias value for a shell.
+///
+/// Alias values are user text landing in a file the shell evaluates, so this is
+/// load-bearing rather than cosmetic. Single quotes because nothing inside them
+/// is expanded; the only hard case is an embedded quote, and posix shells and
+/// fish escape it differently.
+pub fn quote_for(value: &str, shell: Shell) -> String {
+    match shell {
+        // A posix shell cannot escape `'` inside `'...'`: close, emit an
+        // escaped quote, reopen.
+        Shell::Fish => format!("'{}'", value.replace('\\', "\\\\").replace('\'', "\\'")),
+        _ => format!("'{}'", value.replace('\'', "'\\''")),
+    }
+}
+
+/// Alias declarations, in the shell's own syntax.
+pub fn alias_lines(aliases: &std::collections::BTreeMap<String, String>, shell: Shell) -> String {
+    aliases
+        .iter()
+        .map(|(name, value)| match shell {
+            // fish's `alias` defines a function; the name and value are
+            // separate words rather than an `=` pair.
+            Shell::Fish => format!("alias {name} {}", quote_for(value, shell)),
+            _ => format!("alias {name}={}", quote_for(value, shell)),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Where a shell looks for completion files Bedouin generates.
+pub fn completions_dir(shell: Shell, rc_dir: &std::path::Path, home: &std::path::Path) -> std::path::PathBuf {
+    match shell {
+        // fish reads this natively; nothing needs wiring.
+        Shell::Fish => home.join(".config/fish/completions"),
+        _ => rc_dir.join("completions"),
+    }
+}
+
+/// The file one tool's completions are written to.
+pub fn completions_file(shell: Shell, dir: &std::path::Path, name: &str) -> std::path::PathBuf {
+    match shell {
+        Shell::Zsh => dir.join(format!("_{name}")),
+        Shell::Fish => dir.join(format!("{name}.fish")),
+        _ => dir.join(format!("{name}.bash")),
+    }
+}
+
 /// The block that makes a shell's rc file read the drop-in directory.
 pub fn source_dir_snippet(rc_dir: &str, shell: Shell) -> String {
+    let comp = format!("{rc_dir}/completions");
     match shell {
-        Shell::Fish => String::new(), // conf.d is sourced natively
+        Shell::Fish => String::new(), // conf.d and completions are both native
+        // zsh finds completions through fpath, and fpath must be set before
+        // compinit runs -- which is why this sits in the rc file rather than a
+        // drop-in that may be sourced afterwards.
+        Shell::Zsh => format!(
+            "fpath=(\"{comp}\" $fpath)\n\
+             if [ -d \"{rc_dir}\" ]; then\n  \
+             for f in \"{rc_dir}\"/*.zsh; do [ -r \"$f\" ] && . \"$f\"; done\nfi"
+        ),
         _ => format!(
             "if [ -d \"{rc_dir}\" ]; then\n  \
-             for f in \"{rc_dir}\"/*; do [ -r \"$f\" ] && . \"$f\"; done\nfi"
+             for f in \"{rc_dir}\"/*; do [ -r \"$f\" ] && . \"$f\"; done\nfi\n\
+             if [ -d \"{comp}\" ]; then\n  \
+             for f in \"{comp}\"/*; do [ -r \"$f\" ] && . \"$f\"; done\nfi"
         ),
     }
 }

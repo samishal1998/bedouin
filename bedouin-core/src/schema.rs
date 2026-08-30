@@ -89,6 +89,9 @@ pub struct RawConfig {
     pub shell: Option<String>,
     #[serde(default)]
     pub vars: BTreeMap<String, Val>,
+    /// Shell aliases that belong to no package.
+    #[serde(default)]
+    pub aliases: BTreeMap<String, Val>,
     #[serde(default)]
     pub targets: Vec<crate::target::Target>,
     #[serde(default)]
@@ -124,6 +127,20 @@ pub struct RawPackage {
     pub path: Option<ValList>,
     #[serde(default)]
     pub rc: Vec<RawRcBlock>,
+    /// Aliases scoped to this package: they live in its rc block, so dropping
+    /// the package removes them through machinery that already converges.
+    #[serde(default)]
+    pub aliases: BTreeMap<String, Val>,
+    #[serde(default)]
+    pub completions: Option<RawCompletions>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawCompletions {
+    /// argv, run at apply time after this package is installed. Its stdout is
+    /// written to the shell's completions directory and never evaluated.
+    pub generate: ValList,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -171,6 +188,8 @@ pub struct Package {
     pub needs: Vec<String>,
     pub path: Vec<String>,
     pub rc: Vec<RcBlock>,
+    pub aliases: BTreeMap<String, String>,
+    pub completions: Option<Vec<String>>,
     pub resolved_from: Provenance,
 }
 
@@ -201,6 +220,7 @@ pub struct FileSpec {
 pub struct Config {
     pub shell: Shell,
     pub vars: BTreeMap<String, String>,
+    pub aliases: BTreeMap<String, String>,
     pub package_managers: Vec<Manager>,
     pub languages: Vec<Language>,
     pub packages: Vec<Package>,
@@ -458,8 +478,31 @@ pub fn resolve(raw: &RawConfig, vocab: &Vocabulary, facts: &Facts) -> Result<Con
                 .map_err(|e| e.in_item(&item))?;
             rc.push(RcBlock { file, content });
         }
+        let mut aliases = BTreeMap::new();
+        for (k, v) in &p.aliases {
+            aliases.insert(
+                k.clone(),
+                r.one(v, &format!("aliases.{k}"), &mut prov)
+                    .map_err(|e| e.in_item(&item))?,
+            );
+        }
+        let completions = match &p.completions {
+            None => None,
+            Some(c) => Some(
+                r.many(&c.generate, "completions.generate", &mut prov)
+                    .map_err(|e| e.in_item(&item))?,
+            ),
+        };
+        if completions.as_ref().is_some_and(Vec::is_empty) {
+            return Err(ConfigError::new(
+                "`completions.generate` is empty, so there is no command to run",
+            )
+            .in_item(&item));
+        }
         packages.push(Package {
             name: p.name.clone(),
+            aliases,
+            completions,
             from,
             version,
             needs: p.needs.clone(),
@@ -507,8 +550,15 @@ pub fn resolve(raw: &RawConfig, vocab: &Vocabulary, facts: &Facts) -> Result<Con
         })?,
     };
 
+    let mut global_aliases = BTreeMap::new();
+    for (k, v) in &raw.aliases {
+        let mut prov = Provenance::new();
+        global_aliases.insert(k.clone(), r.one(v, &format!("aliases.{k}"), &mut prov)?);
+    }
+
     Ok(Config {
         shell,
+        aliases: global_aliases,
         vars: r.vars,
         package_managers,
         languages,

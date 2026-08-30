@@ -466,6 +466,49 @@ impl Executor<'_> {
                 }];
             }
 
+            (_, Payload::Completions { argv, dest }) => {
+                let mut cmd = Cmd::new(argv.iter().cloned());
+                cmd.env = step_env(&self.state, self.facts);
+                // Capture stdout rather than streaming it: it IS the file.
+                let mut captured = String::new();
+                let mut stderr_tail: Vec<String> = Vec::new();
+                let status = self
+                    .host
+                    .run(&cmd, &mut |l| match l {
+                        Line::Out(s) => {
+                            captured.push_str(&s);
+                            captured.push('\n');
+                        }
+                        Line::Err(s) => stderr_tail.push(s),
+                    })
+                    .map_err(|e| (e.to_string(), Vec::new()))?;
+                if !status.ok() {
+                    return Err((
+                        format!(
+                            "`{}` exited {} while generating completions",
+                            cmd.display(),
+                            status.code
+                        ),
+                        stderr_tail,
+                    ));
+                }
+                if captured.trim().is_empty() {
+                    return Err((
+                        format!("`{}` produced no completions", cmd.display()),
+                        stderr_tail,
+                    ));
+                }
+                // Tool output, not managed text: no sentinels, and no UTF-8
+                // refusal on the way in -- but the file is Bedouin's, so
+                // removal deletes it.
+                self.refuse_symlink(dest)?;
+                self.write_text(dest, &captured, 0o644)?;
+                rec.owned_files = vec![dest.display().to_string()];
+                rec.hash = Some(writers::digest(&captured));
+                // The command is what the diff is addressed on (§16.2).
+                rec.method = Some(writers::digest(&argv.join(" ")));
+            }
+
             (_, Payload::PathFile { file, entries }) => {
                 self.refuse_symlink(file)?;
                 let text = writers::path_file(entries, self.cfg.shell);

@@ -1134,6 +1134,92 @@ The review found 32 confirmed defects, 16 of them data-loss. What changed:
     pipe deadlocked with nothing to break it; the timeout was accepted and
     never armed.
 
+## 16. Aliases and completions
+
+Added after M1 at the user's request. Both are things a dotfiles manager is
+expected to do, both are painful to express as raw `rc:` content because the
+syntax differs per shell, and both are cheap given the machinery that exists.
+
+### 16.1 Aliases
+
+```yaml
+aliases:                    # global
+  ll: ls -alh
+  g: git
+
+packages:
+  - name: kubectl
+    from: apt
+    aliases:                # scoped to this package
+      k: kubectl
+      kgp: kubectl get pods
+```
+
+Per-package aliases render into **that package's own rc block**, alongside
+whatever `rc:` content it already declares. Global aliases become one
+Bedouin-owned block, `rc/bedouin/aliases`.
+
+They are deliberately *not* merged into a single shared aliases file. The PATH
+file is one artifact because PATH entries are ordered fragments of one
+variable; aliases are independent, and a package's aliases belong with the
+package so that dropping it removes them through machinery that already exists
+and already converges. A shared file would reintroduce exactly the
+shared-artifact coupling §14b.13 and §14b.14 were written to remove.
+
+Rendering is per shell, because the syntax genuinely differs:
+
+| Shell | Line |
+|---|---|
+| zsh, bash | `alias k='kubectl'` |
+| fish | `alias k 'kubectl'` |
+
+Values are single-quoted, and an embedded `'` is escaped (`'\''` for
+posix shells, `\'` for fish). Alias values are user text landing in a file the
+shell evaluates, so the quoting rule is load-bearing rather than cosmetic.
+
+### 16.2 Completions
+
+```yaml
+packages:
+  - name: kubectl
+    from: apt
+    completions:
+      generate: ["kubectl", "completion", "{{ shell.name }}"]
+```
+
+`generate` is argv, run **at apply time**, after its own package is installed,
+and its stdout is written to the shell's completions directory. Nothing
+evaluates it.
+
+**This is not a hole in §6.5.** That rule forbids user-supplied code that
+determines the *plan*, and the argument that killed `fromScript` was ordering:
+on a fresh box a plan-time script runs before Bedouin has installed anything,
+so its fallback is always the real value. Neither applies here. This runs
+during apply, after the tool it invokes exists — the package is a hard
+ordering dependency — and it produces file *content*, the same category as
+rendering a template. Two guards keep it a boundary rather than a leak: it
+goes through the same argv-only `Cmd` path as every other step, so no shell
+ever sees it; and its output is written, never executed.
+
+Completion output lands in a file Bedouin wholly owns:
+
+| Shell | Path | Wiring |
+|---|---|---|
+| zsh | `{rc_dir}/completions/_{name}` | dir added to `fpath` in the source block |
+| bash | `{rc_dir}/completions/{name}.bash` | sourced from the source block |
+| fish | `~/.config/fish/completions/{name}.fish` | native |
+
+Those bytes are tool output, not managed text: no sentinels, no UTF-8
+refusal, and the file is recorded in `owned_files` so removal deletes it.
+
+**Drift coverage is partial, and says so.** The item is content-addressed on
+the *generate command*, so editing `generate:` re-runs it; a package
+`Upgrade` or `Reinstall` also re-runs it, since output can differ by version.
+Whether the *output* changed cannot be known at plan time without running the
+command, which plan does not do. `doctor` therefore reports a hand-edited
+completions file as drift, but cannot report a completion that is merely
+stale.
+
 ## 15. Departures from the handoff
 
 The handoff is approved; these are the places this spec knowingly differs.
@@ -1155,3 +1241,7 @@ Everything else it does not contradict remains in force.
    `version: latest` without defining it.
 7. **`init`, `add`, `sync` move to M1.5** (§1). The handoff lists them in v1
    without assigning a milestone.
+8. **`aliases:` and `completions:`** are additions (§16), requested after M1.
+   Both are expected of a dotfiles manager, both are awkward as raw `rc:`
+   content because the syntax is shell-specific, and both are cheap given the
+   rc-block machinery that already exists.

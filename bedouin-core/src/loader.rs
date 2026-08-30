@@ -354,6 +354,7 @@ pub fn load(entry: &Path, host: &dyn Host) -> Result<Loaded> {
             }
         }
         merged.vars.extend(cfg.vars);
+        merged.aliases.extend(cfg.aliases);
         merged.targets.extend(cfg.targets);
         merged.languages.extend(cfg.languages);
         merged.packages.extend(cfg.packages);
