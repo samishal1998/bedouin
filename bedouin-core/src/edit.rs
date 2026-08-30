@@ -240,6 +240,109 @@ pub fn add_package(text: &str, name: &str, from: &str, version: Option<&str>) ->
     Ok(out)
 }
 
+/// Replace the `content:` of one package's rc block.
+///
+/// The one edit `absorb` needs. Finds the package, finds the rc entry whose
+/// `file:` mentions `file_hint`, and rewrites its `content:` -- as a block
+/// scalar, which is the form that survives multi-line shell code.
+pub fn set_rc_content(
+    text: &str,
+    package: &str,
+    file_hint: &str,
+    new_content: &str,
+) -> Result<String> {
+    let lines: Vec<&str> = text.lines().collect();
+    let head = lines
+        .iter()
+        .position(|l| l.trim_start() == Section::Packages.key())
+        .ok_or_else(|| ConfigError::new("this config has no `packages:` section"))?;
+
+    let start = (head + 1..lines.len())
+        .take_while(|i| lines[*i].trim().is_empty() || indent_of(lines[*i]) > indent_of(lines[head]))
+        .find(|i| entry_names(&lines, *i, package))
+        .ok_or_else(|| ConfigError::new(format!("no package named `{package}` in this config")))?;
+    let (from, to) = entry_span(&lines, start);
+
+    // The rc entry whose `file:` names this file, then the `content:` under it.
+    let file_line = (from..to)
+        .find(|i| {
+            let t = lines[*i].trim_start();
+            (t.starts_with("- file:") || t.starts_with("file:")) && t.contains(file_hint)
+        })
+        .ok_or_else(|| {
+            ConfigError::new(format!(
+                "package `{package}` has no rc block for `{file_hint}`"
+            ))
+        })?;
+    let content_line = (file_line..to)
+        .find(|i| lines[*i].trim_start().starts_with("content:"))
+        .ok_or_else(|| {
+            ConfigError::new(format!("the rc block for `{file_hint}` has no `content:`"))
+        })?;
+
+    // The value runs to the next line indented no deeper than `content:`.
+    let content_indent = indent_of(lines[content_line]);
+    let mut value_end = content_line + 1;
+    while value_end < to {
+        let l = lines[value_end];
+        if !l.trim().is_empty() && indent_of(l) <= content_indent {
+            break;
+        }
+        value_end += 1;
+    }
+
+    let body_indent = " ".repeat(content_indent + 2);
+    let mut out: Vec<String> = lines[..content_line].iter().map(|s| (*s).to_string()).collect();
+    out.push(format!("{}content: |", " ".repeat(content_indent)));
+    for l in new_content.trim_end_matches('\n').lines() {
+        out.push(if l.trim().is_empty() {
+            String::new()
+        } else {
+            format!("{body_indent}{l}")
+        });
+    }
+    out.extend(lines[value_end..].iter().map(|s| (*s).to_string()));
+    let mut out = out.join("\n");
+    if text.ends_with('\n') {
+        out.push('\n');
+    }
+
+    // Verify by reparsing, and verify the value actually landed -- absorb
+    // writes the file the user trusts.
+    let doc: serde_yaml_ng::Value = serde_yaml_ng::from_str(&out).map_err(|e| {
+        ConfigError::new(format!(
+            "absorbing that edit would leave a file that no longer parses: {e}\n  \
+             Refusing to write it. Copy the change across by hand"
+        ))
+    })?;
+    let landed = doc
+        .get("packages")
+        .and_then(|p| p.as_sequence())
+        .and_then(|ps| {
+            ps.iter()
+                .find(|p| p.get("name").and_then(|n| n.as_str()) == Some(package))
+        })
+        .and_then(|p| p.get("rc"))
+        .and_then(|rc| rc.as_sequence())
+        .and_then(|rcs| {
+            rcs.iter().find(|b| {
+                b.get("file")
+                    .and_then(|f| f.as_str())
+                    .is_some_and(|f| f.contains(file_hint))
+            })
+        })
+        .and_then(|b| b.get("content"))
+        .and_then(|c| c.as_str())
+        .map(|c| c.trim_end().to_string());
+    if landed.as_deref() != Some(new_content.trim_end()) {
+        return Err(ConfigError::new(format!(
+            "could not cleanly absorb into `{package}`. Refusing to guess -- \
+             copy the change across by hand"
+        )));
+    }
+    Ok(out)
+}
+
 fn still_present(doc: &serde_yaml_ng::Value, section: Section, name: &str) -> bool {
     let key = section.key().trim_end_matches(':');
     doc.get(key)
@@ -372,6 +475,45 @@ files:
         let added = add_package(CFG, "ripgrep", "apt", None).unwrap();
         let back = remove_entry(&added, Section::Packages, "ripgrep").unwrap();
         assert_eq!(back, CFG, "a round trip must not reflow the file");
+    }
+
+    #[test]
+    fn absorbing_rewrites_only_that_blocks_content() {
+        let out = set_rc_content(
+            CFG,
+            "zellij",
+            "70-zellij.zsh",
+            "eval \"$(zellij setup --generate-auto-start zsh)\"\nexport ZELLIJ_AUTO_EXIT=true",
+        )
+        .unwrap();
+        let doc: serde_yaml_ng::Value = serde_yaml_ng::from_str(&out).unwrap();
+        let content = doc["packages"][1]["rc"][0]["content"].as_str().unwrap();
+        assert!(content.contains("ZELLIJ_AUTO_EXIT=true"), "the edit landed");
+        assert!(content.contains("generate-auto-start"));
+        // Everything else in the file is untouched.
+        assert!(out.contains("# a comment worth keeping"));
+        assert!(out.contains("- { name: fd, from: apt }"));
+        assert!(out.contains("dest: ~/.gitconfig"));
+        assert_eq!(doc["packages"].as_sequence().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn absorbing_into_something_that_is_not_there_is_refused() {
+        assert!(set_rc_content(CFG, "nope", "x", "y").is_err());
+        assert!(set_rc_content(CFG, "jq", "70-zellij.zsh", "y").is_err());
+    }
+
+    #[test]
+    fn absorbed_content_round_trips_through_yaml() {
+        // Shell code is exactly the text most likely to break a naive writer:
+        // quotes, dollars, backslashes, blank lines.
+        let tricky = "alias x='it'\''s fine'\nexport P=\"$(echo \\$HOME)\"\n\nfunction f() { :; }";
+        let out = set_rc_content(CFG, "zellij", "70-zellij.zsh", tricky).unwrap();
+        let doc: serde_yaml_ng::Value = serde_yaml_ng::from_str(&out).unwrap();
+        assert_eq!(
+            doc["packages"][1]["rc"][0]["content"].as_str().unwrap().trim_end(),
+            tricky
+        );
     }
 
     #[test]

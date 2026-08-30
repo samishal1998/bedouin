@@ -1,3 +1,4 @@
+pub mod daemon;
 pub mod artifact;
 pub mod edit;
 pub mod doctor;

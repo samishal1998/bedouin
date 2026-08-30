@@ -1225,6 +1225,39 @@ command, which plan does not do. `doctor` therefore reports a hand-edited
 completions file as drift, but cannot report a completion that is merely
 stale.
 
+## 17. `absorb`, and the ceiling it stops at
+
+The handoff describes absorb as a three-way merge: original render versus
+current file versus new render, with marked-region edits mapping back to their
+config entry. That is a merge engine. What ships is the useful half of it,
+and the cut is stated here rather than discovered later.
+
+**What absorb does.** `doctor` already finds drift by comparing recorded
+hashes against the machine. `absorb` walks those findings and, for each,
+offers to lift the edit back into the config:
+
+- **An rc block** — the edit is between markers Bedouin owns, so the new
+  content is exactly the block's current text. Absorb rewrites that entry's
+  `content:` in the config. This is the common case and the one the handoff
+  cares about: you tweak an alias in your shell, and absorb puts the tweak in
+  the file that survives the machine.
+- **A managed file whose `src:` contains no template syntax** — the template
+  is a plain copy, so the edited file *is* the new template. Absorb copies it
+  back.
+- **A managed file whose `src:` is templated** — refused, with a diff. Mapping
+  a rendered edit back through minijinja is inverting a template, and there is
+  no honest way to guess which part of the output came from which expression.
+  The `render_snapshot` in state is what makes even the diff possible.
+
+**Why this is the right cut.** The genuinely hard case — a templated file
+edited in a region that a loop or conditional produced — is rare, and getting
+it wrong writes nonsense into the config the user trusts. Refusing loudly and
+showing the diff leaves them better off than a merge that guesses.
+
+**Absorb never edits blind.** It shows what it will write and asks, and every
+config edit goes through the same reparse-verify as `add` and `remove` (§14a
+pattern): if the result would not parse, it refuses and says to edit by hand.
+
 ## 15. Departures from the handoff
 
 The handoff is approved; these are the places this spec knowingly differs.

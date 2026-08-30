@@ -20,6 +20,18 @@ struct Cli {
     command: Command,
 }
 
+#[derive(Subcommand, Clone)]
+enum DaemonAction {
+    /// Write the unit file and print how to enable it.
+    Install {
+        /// Seconds between reconciles.
+        #[arg(long, default_value_t = 900)]
+        interval: u64,
+    },
+    /// Remove the unit file.
+    Uninstall,
+}
+
 #[derive(Subcommand)]
 enum Command {
     /// Show what apply would do. Exits 2 when changes are pending.
@@ -43,6 +55,26 @@ enum Command {
         spec: String,
         #[arg(long)]
         no_apply: bool,
+        #[arg(short = 'y', long)]
+        yes: bool,
+    },
+    /// Apply once if anything drifted, then exit. What the timer runs.
+    Reconcile {
+        /// Stay resident and re-check on an interval instead of exiting.
+        #[arg(long)]
+        watch: bool,
+        /// Seconds between checks under --watch.
+        #[arg(long, default_value_t = 900)]
+        interval: u64,
+    },
+    /// Write the unit file that runs `reconcile` unattended.
+    Daemon {
+        #[command(subcommand)]
+        action: DaemonAction,
+    },
+    /// Lift hand edits of managed content back into the config.
+    Absorb {
+        /// Absorb everything absorbable without asking.
         #[arg(short = 'y', long)]
         yes: bool,
     },
@@ -119,6 +151,17 @@ fn run_apply(host: &OsHost, outcome: run::Outcome, _verbose: bool) -> ExitCode {
     } else {
         ExitCode::FAILURE
     }
+}
+
+fn confirm_absorb() -> bool {
+    use std::io::Write;
+    print!("  Lift this into the config? [y/N] ");
+    let _ = std::io::stdout().flush();
+    let mut a = String::new();
+    if std::io::stdin().read_line(&mut a).is_err() {
+        return false;
+    }
+    matches!(a.trim().to_ascii_lowercase().as_str(), "y" | "yes")
 }
 
 /// Applying changes a machine, so say so and wait.
@@ -345,6 +388,192 @@ fn main() -> ExitCode {
         }
 
         Command::Init => unreachable!("handled before the config is loaded"),
+
+        Command::Reconcile { watch, interval } => {
+            let mut first = Some(outcome);
+            loop {
+                let o = match first.take() {
+                    Some(o) => o,
+                    None => match run::plan(&host, cli.config.as_deref(), &cwd) {
+                        Ok(o) => o,
+                        Err(e) => {
+                            // Under --watch a bad config is temporary: someone
+                            // is editing it. Say so and keep waiting rather
+                            // than dying and needing a restart.
+                            eprintln!("bedouin: {e}");
+                            if !watch {
+                                return ExitCode::FAILURE;
+                            }
+                            std::thread::sleep(std::time::Duration::from_secs(interval));
+                            continue;
+                        }
+                    },
+                };
+                if o.plan.has_changes() {
+                    println!("{} change(s) pending; applying.", o.plan.changes().count());
+                    let code = run_apply(&host, o, cli.verbose);
+                    if !watch {
+                        return code;
+                    }
+                } else if !watch {
+                    println!("Nothing to reconcile.");
+                    return ExitCode::SUCCESS;
+                }
+                // ponytail: polling, not inotify. inotify is a dependency and
+                // another platform split; a reconcile loop is not latency
+                // sensitive. Revisit if seconds ever matter.
+                std::thread::sleep(std::time::Duration::from_secs(interval));
+            }
+        }
+
+        Command::Daemon { action } => {
+            let exe = std::env::current_exe()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|_| "bedouin".into());
+            let config = outcome.loaded.entry.display().to_string();
+            match action {
+                DaemonAction::Install { interval } => {
+                    let mut units = vec![bedouin_core::daemon::unit_for(
+                        &outcome.facts,
+                        &exe,
+                        &config,
+                        interval,
+                    )];
+                    units.extend(bedouin_core::daemon::service_for(&outcome.facts, &exe, &config));
+                    for u in &units {
+                        if let Some(d) = u.path.parent() {
+                            let _ = std::fs::create_dir_all(d);
+                        }
+                        if let Err(e) = std::fs::write(&u.path, &u.contents) {
+                            eprintln!("bedouin: {}: {e}", u.path.display());
+                            return ExitCode::FAILURE;
+                        }
+                        println!("Wrote {}", u.path.display());
+                    }
+                    let enable: Vec<&String> =
+                        units.iter().flat_map(|u| u.enable.iter()).collect();
+                    if !enable.is_empty() {
+                        // Printed, not run: enabling a background service that
+                        // mutates the machine is the user's decision.
+                        println!("\nTo start it:");
+                        for c in enable {
+                            println!("  {c}");
+                        }
+                    }
+                    ExitCode::SUCCESS
+                }
+                DaemonAction::Uninstall => {
+                    let mut units = vec![bedouin_core::daemon::unit_for(&outcome.facts, &exe, &config, 900)];
+                    units.extend(bedouin_core::daemon::service_for(&outcome.facts, &exe, &config));
+                    for u in &units {
+                        match std::fs::remove_file(&u.path) {
+                            Ok(()) => println!("Removed {}", u.path.display()),
+                            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                            Err(e) => eprintln!("bedouin: {}: {e}", u.path.display()),
+                        }
+                    }
+                    println!("Disable it with your service manager if it is still loaded.");
+                    ExitCode::SUCCESS
+                }
+            }
+        }
+
+        Command::Absorb { yes } => {
+            let report = match bedouin_core::doctor::check(
+                &outcome.state,
+                &outcome.config,
+                &outcome.facts,
+                &host,
+            ) {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("bedouin: {e}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            let edited: Vec<&bedouin_core::doctor::Drift> = report
+                .drift
+                .iter()
+                .filter(|d| matches!(d, bedouin_core::doctor::Drift::Edited { .. }))
+                .collect();
+            if edited.is_empty() {
+                println!("Nothing to absorb: no managed content has been edited by hand.");
+                return ExitCode::SUCCESS;
+            }
+
+            let entry = outcome.loaded.entry.clone();
+            let mut text = match std::fs::read_to_string(&entry) {
+                Ok(t) => t,
+                Err(e) => {
+                    eprintln!("bedouin: {}: {e}", entry.display());
+                    return ExitCode::FAILURE;
+                }
+            };
+            let mut absorbed = 0usize;
+
+            for d in edited {
+                let bedouin_core::doctor::Drift::Edited { id, file } = d else {
+                    continue;
+                };
+                // `rc/{package}/{basename}` -- the block is between markers
+                // bedouin owns, so its current text IS the new content.
+                let Some(rest) = id.strip_prefix("rc/") else {
+                    println!("  ? {id}\n      not absorbable yet; edit the config by hand");
+                    continue;
+                };
+                let Some((package, basename)) = rest.split_once('/') else {
+                    continue;
+                };
+                if package == "bedouin" {
+                    println!("  ? {id}\n      bedouin owns this block itself; nothing to absorb into");
+                    continue;
+                }
+                let current = match std::fs::read_to_string(file) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        eprintln!("  ! {file}: {e}");
+                        continue;
+                    }
+                };
+                let Ok(Some(block)) = bedouin_core::writers::extract_block(&current, package)
+                else {
+                    println!("  ? {id}\n      could not read the block back; edit by hand");
+                    continue;
+                };
+
+                println!("\n{id}\n  from {file}:");
+                for l in block.lines() {
+                    println!("    | {l}");
+                }
+                if !yes && !confirm_absorb() {
+                    println!("  skipped");
+                    continue;
+                }
+                match bedouin_core::edit::set_rc_content(&text, package, basename, &block) {
+                    Ok(t) => {
+                        text = t;
+                        absorbed += 1;
+                    }
+                    Err(e) => eprintln!("  ! {e}"),
+                }
+            }
+
+            if absorbed == 0 {
+                println!("\nNothing absorbed.");
+                return ExitCode::SUCCESS;
+            }
+            if let Err(e) = std::fs::write(&entry, &text) {
+                eprintln!("bedouin: {}: {e}", entry.display());
+                return ExitCode::FAILURE;
+            }
+            println!("\nAbsorbed {absorbed} edit(s) into {}.", entry.display());
+            // The config now matches the disk, but state still records the old
+            // hash, so doctor keeps reporting drift until apply re-records it.
+            // Applying writes the same bytes back -- it is the bookkeeping that
+            // moves, not the machine.
+            println!("Run `bedouin apply` to record it, then commit the config.");
+            ExitCode::SUCCESS
+        }
 
         Command::Doctor => {
             let report = match bedouin_core::doctor::check(
