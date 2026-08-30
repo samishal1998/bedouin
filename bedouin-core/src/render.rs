@@ -37,6 +37,10 @@ impl std::fmt::Display for RenderError {
 fn environment() -> Environment<'static> {
     let mut env = Environment::new();
     env.set_undefined_behavior(UndefinedBehavior::Strict);
+    // minijinja drops a template's final newline by default. A managed file is
+    // a file, and POSIX text files end with one -- without this every rendered
+    // dotfile silently loses its last line ending.
+    env.set_keep_trailing_newline(true);
     env
 }
 
@@ -157,6 +161,17 @@ mod tests {
         assert_eq!(
             render(&"{{ env.PRESENT | default('latest') }}".into(), &c).unwrap(),
             "yes"
+        );
+    }
+
+    #[test]
+    fn a_rendered_file_keeps_its_trailing_newline() {
+        let f = ctx_facts();
+        let vars = BTreeMap::from([("editor".to_string(), "nvim".to_string())]);
+        let c = Context { facts: &f, vars: &vars };
+        assert_eq!(
+            render(&"[core]\n\teditor = {{ vars.editor }}\n".into(), &c).unwrap(),
+            "[core]\n\teditor = nvim\n"
         );
     }
 

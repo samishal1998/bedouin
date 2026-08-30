@@ -26,6 +26,27 @@ enum Command {
     Plan,
     /// Print the resolved facts for this machine.
     Facts,
+    /// Make the machine match the config.
+    Apply {
+        /// Show what would change and stop. Same as `plan`.
+        #[arg(long)]
+        dry_run: bool,
+        /// Skip the confirmation prompt.
+        #[arg(short = 'y', long)]
+        yes: bool,
+    },
+}
+
+/// Applying changes a machine, so say so and wait.
+fn confirm() -> bool {
+    use std::io::Write;
+    print!("\nApply these changes? [y/N] ");
+    let _ = std::io::stdout().flush();
+    let mut answer = String::new();
+    if std::io::stdin().read_line(&mut answer).is_err() {
+        return false;
+    }
+    matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
 }
 
 fn main() -> ExitCode {
@@ -59,6 +80,45 @@ fn main() -> ExitCode {
                 }
             }
             ExitCode::SUCCESS
+        }
+        Command::Apply { dry_run, yes } => {
+            if dry_run {
+                print!("{}", outcome.plan.render(cli.verbose));
+                return ExitCode::from(outcome.plan.exit_code() as u8);
+            }
+            if !outcome.plan.has_changes() {
+                println!("No changes. The machine already matches the config.");
+                return ExitCode::SUCCESS;
+            }
+            print!("{}", outcome.plan.render(cli.verbose));
+            if !yes && !confirm() {
+                println!("Nothing applied.");
+                return ExitCode::SUCCESS;
+            }
+            println!();
+            let report = match bedouin_core::apply::apply(
+                &outcome.plan,
+                &outcome.config,
+                &outcome.facts,
+                outcome.state,
+                &host,
+                &mut |line| match line {
+                    bedouin_core::host::Line::Out(s) => println!("  {s}"),
+                    bedouin_core::host::Line::Err(s) => eprintln!("  {s}"),
+                },
+            ) {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("bedouin: {e}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            print!("{}", report.render());
+            if report.ok() {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            }
         }
         Command::Plan => {
             print!("{}", outcome.plan.render(cli.verbose));

@@ -127,6 +127,9 @@ pub trait Host {
     fn write(&self, p: &Path, bytes: &[u8], mode: u32) -> Result<()>;
     fn remove(&self, p: &Path) -> Result<()>;
     fn mkdir_p(&self, p: &Path) -> Result<()>;
+    /// Remove a directory only if it is empty. Bedouin created the drop-in
+    /// directory; it does not follow that everything now inside it is ours.
+    fn remove_dir(&self, p: &Path) -> Result<()>;
     /// Entries of a directory, sorted. Empty when the directory is absent.
     fn read_dir(&self, p: &Path) -> Result<Vec<PathBuf>>;
     /// Metadata *without* following a final symlink -- §9.1 refuses to write
@@ -244,6 +247,15 @@ impl Host for OsHost {
 
     fn mkdir_p(&self, p: &Path) -> Result<()> {
         std::fs::create_dir_all(p).map_err(|e| io_err(p, e))
+    }
+
+    fn remove_dir(&self, p: &Path) -> Result<()> {
+        match std::fs::remove_dir(p) {
+            Ok(()) => Ok(()),
+            // Not empty, or already gone: both fine to leave alone.
+            Err(e) if matches!(e.kind(), std::io::ErrorKind::NotFound) => Ok(()),
+            Err(_) => Ok(()),
+        }
     }
 
     fn read_dir(&self, p: &Path) -> Result<Vec<PathBuf>> {
@@ -404,6 +416,10 @@ impl Host for FakeHost {
     }
 
     fn mkdir_p(&self, _p: &Path) -> Result<()> {
+        Ok(())
+    }
+
+    fn remove_dir(&self, _p: &Path) -> Result<()> {
         Ok(())
     }
 

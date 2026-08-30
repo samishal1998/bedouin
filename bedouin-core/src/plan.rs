@@ -59,6 +59,49 @@ impl Action {
     }
 }
 
+/// Everything `apply` needs to carry out one item.
+///
+/// The plan is self-contained: the executor reads this and nothing else, so it
+/// cannot reach a different conclusion than the plan the user reviewed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Payload {
+    Manager(Manager),
+    Language {
+        installer: Manager,
+        version: Option<String>,
+        bin_dirs: Vec<PathBuf>,
+    },
+    Package {
+        manager: Manager,
+        version: Option<String>,
+        /// Set for `Reinstall`: the manager the old copy came from.
+        previous: Option<Manager>,
+    },
+    Dir(PathBuf),
+    File {
+        src: PathBuf,
+        dest: PathBuf,
+        mode: u32,
+    },
+    /// A drop-in file wholly owned by Bedouin, or the block Bedouin writes
+    /// into the user's own rc file.
+    RcBlock {
+        file: PathBuf,
+        marker: String,
+        content: String,
+        /// True when Bedouin owns the whole file, false when it owns a block
+        /// inside a file that is the user's.
+        owns_file: bool,
+    },
+    PathFile {
+        file: PathBuf,
+        entries: Vec<String>,
+    },
+    /// Nothing to execute -- a removal of an item whose kind the executor
+    /// handles from state alone.
+    None,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Item {
     pub id: String,
@@ -70,6 +113,7 @@ pub struct Item {
     pub needs_root: bool,
     /// Which conditional fields resolved to which arm, for `-v`.
     pub arms: BTreeMap<String, String>,
+    pub payload: Payload,
 }
 
 #[derive(Debug, Clone)]
@@ -197,38 +241,6 @@ pub fn system_path(facts: &Facts) -> Vec<PathBuf> {
     p
 }
 
-/// Bin directories a manager or language contributes, from its recipe rather
-/// than from user configuration -- nobody should have to tell Bedouin where
-/// rustup puts cargo.
-pub fn recipe_bin_dirs(name: &str, facts: &Facts) -> Vec<PathBuf> {
-    let home = &facts.home;
-    match name {
-        "rust" | "rustup" | "cargo" => vec![home.join(".cargo/bin")],
-        "mise" => vec![
-            home.join(".local/bin"),
-            home.join(".local/share/mise/shims"),
-        ],
-        "brew" => vec![PathBuf::from(if facts.os == crate::facts::Os::Macos {
-            "/opt/homebrew/bin"
-        } else {
-            "/home/linuxbrew/.linuxbrew/bin"
-        })],
-        _ => Vec::new(),
-    }
-}
-
-/// The binary that proves a language toolchain is installed.
-///
-/// Not the language name: nothing on a machine with Rust is called `rust`.
-pub fn recipe_probe_bin(language: &str) -> &str {
-    match language {
-        "rust" => "cargo",
-        "python" => "python3",
-        "golang" => "go",
-        other => other,
-    }
-}
-
 /// Order packages so a `needs:` edge always points backwards.
 ///
 /// A `needs:` naming a package that `only:` pruned is not an error -- the
@@ -330,7 +342,7 @@ pub fn build(
     // ---- managers
     for m in &cfg.package_managers {
         let id = format!("manager/{m}");
-        let present = facts.managers.contains(m);
+        let present = facts.managers.contains(m) || state.done(&id).is_some();
         available.insert(*m);
         let action = if present {
             Action::NoOp
@@ -357,6 +369,7 @@ pub fn build(
             },
             needs_root: false,
             arms: BTreeMap::new(),
+            payload: Payload::Manager(*m),
         });
         declared_ids.insert(id);
     }
@@ -379,8 +392,8 @@ pub fn build(
     }
     for l in &languages {
         let id = format!("language/{}", l.name);
-        let bin_dirs = recipe_bin_dirs(&l.name, facts);
-        let probe = recipe_probe_bin(&l.name);
+        let bin_dirs = crate::recipe::bin_dirs(&l.name, facts);
+        let probe = crate::recipe::probe_bin(&l.name);
         let installed = !state.interrupted(&id)
             && (state.done(&id).is_some()
                 || host.which(probe, &bin_dirs).is_some()
@@ -401,6 +414,11 @@ pub fn build(
             ),
             needs_root: false,
             arms: arms_of(&l.resolved_from),
+            payload: Payload::Language {
+                installer,
+                version: l.version.clone(),
+                bin_dirs: bin_dirs.clone(),
+            },
         });
         declared_ids.insert(id);
     }
@@ -462,14 +480,23 @@ pub fn build(
             (_, true) => Action::NoOp,
             (_, false) => Action::Create,
         };
+        let previous = match &action {
+            Action::Reinstall { from_method, .. } => Manager::parse(from_method),
+            _ => None,
+        };
         items.push(Item {
             id: id.clone(),
             kind: ItemKind::Package,
             name: p.name.clone(),
             action,
             detail: format!("{}  {manager}", p.version.as_deref().unwrap_or("latest")),
-            needs_root: matches!(manager, Manager::Apt | Manager::Zypper | Manager::Dnf),
+            needs_root: crate::recipe::needs_root(manager),
             arms: arms_of(&p.resolved_from),
+            payload: Payload::Package {
+                manager,
+                version: p.version.clone(),
+                previous,
+            },
         });
         declared_ids.insert(id);
     }
@@ -536,6 +563,25 @@ pub fn build(
             detail: format!("from {}", f.src),
             needs_root: !dest.starts_with(&facts.home),
             arms: arms_of(&f.resolved_from),
+            payload: Payload::File {
+                src: src.clone(),
+                dest: dest.clone(),
+                // 0600 under ~/.ssh and ~/.gnupg: a 0644 private key is a
+                // quiet way to break someone's day.
+                mode: f
+                    .mode
+                    .as_deref()
+                    .and_then(|m| u32::from_str_radix(m, 8).ok())
+                    .unwrap_or(
+                        if dest.starts_with(facts.home.join(".ssh"))
+                            || dest.starts_with(facts.home.join(".gnupg"))
+                        {
+                            0o600
+                        } else {
+                            0o644
+                        },
+                    ),
+            },
         });
         declared_ids.insert(id);
     }
@@ -576,6 +622,7 @@ pub fn build(
                 detail: format!("drop-in directory for {}", cfg.shell),
                 needs_root: false,
                 arms: BTreeMap::new(),
+                payload: Payload::Dir(dir.clone()),
             });
             declared_ids.insert(dir_id);
 
@@ -594,6 +641,17 @@ pub fn build(
                     detail: format!("managed block: source {}", display_home(dir, facts)),
                     needs_root: false,
                     arms: BTreeMap::new(),
+                    payload: Payload::RcBlock {
+                        file: facts.shell.rc_file.clone(),
+                        marker: "source".into(),
+                        content: crate::writers::source_dir_snippet(
+                            &dir.display().to_string(),
+                            cfg.shell,
+                        ),
+                        // The user's own rc file: Bedouin owns a block in it,
+                        // never the whole thing.
+                        owns_file: false,
+                    },
                 });
                 declared_ids.insert(id);
             }
@@ -621,6 +679,12 @@ pub fn build(
                     detail: format!("owned by {}", p.name),
                     needs_root: false,
                     arms: BTreeMap::new(),
+                    payload: Payload::RcBlock {
+                        file: file.clone(),
+                        marker: p.name.clone(),
+                        content: block.content.clone(),
+                        owns_file: true,
+                    },
                 });
                 declared_ids.insert(id);
             }
@@ -636,6 +700,8 @@ pub fn build(
                 }
             }
         }
+        let all_path_entries: Vec<String> =
+            path_entries.iter().map(|(k, _)| k.clone()).collect();
         for (entry, owner) in path_entries {
             let id = format!("path/{entry}");
             items.push(Item {
@@ -650,6 +716,13 @@ pub fn build(
                 detail: format!("owned by {owner}"),
                 needs_root: false,
                 arms: BTreeMap::new(),
+                payload: Payload::PathFile {
+                    file: facts
+                        .shell
+                        .rc_dir
+                        .join(format!("00-bedouin-path.{}", facts.shell.rc_ext())),
+                    entries: all_path_entries.clone(),
+                },
             });
             declared_ids.insert(id);
         }
@@ -674,11 +747,26 @@ pub fn build(
         if declared_ids.contains(id) {
             continue;
         }
-        let name = id.split_once('/').map_or(id.as_str(), |(_, n)| n);
+        // Prefer the path we recorded: `rc/jq/70-demo.zsh` is an id, not a
+        // thing the user recognises.
+        let name = item
+            .owned_files
+            .first()
+            .or_else(|| item.rc_blocks.first().map(|b| &b.file))
+            .map(|f| display_home(std::path::Path::new(f), facts))
+            .unwrap_or_else(|| {
+                let tail = id.split_once('/').map_or(id.as_str(), |(_, n)| n);
+                match item.kind {
+                    ItemKind::Dir | ItemKind::Path => {
+                        display_home(std::path::Path::new(tail), facts)
+                    }
+                    _ => tail.to_string(),
+                }
+            });
         items.push(Item {
             id: id.clone(),
             kind: item.kind,
-            name: name.to_string(),
+            name,
             action: Action::Remove,
             detail: match &item.method {
                 Some(m) => format!("was: {m}, owner: bedouin"),
@@ -686,6 +774,7 @@ pub fn build(
             },
             needs_root: false,
             arms: BTreeMap::new(),
+            payload: Payload::None,
         });
     }
 

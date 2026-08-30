@@ -78,6 +78,10 @@ pub struct StateItem {
     pub path: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rc_blocks: Vec<RcRecord>,
+    /// Files Bedouin created and therefore may delete. A block inside the
+    /// user's own rc file is never one of these -- that file is theirs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub owned_files: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hash: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -103,6 +107,7 @@ impl StateItem {
             bin_dirs: Vec::new(),
             path: Vec::new(),
             rc_blocks: Vec::new(),
+            owned_files: Vec::new(),
             hash: None,
             render_snapshot: None,
             backup: None,

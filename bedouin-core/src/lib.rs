@@ -1,12 +1,15 @@
+pub mod apply;
 pub mod arm;
 pub mod facts;
 pub mod host;
 pub mod loader;
 pub mod plan;
 pub mod probe;
+pub mod recipe;
 pub mod render;
 pub mod run;
 pub mod schema;
 pub mod state;
 pub mod target;
 pub mod value;
+pub mod writers;
