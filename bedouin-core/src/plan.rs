@@ -281,7 +281,16 @@ fn arms_of(p: &crate::schema::Provenance) -> BTreeMap<String, String> {
 }
 
 /// Build the plan for this machine.
-pub fn build(cfg: &Config, facts: &Facts, state: &State, host: &dyn Host) -> Result<Plan> {
+///
+/// `config_root` is the directory holding the entry file; `src:` paths resolve
+/// against it and may not escape it.
+pub fn build(
+    cfg: &Config,
+    facts: &Facts,
+    state: &State,
+    host: &dyn Host,
+    config_root: &std::path::Path,
+) -> Result<Plan> {
     let mut items = Vec::new();
     let mut warnings = Vec::new();
     let mut declared_ids = BTreeSet::new();
@@ -434,6 +443,29 @@ pub fn build(cfg: &Config, facts: &Facts, state: &State, host: &dyn Host) -> Res
                 f.src
             )));
         }
+        // A plan that names a source which is not there is not a prediction of
+        // apply, it is a promise apply cannot keep -- and checking is free.
+        let src = normalize(&f.src, &facts.home, config_root);
+        if !crate::loader::contained_in(&src, config_root) && !f.src.starts_with('/') {
+            return Err(ConfigError::new(format!(
+                "managed file `{}` reaches outside the config root\n  resolved to: {}\n  root:       {}",
+                f.src,
+                src.display(),
+                config_root.display()
+            )));
+        }
+        if host
+            .read(&src)
+            .map_err(|e| ConfigError::new(e.to_string()))?
+            .is_none()
+        {
+            return Err(ConfigError::new(format!(
+                "managed file source `{}` does not exist\n  looked for: {}\n    `src:` resolves against the directory holding bedouin.yaml",
+                f.src,
+                src.display()
+            )));
+        }
+
         let id = format!("file/{}", dest.display());
         let exists = host
             .symlink_meta(&dest)

@@ -71,6 +71,9 @@ files:
 fn machine(os: Os) -> FakeHost {
     let mut h = FakeHost::new()
         .with_file("/cfg/bedouin.yaml", CONFIG)
+        // `src:` resolves against the config root, and plan refuses to name a
+        // source that is not there -- a plan apply cannot keep is not a plan.
+        .with_file("/cfg/templates/gitconfig.j2", "[core]\n\teditor = {{ vars.editor }}\n")
         .with_env("HOME", "/home/t")
         .with_env("USER", "t")
         .with_env("HOSTNAME", "khaymah")
@@ -205,6 +208,39 @@ fn a_fresh_machine_plans_everything_and_exits_two() {
     assert!(out.contains("+ package"), "{out}");
     assert!(out.contains("to add"), "{out}");
     assert_eq!(linux.facts.privilege, Privilege::Passwordless);
+}
+
+#[test]
+fn a_managed_file_whose_template_is_missing_is_refused() {
+    // `plan` claims to be a faithful prediction of `apply`. Naming a source
+    // that does not exist is a promise apply cannot keep, and checking is free.
+    let cfg = CONFIG.replace("templates/gitconfig.j2", "templates/absent.j2");
+    let h = machine(Os::Linux).with_file("/cfg/bedouin.yaml", &cfg);
+    let err = run::plan_for(
+        &h,
+        Some(Path::new("/cfg/bedouin.yaml")),
+        Path::new("/cfg"),
+        Os::Linux,
+        Arch::X86_64,
+    )
+    .unwrap_err();
+    assert!(err.message.contains("does not exist"), "{err}");
+    assert!(err.message.contains("/cfg/templates/absent.j2"), "{err}");
+}
+
+#[test]
+fn a_template_outside_the_config_root_is_refused() {
+    let cfg = CONFIG.replace("templates/gitconfig.j2", "../../etc/passwd");
+    let h = machine(Os::Linux).with_file("/cfg/bedouin.yaml", &cfg);
+    let err = run::plan_for(
+        &h,
+        Some(Path::new("/cfg/bedouin.yaml")),
+        Path::new("/cfg"),
+        Os::Linux,
+        Arch::X86_64,
+    )
+    .unwrap_err();
+    assert!(err.message.contains("outside the config root"), "{err}");
 }
 
 #[test]

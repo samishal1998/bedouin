@@ -720,14 +720,20 @@ computed. `sudo -n true` has two outcomes and cannot distinguish "no sudo
 rights" from "sudo needs a password", yet revision 1 gated a refuse-to-start
 decision on exactly that distinction.
 
-    euid == 0                     -> root
-    sudo -n true succeeds         -> passwordless
-    sudo -n -l lists any rule     -> password
-    otherwise                     -> unavailable
+    euid == 0                       -> root
+    sudo -n true succeeds           -> passwordless
+    in group sudo / wheel / admin   -> password
+    otherwise                       -> unavailable
 
 `root` matters in practice: containers run as root, and §11's layer-3 smoke
 tests run in containers. Revision 1 had no `root` case, so `apply` would have
 refused to start inside its own test harness.
+
+Group membership rather than a second sudo probe, because `sudo -n -l` does
+not work: it exits nonzero both when the user has no rights *and* when it
+merely wants a password, which is exactly the distinction being drawn. This
+was measured, not assumed -- on a machine in the `sudo` group with a password
+required, `sudo -n true` and `sudo -n -l` both return 1.
 
 Steps declare whether they need root. On `password`, `apply` validates once
 up front (`sudo -v`), listing the steps that will need it, and then **holds
@@ -1007,8 +1013,7 @@ run against a populated state and proposing to remove everything).
 
 **M0** — crates, schema types, the hand-written `Value<T>` deserializer, the
 facts resolver, the seven-stage loader, `only:` pruning, `resolve()`, path
-normalization, DAG construction, diffing against state, `plan` output and the
-plan artifact. `Host` exists; `FakeHost` drives every test. `OsHost` gains
+normalization, DAG construction, diffing against state, `plan` output. `Host` exists; `FakeHost` drives every test. `OsHost` gains
 only its **read-only** methods in M0 — `plan` genuinely probes the machine,
 so a read-only `OsHost` is an M0 deliverable, and the state store gains its
 reader. Nothing mutates the machine.
@@ -1037,6 +1042,34 @@ smoke tests, musl and universal release builds.
 | `doctor`, drift reporting, `remove` command | M2 | removal as a plan outcome is in M1 |
 | Tauri app | M3 | webkit2gtk must stay off the bootstrap path |
 | `absorb`, `reconcile --watch` | M4 | |
+
+## 14a. Deltas between this spec and what M0 shipped
+
+Recorded so the document going into M1 is truthful rather than aspirational.
+
+1. **The plan artifact (`plan -o`, §7.3) moved to M1.** It has no consumer
+   until `apply -f` exists, and the referenced-env computation is real work
+   that belongs beside the thing that reads it. `plan` and `apply` in one
+   process are unaffected, because facts are resolved once either way.
+2. **Version comparison in the diff (§7.2) is presence-only in M0.** A binary
+   found on the search path counts as installed. Comparing versions needs the
+   per-manager probe commands of §8.4's recipe table, which lands with the
+   executor.
+3. **Unknown config keys use serde's derived check, not the hand-rolled one
+   §12 describes.** The derived message already lists the expected keys, and
+   the rejected-key table (`fromEnv`, `fromScript`, `matcher`, …) lives where
+   it actually matters, inside `Value`'s deserializer. Revisit when the
+   derived message grates.
+4. **`needs:` naming a package that `only:` pruned drops the edge** rather
+   than erroring. `zellij needs build-essential` is correct on Linux and
+   meaningless on macOS, and one config has to say both. A `needs:` naming a
+   package that was never declared is still an error. This rule was missing
+   from the spec entirely; the acceptance test found it.
+5. **`plan` verifies each `files[].src` exists and is inside the config
+   root.** A plan naming a source that is not there is not a faithful
+   prediction of apply, and the check is read-only and free.
+6. **The built-in arm vocabulary includes `{distro_like}-{arch}` names**
+   (§6.1), which the first draft claimed it did not.
 
 ## 15. Departures from the handoff
 

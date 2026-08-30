@@ -386,10 +386,19 @@ pub fn resolve(raw: &RawConfig, vocab: &Vocabulary, facts: &Facts) -> Result<Con
         let installer = match &l.installer {
             Some(v) => {
                 let name = r.one(v, "installer", &mut prov).map_err(|e| e.in_item(&item))?;
-                Some(
-                    r.managers(std::slice::from_ref(&name), "installer")
-                        .map_err(|e| e.in_item(&item))?[0],
-                )
+                let m = r
+                    .managers(std::slice::from_ref(&name), "installer")
+                    .map_err(|e| e.in_item(&item))?[0];
+                // Only these two install toolchains. Accepting any known
+                // manager would let `installer: apt` reach an executor path
+                // that does not exist, and fail at apply rather than at parse.
+                if !matches!(m, Manager::Rustup | Manager::Mise) {
+                    return Err(ConfigError::new(format!(
+                        "`installer: {m}` is not a toolchain installer\n  supported: rustup, mise"
+                    ))
+                    .in_item(&item));
+                }
+                Some(m)
             }
             None => None,
         };

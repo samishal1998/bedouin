@@ -43,7 +43,15 @@ fn main() -> ExitCode {
 
     match cli.command {
         Command::Facts => {
-            match serde_json::to_string_pretty(&outcome.facts) {
+            // Names only. The values are the same secrets class the plan
+            // artifact withholds, and this output ends up in bug reports.
+            let mut facts = outcome.facts.clone();
+            facts.env = facts
+                .env
+                .keys()
+                .map(|k| (k.clone(), "<set>".to_string()))
+                .collect();
+            match serde_json::to_string_pretty(&facts) {
                 Ok(j) => println!("{j}"),
                 Err(e) => {
                     eprintln!("bedouin: {e}");

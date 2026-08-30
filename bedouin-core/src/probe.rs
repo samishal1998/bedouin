@@ -80,12 +80,20 @@ fn privilege(host: &dyn Host, path: &[PathBuf]) -> Privilege {
     if capture(host, &["sudo", "-n", "true"], path).is_some() {
         return Privilege::Passwordless;
     }
-    // `sudo -n -l` succeeds when rules exist but a password is wanted for this
-    // command; it fails outright when the user is not a sudoer at all.
-    if capture(host, &["sudo", "-n", "-l"], path).is_some() {
-        return Privilege::Password;
+    // `sudo -n -l` was the obvious second probe and it does not work: it exits
+    // nonzero both when the user has no rights AND when it merely wants a
+    // password, which is exactly the distinction being drawn. Group membership
+    // is the signal that separates them without prompting.
+    let sudoer = capture(host, &["id", "-nG"], path).is_some_and(|groups| {
+        groups
+            .split_whitespace()
+            .any(|g| matches!(g, "sudo" | "wheel" | "admin"))
+    });
+    if sudoer {
+        Privilege::Password
+    } else {
+        Privilege::Unavailable
     }
-    Privilege::Unavailable
 }
 
 /// This machine's os and arch, from compile-time constants.
@@ -276,19 +284,21 @@ mod tests {
             .with_command("sudo -n true", FakeRun::ok(""));
         assert_eq!(facts(&free, None).unwrap().privilege, Privilege::Passwordless);
 
+        // A real machine: in the sudo group, but sudo wants a password. Both
+        // `sudo -n true` and `sudo -n -l` fail here, which is why the group is
+        // what decides.
         let asks = base()
             .with_command("id -u", FakeRun::ok("1000"))
             .with_command("sudo -n true", FakeRun::fails(1, "a password is required"))
-            .with_command("sudo -n -l", FakeRun::ok("(ALL) ALL"));
+            .with_command("sudo -n -l", FakeRun::fails(1, "a password is required"))
+            .with_command("id -nG", FakeRun::ok("someone sudo users docker"));
         assert_eq!(facts(&asks, None).unwrap().privilege, Privilege::Password);
 
-        // Nothing scripted: no sudo at all.
-        assert_eq!(
-            facts(&base().with_command("id -u", FakeRun::ok("1000")), None)
-                .unwrap()
-                .privilege,
-            Privilege::Unavailable
-        );
+        // In no privileged group: genuinely cannot escalate.
+        let none = base()
+            .with_command("id -u", FakeRun::ok("1000"))
+            .with_command("id -nG", FakeRun::ok("someone users"));
+        assert_eq!(facts(&none, None).unwrap().privilege, Privilege::Unavailable);
     }
 
     #[test]

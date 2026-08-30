@@ -56,7 +56,7 @@ pub fn plan_for(
     let facts = probe::facts_for(host, declared, os, arch)?;
     let config = schema::resolve(&loaded.raw, &loaded.vocab, &facts)?;
     let state = state::load(host, &state::default_path(&facts.home))?;
-    let plan = plan::build(&config, &facts, &state, host)?;
+    let plan = plan::build(&config, &facts, &state, host, &loaded.root)?;
 
     Ok(Outcome {
         loaded,
