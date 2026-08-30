@@ -34,7 +34,12 @@ MADDER_D = "#D4443C"  # lifted for dark ground, same hue family
 HERO_W, HERO_H, GROUND = 260, 82, 68
 OUTLINE = ("M 58 68 L 66 46 Q 76 38 98 14 "
            "Q 130 40 162 14 "
-           "Q 184 38 194 46 L 202 68")
+           "Q 184 38 194 46 L 202 68 Z")
+# The entrance, cut as a true hole (fill-rule evenodd) so the ground shows
+# through and one path serves both themes. Trapezoid rather than an arch: it
+# is the tent-door convention, and flaring downward echoes the tent's own
+# silhouette, so the opening is a small tent.
+DOOR = "M 116 68 L 123 44 L 137 44 L 144 68 Z"
 GUYS = [(66, 46, 20, 66), (194, 46, 240, 66)]
 
 
@@ -46,7 +51,7 @@ def hero(hair, madder, bg=None):
   <title>Bedouin</title>{bgr}
   <path d="M 12 {GROUND} L 248 {GROUND}" fill="none" stroke="{hair}" stroke-width="1.8" opacity="0.35"/>
   <g fill="none" stroke="{madder}" stroke-width="2.4" stroke-linecap="round">{ropes}{stakes}</g>
-  <path d="{OUTLINE} Z" fill="{hair}"/>
+  <path d="{OUTLINE} {DOOR}" fill="{hair}" fill-rule="evenodd"/>
 </svg>
 '''
 
@@ -57,17 +62,21 @@ def hero(hair, madder, bg=None):
 # below ~24px a hairline on a hanging curve is exactly what fills in, which
 # is the constraint the handoff's own exploration found.
 MARK = "M 3 50 Q 12 46 22 12 Q 32 34 42 12 Q 52 46 61 50 Z"
+MARK_DOOR = "M 26 50 L 26 37 Q 32 32 38 37 L 38 50 Z"
 
 
-def mark(hair, madder, bg=None, accent=True):
+def mark(hair, madder, bg=None, accent=True, door=True):
     bgr = f'<rect width="64" height="64" fill="{bg}"/>' if bg else ""
     # The ground runs wider than the tent, so it reads as terrain the tent is
     # pitched on rather than as an underline attached to the shape.
     foot = (f'<path d="M 2 53 L 62 53" fill="none" stroke="{madder}" '
             f'stroke-width="2.6" stroke-linecap="round"/>') if accent else ""
+    # The entrance holds down to 24px. At 16 it thins to a two-pixel notch, so
+    # the tiny variant drops it rather than letting it turn to mush.
+    body = f'{MARK} {MARK_DOOR}' if door else MARK
     return f'''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Bedouin">
   <title>Bedouin</title>{bgr}
-  <path d="{MARK}" fill="{hair}"/>{foot}
+  <path d="{body}" fill="{hair}" fill-rule="evenodd"/>{foot}
 </svg>
 '''
 
@@ -80,6 +89,8 @@ VARIANTS = {
     # For inline embedding where the mark should take the surrounding text
     # colour -- terminal help output, docs that already theme themselves.
     "bedouin-mark-mono.svg": mark("currentColor", "currentColor", accent=False),
+    # For 16px and below, where the entrance stops resolving.
+    "bedouin-mark-tiny.svg": mark(HAIR_L, MADDER, door=False),
 }
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Bedouin">
   <title>Bedouin</title>
-  <path d="M 3 50 Q 12 46 22 12 Q 32 34 42 12 Q 52 46 61 50 Z" fill="currentColor"/>
+  <path d="M 3 50 Q 12 46 22 12 Q 32 34 42 12 Q 52 46 61 50 Z M 26 50 L 26 37 Q 32 32 38 37 L 38 50 Z" fill="currentColor" fill-rule="evenodd"/>
 </svg>
