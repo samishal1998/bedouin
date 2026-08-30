@@ -1025,7 +1025,19 @@ privilege handling and the keepalive, state writes with locking and atomic
 replacement, `apply` and `apply -f`, failure and resume semantics, docker
 smoke tests, musl and universal release builds.
 
-**M1.5** — `init`, `add`, `sync`.
+**M1.5** — `init`, `add`, `sync`. **Done.**
+
+**M2** — `doctor`, drift reporting, `remove`, SUSE as a tested execution
+target. **Done.**
+
+**M4** — `absorb` to the ceiling stated in §17, `reconcile --watch`, and
+`daemon install` generating systemd/launchd units. **Done.**
+
+**M3** — the Tauri app. Deliberately last: the user called it "a luxury, not a
+necessity", and the bootstrap path must never need a webview.
+
+Also closed since M1: the plan artifact (`plan -o` / `apply -f`), the state
+lock, and the sudo keepalive -- the three items §14a.1 and §8.2 deferred.
 
 ## 14. Deferred, with reasons
 
