@@ -49,10 +49,43 @@ enum Command {
         #[arg(short = 'y', long)]
         yes: bool,
     },
+    /// Set an alias in the config, then apply.
+    Alias {
+        /// `name=value`, e.g. `gs=git status`.
+        spec: String,
+        /// Scope it to a package instead of making it global.
+        #[arg(long, value_name = "PACKAGE")]
+        package: Option<String>,
+        #[arg(long)]
+        no_apply: bool,
+        #[arg(short = 'y', long)]
+        yes: bool,
+    },
+    /// Set a package's completion generator, then apply.
+    Completions {
+        /// The package the completions belong to.
+        package: String,
+        /// The command that prints them, e.g. `-- zellij setup --dump-completion {{ shell.name }}`.
+        #[arg(last = true, required = true)]
+        generate: Vec<String>,
+        #[arg(long)]
+        no_apply: bool,
+        #[arg(short = 'y', long)]
+        yes: bool,
+    },
     /// Add a package to the config, then apply.
     Add {
         /// `manager:package` or `manager:package@version`, e.g. `cargo:zellij@0.40.1`.
         spec: String,
+        /// Also give it an alias: `--alias z=zellij`. Repeatable.
+        #[arg(long, value_name = "NAME=VALUE")]
+        alias: Vec<String>,
+        /// Also set its completion generator, as one command string.
+        #[arg(long, value_name = "COMMAND")]
+        completions: Option<String>,
+        /// Also add a PATH entry it owns. Repeatable.
+        #[arg(long, value_name = "DIR")]
+        path: Vec<String>,
         #[arg(long)]
         no_apply: bool,
         #[arg(short = 'y', long)]
@@ -299,6 +332,119 @@ fn cmd_env(
     ExitCode::SUCCESS
 }
 
+/// Set a package's `completions.generate`, as a YAML argv list.
+fn set_completions(
+    text: &str,
+    package: &str,
+    argv: &[String],
+) -> Result<String, bedouin_core::schema::ConfigError> {
+    let list = argv
+        .iter()
+        .map(|a| format!("\"{}\"", a.replace('\\', "\\\\").replace('"', "\\\"")))
+        .collect::<Vec<_>>()
+        .join(", ");
+    // `generate:` sits under `completions:`, so the field is the whole block.
+    bedouin_core::edit::set_field(
+        text,
+        bedouin_core::edit::Section::Packages,
+        package,
+        "completions",
+        &format!("{{ generate: [{list}] }}"),
+    )
+}
+
+/// Split a command string into argv.
+///
+/// Whitespace separates words, except inside `{{ ... }}` -- a naive split turns
+/// `{{ shell.name }}` into three arguments and the template stops being one.
+/// Quotes group too, so a generator with a real argument survives. Anything
+/// with actual shell syntax should use the `--` form, which needs no guessing.
+fn shell_words(s: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut depth = 0usize;
+    let mut quote: Option<char> = None;
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '{' if chars.peek() == Some(&'{') => {
+                depth += 1;
+                cur.push(c);
+                cur.push(chars.next().unwrap_or('{'));
+            }
+            '}' if chars.peek() == Some(&'}') && depth > 0 => {
+                depth -= 1;
+                cur.push(c);
+                cur.push(chars.next().unwrap_or('}'));
+            }
+            '\'' | '"' if quote.is_none() => quote = Some(c),
+            c if Some(c) == quote => quote = None,
+            c if c.is_whitespace() && depth == 0 && quote.is_none() => {
+                if !cur.is_empty() {
+                    out.push(std::mem::take(&mut cur));
+                }
+            }
+            c => cur.push(c),
+        }
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
+/// Edit the config, verify it still loads, then apply -- the shape every
+/// config-editing command shares.
+#[allow(clippy::too_many_arguments)]
+fn edit_then_apply(
+    host: &OsHost,
+    outcome: &run::Outcome,
+    cli_config: Option<&std::path::Path>,
+    verbose: bool,
+    cwd: &std::path::Path,
+    no_apply: bool,
+    yes: bool,
+    edit: impl FnOnce(&str) -> Result<String, bedouin_core::schema::ConfigError>,
+    done: &str,
+) -> ExitCode {
+    let entry = &outcome.loaded.entry;
+    let text = match std::fs::read_to_string(entry) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("bedouin: {}: {e}", entry.display());
+            return ExitCode::FAILURE;
+        }
+    };
+    let edited = match edit(&text) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("bedouin: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let after = match write_config_verified(host, entry, &edited, cli_config, cwd) {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("bedouin: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    println!("{done}");
+    if no_apply {
+        return ExitCode::SUCCESS;
+    }
+    if !after.plan.has_changes() {
+        println!("Nothing to do on this machine.");
+        return ExitCode::SUCCESS;
+    }
+    print!("{}", after.plan.render(verbose));
+    if !yes && !confirm() {
+        println!("Config edited, nothing applied.");
+        return ExitCode::SUCCESS;
+    }
+    run_apply(host, after, verbose)
+}
+
 /// Applying changes a machine, so say so and wait.
 fn confirm() -> bool {
     use std::io::Write;
@@ -396,6 +542,10 @@ fn main() -> ExitCode {
         return cmd_env(&host, cli.config.as_deref(), &cwd, write);
     }
 
+    // Captured before the match moves out of `cli.command`.
+    let cli_config = cli.config.clone();
+    let verbose = cli.verbose;
+
     let outcome = match run::plan(&host, cli.config.as_deref(), &cwd) {
         Ok(o) => o,
         Err(e) => {
@@ -474,6 +624,9 @@ fn main() -> ExitCode {
 
         Command::Add {
             spec,
+            alias,
+            completions,
+            path: path_entries,
             no_apply,
             yes,
         } => {
@@ -507,13 +660,57 @@ fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
-            let edited = match bedouin_core::edit::add_package(&text, name, manager, version) {
+            let mut edited = match bedouin_core::edit::add_package(&text, name, manager, version) {
                 Ok(t) => t,
                 Err(e) => {
                     eprintln!("bedouin: {e}");
                     return ExitCode::FAILURE;
                 }
             };
+            // The extras, applied to the same text before any of it is
+            // written -- so a bad `--alias` leaves nothing half-added.
+            for a in &alias {
+                let Some((k, v)) = a.split_once('=') else {
+                    eprintln!("bedouin: `--alias {a}` is not `name=value`");
+                    return ExitCode::FAILURE;
+                };
+                match bedouin_core::edit::set_alias(&edited, Some(name), k, v) {
+                    Ok(t) => edited = t,
+                    Err(e) => {
+                        eprintln!("bedouin: {e}");
+                        return ExitCode::FAILURE;
+                    }
+                }
+            }
+            if let Some(cmd) = &completions {
+                match set_completions(&edited, name, &shell_words(cmd)) {
+                    Ok(t) => edited = t,
+                    Err(e) => {
+                        eprintln!("bedouin: {e}");
+                        return ExitCode::FAILURE;
+                    }
+                }
+            }
+            if !path_entries.is_empty() {
+                let list = path_entries
+                    .iter()
+                    .map(|p| format!("\"{p}\""))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                match bedouin_core::edit::set_field(
+                    &edited,
+                    bedouin_core::edit::Section::Packages,
+                    name,
+                    "path",
+                    &format!("[{list}]"),
+                ) {
+                    Ok(t) => edited = t,
+                    Err(e) => {
+                        eprintln!("bedouin: {e}");
+                        return ExitCode::FAILURE;
+                    }
+                }
+            }
             let after =
                 match write_config_verified(&host, entry, &edited, cli.config.as_deref(), &cwd) {
                     Ok(o) => o,
@@ -743,6 +940,50 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
 
+        Command::Alias {
+            spec,
+            package,
+            no_apply,
+            yes,
+        } => {
+            let Some((name, value)) = spec.split_once('=') else {
+                eprintln!("bedouin: `{spec}` is not `name=value`.");
+                eprintln!("  For example: `bedouin alias gs='git status'`");
+                return ExitCode::FAILURE;
+            };
+            edit_then_apply(
+                &host,
+                &outcome,
+                cli_config.as_deref(),
+                verbose,
+                &cwd,
+                no_apply,
+                yes,
+                |text| bedouin_core::edit::set_alias(text, package.as_deref(), name, value),
+                &match &package {
+                    Some(p) => format!("Set alias `{name}` on package `{p}`."),
+                    None => format!("Set global alias `{name}`."),
+                },
+            )
+        }
+
+        Command::Completions {
+            package,
+            generate,
+            no_apply,
+            yes,
+        } => edit_then_apply(
+            &host,
+            &outcome,
+            cli_config.as_deref(),
+            verbose,
+            &cwd,
+            no_apply,
+            yes,
+            |text| set_completions(text, &package, &generate),
+            &format!("Set completions for `{package}`: `{}`.", generate.join(" ")),
+        ),
+
         Command::Doctor => {
             let report = match bedouin_core::doctor::check(
                 &outcome.state,
@@ -899,5 +1140,38 @@ fn main() -> ExitCode {
             // just look at the exit status.
             ExitCode::from(outcome.plan.exit_code() as u8)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::shell_words;
+
+    #[test]
+    fn a_template_survives_being_split_into_argv() {
+        // A naive whitespace split turns `{{ shell.name }}` into three
+        // arguments, and the template stops being one.
+        assert_eq!(
+            shell_words("zellij setup --dump-completion {{ shell.name }}"),
+            ["zellij", "setup", "--dump-completion", "{{ shell.name }}"]
+        );
+        assert_eq!(
+            shell_words("kubectl completion {{ shell.name }}"),
+            ["kubectl", "completion", "{{ shell.name }}"]
+        );
+    }
+
+    #[test]
+    fn quotes_group_and_plain_words_do_not() {
+        assert_eq!(
+            shell_words("gh completion -s zsh"),
+            ["gh", "completion", "-s", "zsh"]
+        );
+        assert_eq!(
+            shell_words("tool --flag 'two words'"),
+            ["tool", "--flag", "two words"]
+        );
+        assert_eq!(shell_words("   spaced   out  "), ["spaced", "out"]);
+        assert!(shell_words("").is_empty());
     }
 }

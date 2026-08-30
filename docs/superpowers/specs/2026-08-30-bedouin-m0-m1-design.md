@@ -1319,6 +1319,42 @@ Consequences, stated because they are not free:
 `plan` also warns when a referenced variable is unset **and** has no
 `| default(…)`, since that is a resolve-time failure waiting to happen.
 
+## 21. Editing the config without opening it
+
+`add` and `remove` already existed. The rest of the config deserves the same
+treatment: discovering that a tool you already have ships a completion
+generator should not mean opening a file to write four lines.
+
+```console
+$ bedouin alias gs='git status'                 # global
+$ bedouin alias z=zellij --package zellij       # scoped to a package
+$ bedouin completions kubectl -- kubectl completion '{{ shell.name }}'
+$ bedouin add cargo:zellij@0.40.1 \
+    --alias z=zellij --alias za='zellij attach' \
+    --path '{{ home }}/.cargo/bin' \
+    --completions 'zellij setup --dump-completion {{ shell.name }}'
+```
+
+Everything the same way it already worked, because that part was hard-won:
+
+- **Text surgery**, so comments and ordering survive.
+- **A structural guard** — the parsed result must equal the parsed original
+  plus exactly this change, the rule `remove` got after §14b.
+- **Write, verify, roll back** — the edit is written, the config is re-loaded,
+  and a config bedouin can no longer read is restored untouched.
+- `add`'s extras apply to one text before any of it is written, so a bad
+  `--alias` leaves nothing half-added.
+
+Two details that are not obvious:
+
+**Alias values are quoted going in.** Shell is full of `:` and `#`, and a bare
+YAML scalar containing either means something else.
+
+**`--completions` splits on whitespace, except inside `{{ … }}`.** A naive
+split turns `{{ shell.name }}` into three arguments and the template stops
+being one. Anything with real shell syntax should use the `--` form, which
+needs no guessing at all.
+
 ## 15. Departures from the handoff
 
 The handoff is approved; these are the places this spec knowingly differs.

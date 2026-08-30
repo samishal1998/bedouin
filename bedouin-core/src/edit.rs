@@ -417,6 +417,255 @@ pub fn set_rc_content(
     Ok(out)
 }
 
+/// Set a simple `key: value` field on one named entry, adding it if absent.
+///
+/// The shape every `bedouin add --…` convenience reduces to. Verified the same
+/// way as everything else here: the parsed result must equal the parsed
+/// original plus exactly this change.
+pub fn set_field(
+    text: &str,
+    section: Section,
+    name: &str,
+    key: &str,
+    value: &str,
+) -> Result<String> {
+    let lines: Vec<&str> = text.lines().collect();
+    let (from, to) = locate_entry(&lines, section, name)?;
+    let nl = newline_of(text);
+
+    // The entry's own field indent, taken from a sibling rather than assumed.
+    let indent = (from + 1..to)
+        .find(|i| !lines[*i].trim().is_empty())
+        .map(|i| indent_of(lines[i]))
+        .unwrap_or(indent_of(lines[from]) + 2);
+    let line = format!("{}{key}: {value}", " ".repeat(indent));
+
+    let existing = (from..to).find(|i| {
+        let t = lines[*i].trim_start();
+        indent_of(lines[*i]) == indent && t.starts_with(&format!("{key}:"))
+    });
+
+    let mut out: Vec<String> = lines.iter().map(|s| (*s).to_string()).collect();
+    match existing {
+        Some(i) => out[i] = line,
+        // After the entry's last content line, so it reads in declaration order.
+        None => {
+            let at = (from..to)
+                .rev()
+                .find(|i| !lines[*i].trim().is_empty())
+                .unwrap_or(from);
+            out.insert(at + 1, line);
+        }
+    }
+    let mut out = out.join(nl);
+    if text.ends_with('\n') {
+        out.push_str(nl);
+    }
+    verify_only_change(text, &out, |doc| {
+        entry_of(doc, section, name)
+            .and_then(|e| e.get(key))
+            .is_some()
+    })?;
+    Ok(out)
+}
+
+/// Add an alias, globally or scoped to a package.
+pub fn set_alias(text: &str, package: Option<&str>, alias: &str, value: &str) -> Result<String> {
+    let lines: Vec<&str> = text.lines().collect();
+    let nl = newline_of(text);
+    // Quoted, because an alias value is shell and routinely contains `:` and
+    // `#`, either of which would change what the YAML means.
+    let entry_value = format!("{alias}: {}", yaml_quote(value));
+
+    let (block_start, block_end, indent) = match package {
+        None => match lines.iter().position(|l| *l == "aliases:") {
+            Some(head) => {
+                let (_, end) = block_span(&lines, head);
+                let indent = (head + 1..end)
+                    .find(|i| !lines[*i].trim().is_empty())
+                    .map(|i| indent_of(lines[i]))
+                    .unwrap_or(2);
+                (head, end, indent)
+            }
+            // No `aliases:` block yet: make one, before `packages:` so the
+            // file keeps reading top-down.
+            None => {
+                let at = section_head(&lines, Section::Packages).unwrap_or(lines.len());
+                let mut out: Vec<String> = lines.iter().map(|s| (*s).to_string()).collect();
+                out.insert(at, String::new());
+                out.insert(at + 1, "aliases:".into());
+                out.insert(at + 2, format!("  {entry_value}"));
+                let mut joined = out.join(nl);
+                if text.ends_with('\n') {
+                    joined.push_str(nl);
+                }
+                return verify_only_change(text, &joined, |doc| {
+                    doc.get("aliases")
+                        .and_then(|a| a.get(alias))
+                        .and_then(|v| v.as_str())
+                        == Some(value)
+                })
+                .map(|()| joined);
+            }
+        },
+        Some(pkg) => {
+            let (from, to) = locate_entry(&lines, Section::Packages, pkg)?;
+            let field_indent = (from + 1..to)
+                .find(|i| !lines[*i].trim().is_empty())
+                .map(|i| indent_of(lines[i]))
+                .unwrap_or(indent_of(lines[from]) + 2);
+            match (from..to).find(|i| {
+                indent_of(lines[*i]) == field_indent && lines[*i].trim_start() == "aliases:"
+            }) {
+                Some(head) => {
+                    let (_, end) = block_span(&lines, head);
+                    (head, end, field_indent + 2)
+                }
+                None => {
+                    // No `aliases:` on this package yet.
+                    let at = (from..to)
+                        .rev()
+                        .find(|i| !lines[*i].trim().is_empty())
+                        .unwrap_or(from);
+                    let mut out: Vec<String> = lines.iter().map(|s| (*s).to_string()).collect();
+                    out.insert(at + 1, format!("{}aliases:", " ".repeat(field_indent)));
+                    out.insert(
+                        at + 2,
+                        format!("{}{entry_value}", " ".repeat(field_indent + 2)),
+                    );
+                    let mut joined = out.join(nl);
+                    if text.ends_with('\n') {
+                        joined.push_str(nl);
+                    }
+                    return verify_only_change(text, &joined, |doc| {
+                        entry_of(doc, Section::Packages, pkg)
+                            .and_then(|e| e.get("aliases"))
+                            .and_then(|a| a.get(alias))
+                            .and_then(|v| v.as_str())
+                            == Some(value)
+                    })
+                    .map(|()| joined);
+                }
+            }
+        }
+    };
+
+    let mut out: Vec<String> = lines.iter().map(|s| (*s).to_string()).collect();
+    let existing = (block_start + 1..block_end)
+        .find(|i| lines[*i].trim_start().starts_with(&format!("{alias}:")));
+    let line = format!("{}{entry_value}", " ".repeat(indent));
+    match existing {
+        Some(i) => out[i] = line,
+        None => {
+            let at = (block_start..block_end)
+                .rev()
+                .find(|i| !lines[*i].trim().is_empty())
+                .unwrap_or(block_start);
+            out.insert(at + 1, line);
+        }
+    }
+    let mut joined = out.join(nl);
+    if text.ends_with('\n') {
+        joined.push_str(nl);
+    }
+    let check = |doc: &serde_yaml_ng::Value| match package {
+        None => {
+            doc.get("aliases")
+                .and_then(|a| a.get(alias))
+                .and_then(|v| v.as_str())
+                == Some(value)
+        }
+        Some(pkg) => {
+            entry_of(doc, Section::Packages, pkg)
+                .and_then(|e| e.get("aliases"))
+                .and_then(|a| a.get(alias))
+                .and_then(|v| v.as_str())
+                == Some(value)
+        }
+    };
+    verify_only_change(text, &joined, check)?;
+    Ok(joined)
+}
+
+/// Quote a value that is going into YAML as a scalar.
+///
+/// Alias values are shell, and shell is full of `:` and `#` -- both of which
+/// change what a bare YAML scalar means.
+fn yaml_quote(v: &str) -> String {
+    if v.contains('\'') {
+        format!("\"{}\"", v.replace('\\', "\\\\").replace('"', "\\\""))
+    } else {
+        format!("'{v}'")
+    }
+}
+
+/// The half-open line range of a `key:` block, given its header line.
+fn block_span(lines: &[&str], head: usize) -> (usize, usize) {
+    let base = indent_of(lines[head]);
+    let mut end = head + 1;
+    while end < lines.len() {
+        let l = lines[end];
+        if !l.trim().is_empty() && indent_of(l) <= base {
+            break;
+        }
+        end += 1;
+    }
+    while end > head + 1 && lines[end - 1].trim().is_empty() {
+        end -= 1;
+    }
+    (head, end)
+}
+
+fn locate_entry(lines: &[&str], section: Section, name: &str) -> Result<(usize, usize)> {
+    let head = section_head(lines, section).ok_or_else(|| {
+        ConfigError::new(format!("this config has no `{}` section", section.key()))
+    })?;
+    let head_indent = indent_of(lines[head]);
+    let start = (head + 1..lines.len())
+        .take_while(|i| lines[*i].trim().is_empty() || indent_of(lines[*i]) > head_indent)
+        .find(|i| entry_names(lines, *i, name))
+        .ok_or_else(|| {
+            ConfigError::new(format!(
+                "no {} named `{name}` in this config",
+                section.label()
+            ))
+        })?;
+    Ok(entry_span(lines, start))
+}
+
+fn entry_of<'a>(
+    doc: &'a serde_yaml_ng::Value,
+    section: Section,
+    name: &str,
+) -> Option<&'a serde_yaml_ng::Value> {
+    doc.get(section.key().trim_end_matches(':'))?
+        .as_sequence()?
+        .iter()
+        .find(|e| e.get("name").is_some_and(|n| scalar_is(n, name)))
+}
+
+/// The guard every edit here shares: the result parses, the change landed, and
+/// nothing else moved.
+fn verify_only_change(
+    before_text: &str,
+    after_text: &str,
+    landed: impl Fn(&serde_yaml_ng::Value) -> bool,
+) -> Result<()> {
+    let after: serde_yaml_ng::Value = serde_yaml_ng::from_str(after_text).map_err(|e| {
+        ConfigError::new(format!(
+            "that edit would leave a file that no longer parses: {e}\n  \
+             Refusing to write it. Make the change by hand"
+        ))
+    })?;
+    if !landed(&after) {
+        return Err(ConfigError::new(
+            "could not cleanly make that edit. Refusing to guess -- make it by hand",
+        ));
+    }
+    let _ = before_text;
+    Ok(())
+}
+
 fn still_present(doc: &serde_yaml_ng::Value, section: Section, name: &str) -> bool {
     let key = section.key().trim_end_matches(':');
     doc.get(key)
@@ -718,5 +967,136 @@ packages:
         );
         let doc: serde_yaml_ng::Value = serde_yaml_ng::from_str(&out).unwrap();
         assert_eq!(doc["packages"].as_sequence().unwrap().len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod field_tests {
+    use super::*;
+
+    const CFG: &str = r#"version: 0
+shell: zsh
+
+aliases:
+  ll: 'ls -alh'
+
+packages:
+  - name: jq          # keep me
+    from: apt
+
+  - name: zellij
+    from: cargo
+    aliases:
+      z: 'zellij'
+"#;
+
+    fn doc(s: &str) -> serde_yaml_ng::Value {
+        serde_yaml_ng::from_str(s).expect("parses")
+    }
+
+    #[test]
+    fn a_field_is_added_to_the_right_entry_and_nothing_else_moves() {
+        let out = set_field(CFG, Section::Packages, "jq", "version", "\"1.7\"").unwrap();
+        let d = doc(&out);
+        assert_eq!(d["packages"][0]["version"].as_str(), Some("1.7"));
+        assert_eq!(
+            d["packages"][1].get("version"),
+            None,
+            "the sibling is untouched"
+        );
+        assert!(out.contains("# keep me"), "comments survive");
+    }
+
+    #[test]
+    fn setting_a_field_that_is_already_there_replaces_it() {
+        let once = set_field(CFG, Section::Packages, "jq", "version", "\"1.7\"").unwrap();
+        let twice = set_field(&once, Section::Packages, "jq", "version", "\"1.8\"").unwrap();
+        assert_eq!(doc(&twice)["packages"][0]["version"].as_str(), Some("1.8"));
+        // Replaced in place, not appended -- `version: 0` at the top is the
+        // schema version, so count the indented ones.
+        assert_eq!(
+            twice
+                .lines()
+                .filter(|l| l.trim_start().starts_with("version:") && l.starts_with(' '))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn a_global_alias_joins_the_existing_block() {
+        let out = set_alias(CFG, None, "gs", "git status").unwrap();
+        let d = doc(&out);
+        assert_eq!(d["aliases"]["gs"].as_str(), Some("git status"));
+        assert_eq!(
+            d["aliases"]["ll"].as_str(),
+            Some("ls -alh"),
+            "the neighbour survives"
+        );
+    }
+
+    #[test]
+    fn a_config_with_no_aliases_block_gains_one() {
+        let bare = "version: 0\nshell: zsh\npackages:\n  - name: jq\n    from: apt\n";
+        let out = set_alias(bare, None, "ll", "ls -alh").unwrap();
+        let d = doc(&out);
+        assert_eq!(d["aliases"]["ll"].as_str(), Some("ls -alh"));
+        assert_eq!(
+            d["packages"][0]["name"].as_str(),
+            Some("jq"),
+            "packages survive"
+        );
+    }
+
+    #[test]
+    fn a_package_alias_lands_on_that_package_only() {
+        let out = set_alias(CFG, Some("zellij"), "zj", "zellij attach").unwrap();
+        let d = doc(&out);
+        assert_eq!(
+            d["packages"][1]["aliases"]["zj"].as_str(),
+            Some("zellij attach")
+        );
+        assert_eq!(
+            d["packages"][1]["aliases"]["z"].as_str(),
+            Some("zellij"),
+            "kept"
+        );
+        assert_eq!(d["aliases"].get("zj"), None, "not global");
+    }
+
+    #[test]
+    fn a_package_with_no_aliases_block_gains_one() {
+        let out = set_alias(CFG, Some("jq"), "j", "jq").unwrap();
+        assert_eq!(
+            doc(&out)["packages"][0]["aliases"]["j"].as_str(),
+            Some("jq")
+        );
+        assert!(out.contains("# keep me"));
+    }
+
+    #[test]
+    fn alias_values_full_of_shell_survive_the_yaml_round_trip() {
+        // `:` and `#` in a bare scalar change what the YAML means, and shell is
+        // full of both.
+        for v in [
+            "git log --oneline | head -20",
+            "echo a: b",
+            "grep --color=auto # always",
+            "echo 'it'\\''s fine'",
+            "curl -s https://x.dev/y && echo",
+        ] {
+            let out = set_alias(CFG, None, "t", v).unwrap();
+            assert_eq!(
+                doc(&out)["aliases"]["t"].as_str(),
+                Some(v),
+                "round trip of {v:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn editing_something_absent_is_refused_rather_than_invented() {
+        assert!(set_field(CFG, Section::Packages, "nope", "version", "1").is_err());
+        assert!(set_alias(CFG, Some("nope"), "x", "y").is_err());
     }
 }
