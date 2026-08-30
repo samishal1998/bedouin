@@ -1,35 +1,61 @@
 # Bedouin M0+M1 — design
 
-Status: draft for review
+Status: draft for review (revision 2)
 Scope: M0 (schema, facts, `plan`) and M1 (executor, state, `apply`)
-Supersedes nothing. Extends `bedouin-handoff.md`, which remains the source of
-truth for anything this document does not contradict.
+Extends `bedouin-handoff.md`. Where this document departs from the handoff,
+§15 says so explicitly.
+
+Revision 2 applies the findings of a six-lens adversarial review. The
+substantive changes are: bin-directory recording (§8.1, §10), the `only:` key
+(§6.6), specificity by implied fact set (§6.3), a declared `shell:` (§3.1),
+a loader reordered to preserve error spans (§4), config-root and path
+normalization rules (§4.1), and the state store's durability rules (§10.2).
 
 ## 1. Scope
 
 M0 and M1 ship one binary that takes a machine from freshly imaged to fully
 configured, and reports honestly what it would do before it does it.
 
-In scope:
+In scope: schema v0 including `includes:` and conditional values; the facts
+resolver; config loading, arm selection and rendering; `plan` (DAG, diff,
+terraform-style output, plan artifact); `apply` (managers, languages,
+packages, files, rc blocks, PATH); the state store. Ubuntu and macOS are
+tested execution targets. SUSE parses and plans correctly but is not a tested
+execution target until M2.
 
-- `bedouin.yaml` schema v0, including `includes:` and conditional values.
-- Facts resolver.
-- Config loading, arm selection, template rendering.
-- `plan`: build the DAG, diff against state, print a terraform-style plan.
-- `apply`: execute the plan. Package managers, languages, packages, managed
-  files, rc blocks, PATH.
-- State store at `~/.local/state/bedouin/state.json`.
-- Ubuntu and macOS. SUSE parses and plans correctly but is not a tested
-  execution target until M2.
+Out of scope, in expected order of arrival:
 
-Out of scope for M0+M1, in the order they are expected to arrive:
-
-- `doctor`, drift detection, `remove` (M2).
-- Tauri app (M3).
-- `absorb`, `reconcile --watch` (M4).
+- `init`, `add`, `sync` — M1.5, after `apply` is trustworthy. They are
+  config-editing and git conveniences over a working core, and none of them
+  changes the engine. (The handoff lists them under v1; this assigns them a
+  milestone, it does not drop them.)
+- `doctor`, drift reporting, the `remove` **command**, SUSE — M2. Note that
+  removal *as a plan outcome* is in M1: dropping a package from the config
+  and re-applying removes it. What M2 adds is the imperative shortcut.
+- Tauri app — M3. `absorb`, `reconcile --watch` — M4.
 - **All execution of user-supplied code during `plan`** — `sources:`,
-  `fromScript`, matcher `script:`. See §6.5 for why this is a correctness
+  `fromScript`, matcher `script:`. §6.5 explains why this is a correctness
   decision rather than a scheduling one.
+
+### 1.1 Trust model
+
+`bedouin.yaml`, its includes, and the templates under `src:` are **trusted
+input**: they are the user's own configuration, versioned in the user's own
+repository, and Bedouin executes what they declare. Bedouin does not sandbox
+them and does not try to.
+
+What Bedouin does owe the user, and what §8 and §9 are written to provide:
+
+- No *surprising* writes. Every path Bedouin touches is derivable from the
+  config, and paths that escape the config root or the home directory are
+  rejected rather than silently followed (§4.1).
+- No *accidental* escalation. Root is used only where a step declares it, and
+  the plan says which steps those are before any of them runs (§8.2).
+- No secret leakage into artifacts. The plan artifact and state file record
+  only what they need, at mode 0600 (§7.3, §10.2).
+
+A config pulled by `sync` from a repository the user does not control is
+outside this model, and `sync` (M1.5) will show a diff before applying.
 
 ## 2. Crate layout
 
@@ -38,14 +64,16 @@ Out of scope for M0+M1, in the order they are expected to arrive:
     bedouin-cli/      clap wrapper. Static binary. The only thing that runs
                       on a fresh machine.
 
-`bedouin-app` (Tauri) is not created until M3. Creating it now would put a
-webkit2gtk-dependent crate in the workspace that the bootstrap path must
-never need.
+`bedouin-app` (Tauri) is not created until M3: a webkit2gtk-dependent crate
+must not sit in the workspace the bootstrap path builds.
 
-Build target for release: `x86_64-unknown-linux-musl` and
-`aarch64-unknown-linux-musl` on Linux, universal binary on macOS. The musl
-targets are not installed on the current dev machine; `rustup target add` is a
-prerequisite for the first M1 release build.
+Release targets: `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl`
+on Linux, universal binary on macOS. Neither musl target is installed on the
+current dev machine; `rustup target add` is an M1 release prerequisite.
+
+**YAML crate: `serde_yaml_ng`.** `serde_yaml` is archived and unmaintained,
+and §4's span-preserving loader depends on the crate exposing node locations.
+This is pinned here because the choice is load-bearing rather than incidental.
 
 ## 3. Facts
 
@@ -55,89 +83,142 @@ rc dir" instead of writing conditionals about it.
 | Fact | Type | Notes |
 |---|---|---|
 | `os` | `macos` \| `linux` | |
-| `distro` | `ubuntu` \| `debian` \| `fedora` \| `opensuse` \| `arch` \| `other` | from `/etc/os-release` `ID`; `macos` on macOS |
-| `distro_like` | `debian` \| `rhel` \| `suse` \| `arch` \| `none` | from `ID_LIKE`, falling back to `ID` |
+| `distro` | `ubuntu` \| `debian` \| `fedora` \| `opensuse` \| `arch` \| `other` | `/etc/os-release` `ID`; `macos` on macOS |
+| `distro_like` | `debian` \| `rhel` \| `suse` \| `arch` \| `none` | `ID_LIKE`, falling back to `ID` |
 | `distro_version` | string | `VERSION_ID`, e.g. `24.04`; macOS product version |
 | `arch` | `x86_64` \| `arm64` | |
-| `home` | path | |
-| `user` | string | |
-| `hostname` | string | short name, not FQDN |
-| `shell.name` | `zsh` \| `bash` \| `fish` | see §3.1 |
-| `shell.rc_file` | path | `~/.zshrc`, `~/.bashrc`, … |
-| `shell.rc_dir` | path | drop-in directory; see §3.1 |
-| `sudo` | `none` \| `passwordless` \| `password` | `sudo -n true` probe |
-| `env` | map<string,string> | process environment |
+| `home`, `user`, `hostname` | | `hostname` is the short name |
+| `shell.name` | `zsh` \| `bash` \| `fish` \| `other` | §3.1 |
+| `shell.rc_file`, `shell.rc_dir` | path | §3.1 |
+| `privilege` | `root` \| `passwordless` \| `password` \| `unavailable` | §8.2 |
+| `env` | map | process environment |
 | `managers` | set | which of brew/apt/zypper/dnf/mise/cargo/rustup exist |
 
-`distro: other` is deliberate. An unknown distro must be representable, or
-Bedouin cannot run at all on a machine it has not been taught about.
+`distro: other` and `shell.name: other` are deliberate. An unrecognized
+machine must be representable, or Bedouin cannot run at all somewhere it has
+not been taught about. Both are addressable as arms (§6.1).
 
-### 3.1 Shell and rc_dir
+### 3.1 Shell: detected, and declarable
 
-`shell.name` comes from `$SHELL`, falling back to the login shell in
-`getent passwd $USER` (Linux) or `dscl . -read /Users/$USER UserShell`
-(macOS). `$SHELL` is preferred because it reflects what the user actually
-uses; the passwd lookup exists because `$SHELL` is absent under some CI and
-container invocations.
+The detected shell is the pre-Bedouin shell. On the fresh-box case this tool
+exists for, that is frequently **not** the shell the user is configuring —
+they are installing zsh in this very run, from bash.
+
+So the schema carries a top-level declaration:
+
+```yaml
+shell: zsh          # optional; defaults to the detected login shell
+```
+
+`shell.name`, `shell.rc_file`, and `shell.rc_dir` derive from the *declared*
+shell. The detected shell remains available as `shell.detected` for the rare
+config that needs it. Declaring a shell that no package in the config
+installs, and that is not already present, is a plan-time warning naming both
+facts.
 
 `shell.rc_dir` is the drop-in directory: `~/.zshrc.d`, `~/.bashrc.d`,
 `~/.config/fish/conf.d`. Bedouin creates it if absent and, for zsh and bash,
 ensures the rc file sources it via a managed block (§9). Fish sources
-`conf.d` natively and needs no block.
+`conf.d` natively and needs no block. For `shell.name: other`, rc and PATH
+nodes are a plan-time error naming the shell — Bedouin will not guess at an
+unknown shell's syntax.
 
-This is the one place M0's "no side effects" rule bends: `plan` reports
-`+ create ~/.zshrc.d` and `+ managed block in ~/.zshrc` as plan items rather
-than doing anything. Creation happens in `apply`.
+The DAG orders the shell's own package before every rc and PATH node (§7.1),
+so the run that installs zsh also writes into `~/.zshrc.d`.
 
-### 3.2 Facts are not matchable if Bedouin installs them
+`plan` reports `+ create ~/.zshrc.d` and `+ managed block in ~/.zshrc` as
+plan items. It does not create them; `apply` does.
 
-`managers` and `shell` are **excluded from the match vocabulary** (§6.2).
-Matching on them is circular: Bedouin installs package managers and shells, so
-an arm keyed on one is chosen from the pre-Bedouin state of the machine and is
-wrong on exactly the fresh-box case the tool exists for. They remain readable
-in templates, where the same hazard exists but is visible at the point of use.
+### 3.2 Facts Bedouin itself changes are not matchable
+
+`managers` and `shell` are **excluded from the arm vocabulary** (§6.1).
+Matching on them is circular: Bedouin installs package managers and shells,
+so an arm keyed on one is chosen from the pre-Bedouin state and is wrong on
+exactly the fresh-box case. The declared `shell:` of §3.1 is the supported
+way to express shell intent, and it is an input rather than a fact.
+
+Both remain readable in templates, where the same hazard exists but is
+visible at the point of use.
 
 ## 4. Config loading pipeline
 
-Six ordered stages. Each is a pure function except stage 1.
+Seven ordered stages. Stage 1 is the only one that touches the world.
 
-    1. read      bedouin.yaml + includes: globs, in declaration order
-    2. merge     concatenate list sections, last-wins on scalar collisions
-    3. collect   pass one: read every `targets:` entry, build the name set
-    4. parse     pass two: deserialize with the name set in scope
-    5. select    Value<T> -> T against resolved facts. Depth 1. Total.
-    6. render    minijinja over the surviving scalars
+    1. locate    find the config root and the top-level file (§4.1)
+    2. read      top-level file + includes: globs, in declaration order
+    3. parse     EACH file -> untyped spanned document. Spans survive.
+    4. collect   scan all documents for `targets:`; build the name set
+    5. typed     deserialize each document with the name set in scope
+    6. merge     concatenate list sections; duplicate item ids are an error
+    7. resolve   prune `only:` -> select Value<T> -> render minijinja
     -> Config, fully concrete, containing no conditionals
 
-Stage 2 before stage 3 is load-bearing: a target declared in
-`conf.d/10-targets.yaml` must be in scope for `conf.d/20-packages.yaml`.
-Collecting names per-file would reject configs that are correct as a whole.
+**Parse-per-file before merge (stages 3–6) is what preserves error spans.**
+Merging YAML *text* first, as revision 1 specified, destroys the
+`file:line:col` that §6.7 and §12 depend on — the ordering that is
+load-bearing is parse-then-merge, not merge-then-parse.
 
-Stage 5 before stage 6 means losing arms are never rendered. A
-`{{ home }}/.cargo/bin` inside a `ubuntu:` arm is not evaluated on a Mac, so a
-template that is only valid on one platform costs nothing on the others.
+**Collect before typed deserialize (stages 4–5) is what makes `includes:`
+work.** A target declared in `conf.d/10-targets.yaml` must be in scope when
+`conf.d/20-packages.yaml` is deserialized. Collecting names per file would
+reject configs that are correct as a whole.
 
-Stages 5 and 6 both run before the planner. **The planner and the state file
-never see a conditional value.** This is what keeps conditionals from
-infecting the diff, the DAG, and the state schema.
+**Prune before select before render (stage 7)** means a pruned item's other
+fields are never resolved — so `only: linux` on an entry whose `from:` is
+`{ubuntu: apt}` does not trip §6.4's no-default error on a Mac — and losing
+arms are never rendered, so a `{{ home }}/.cargo/bin` inside a `ubuntu:` arm
+costs nothing on macOS.
+
+Stage 7 completes before the planner runs. **The planner and the state file
+never see a conditional value.** That is what keeps conditionals out of the
+diff, the DAG, and the state schema.
+
+### 4.1 Config root, search order, and path normalization
+
+    --config <path>  ->  $BEDOUIN_CONFIG  ->  ./bedouin.yaml
+                     ->  ~/.config/bedouin/bedouin.yaml
+
+The **config root** is the directory containing the resolved top-level file.
+`includes:` globs and `files[].src` are resolved against the config root, not
+the process working directory, so `bedouin apply` behaves identically from
+any cwd. A `src:` or include that escapes the config root is an error.
+
+Glob expansion within a single `includes:` entry is sorted lexicographically,
+so `conf.d/*.yaml` has a defined order rather than a filesystem-dependent
+one. That is what makes `10-`/`20-` prefixes mean what they look like.
+
+Every path the config produces — `dest:`, `rc[].file`, `path[]` — is
+**normalized at the end of stage 7**: `~` expands to `home`, relative paths
+resolve against the config root, `.`/`..` collapse, and the result is
+absolute. **Item ids are built from the normalized path**, so `~/.gitconfig`,
+`$HOME/.gitconfig`, and `/home/u/.gitconfig` are one item rather than three.
+A `dest:` outside `home` is permitted only when the step declares root
+(§8.2); a `dest:` that resolves outside both `home` and the declared root
+paths is an error.
+
+The config root is recorded in the plan artifact.
 
 ## 5. Schema v0
 
 ```yaml
 version: 0                    # schema version, not a bedouin version
 
-includes:                     # optional; globs, merged in declaration order
+includes:                     # optional; globs, relative to the config root
   - conf.d/*.yaml
+
+shell: zsh                    # optional; the shell being configured (§3.1)
 
 vars:
   editor: nvim
 
-targets:                      # named conditions; see §6
+targets:                      # named conditions; declaration order matters
   - name: work
     match: { env: { BEDOUIN_PROFILE: work } }
-    vars: { editor: vim }     # optional: targets may still set vars
+    vars: { editor: vim }
 
-package_managers: [brew, apt, zypper, mise]
+package_managers:             # evaluatable (§6.6)
+  macos: [brew, mise]
+  default: [apt, mise]
 
 languages:
   - name: rust
@@ -148,27 +229,33 @@ packages:
   - name: zellij
     from: cargo               # implies rust; auto-added with a warning
     version: latest
+    needs: [build-essential]  # explicit DAG edge (§7.1)
     path: ["{{ home }}/.cargo/bin"]
     rc:
       - file: "{{ shell.rc_dir }}/70-zellij.zsh"
         content: |
           eval "$(zellij setup --generate-auto-start zsh)"
+
+  - name: xclip
+    from: apt
+    only: linux               # membership conditional (§6.6)
+
   - name: jq
-    from: [brew, apt, zypper] # fallback order; first available manager wins
+    from: { macos: brew, debian-like: apt, suse-like: zypper }
 
 files:
   - src: templates/gitconfig.j2
     dest: ~/.gitconfig
+    mode: "0644"              # optional; §9.1
 ```
 
-Unknown keys are rejected (`deny_unknown_fields`) with a did-you-mean. A
-config tool that silently ignores a misspelled key is a config tool that
-silently does the wrong thing.
+Unknown keys are rejected with a did-you-mean (§12). A config tool that
+silently ignores a misspelled key silently does the wrong thing.
 
 ## 6. Evaluatable values
 
-The rule is one sentence: **a YAML mapping where a value is expected means
-branches; anything else is the literal value.**
+One sentence: **a YAML mapping where a value is expected means branches;
+anything else is the literal value.**
 
 ```yaml
 packages:
@@ -179,31 +266,40 @@ packages:
     version: latest              # a scalar is still just a value
 ```
 
-There is no `Value` keyword, no `select:`, no `when:`, no `matcher:`. The
-shape of the YAML carries the meaning, so the common case stays one line and
-the conditional case stays four.
+No `Value` keyword, no `select:`, no `when:`, no `matcher:`. The shape of the
+YAML carries the meaning, so the common case stays one line and the
+conditional case stays four.
 
 ### 6.1 Arm names
 
-Arm keys are drawn from a **closed vocabulary**: built-in names, plus the
-names declared under `targets:`. A key outside that set is a parse error with
-a did-you-mean.
+Arm keys come from a **closed vocabulary**: built-in names plus names
+declared under `targets:`. A key outside that set is a parse error with a
+did-you-mean.
 
-This is the property the whole design is bought for: the vocabulary does not
-depend on the machine, so **a config is valid or invalid identically
-everywhere** — only which arm *wins* varies. A typo cannot become a branch
-that silently never matches on any machine you happen not to be sitting at.
+This is the property the design is bought for: the vocabulary does not depend
+on the machine, so **a config is valid or invalid identically everywhere** —
+only which arm *wins* varies. A typo cannot become a branch that silently
+never matches on a machine you are not sitting at.
 
-Built-in names are the static cross product of the facts enums:
+Built-in names, and the facts each **implies**:
 
-- os: `macos`, `linux`
-- distro: `ubuntu`, `debian`, `fedora`, `opensuse`, `arch`
-- distro_like: `debian-like`, `rhel-like`, `suse-like`
-- arch: `x86_64`, `arm64`
-- pairs: `{os}-{arch}` and `{distro}-{arch}` — `macos-arm64`,
-  `ubuntu-x86_64`, …
+| Arm | Implies |
+|---|---|
+| `macos` | os=macos |
+| `linux` | os=linux |
+| `ubuntu` | distro=ubuntu, distro_like=debian, os=linux |
+| `debian` | distro=debian, distro_like=debian, os=linux |
+| `fedora` | distro=fedora, distro_like=rhel, os=linux |
+| `opensuse` | distro=opensuse, distro_like=suse, os=linux |
+| `arch` | distro=arch, distro_like=arch, os=linux |
+| `other-distro` | distro=other, os=linux |
+| `debian-like`, `rhel-like`, `suse-like`, `arch-like` | distro_like=…, os=linux |
+| `x86_64`, `arm64` | arch=… |
+| `{os}-{arch}`, `{distro}-{arch}` | the union of both |
 
 Not included, per §3.2: shell names, manager names.
+
+The implication column is not documentation — §6.3 computes on it.
 
 ### 6.2 Declared targets
 
@@ -226,48 +322,72 @@ packages:
 ```
 
 `match:` keys: `os`, `distro`, `distro_like`, `distro_version`, `arch`,
-`hostname`, `env`. Scalar values match exactly; lists match any; strings
-beginning with an operator (`>=`, `>`, `<=`, `<`) compare as versions.
-An empty `match: {}` matches everything and is a parse error — write
-`default:` instead.
+`hostname`, `env`. Scalars match exactly, lists match any, and strings
+beginning with `>=`, `>`, `<=`, `<` compare as versions. An empty `match: {}`
+is a parse error — write `default:`. A target name colliding with a built-in
+is a parse error.
 
 `distro_version` is why the vocabulary cannot be closed-and-only-closed: the
 most common reason a bootstrap config needs a conditional at all is "Ubuntu
 22.04 ships an unusably old X", and versions are not enumerable. Declaring a
-target for it keeps arm names closed while leaving the *axes* open, and
-requires no Bedouin release to address a new machine class.
+target keeps arm *names* closed while leaving the *axes* open, and needs no
+Bedouin release to address a new machine class.
 
-A target name that collides with a built-in name is a parse error.
+### 6.3 Selection
 
-### 6.3 Selection: most specific wins, order-independent
+Three rules, applied in order.
 
-An arm's **specificity** is the number of facts it pins: built-in `macos` is
-1, `macos-arm64` is 2, a declared target is the number of keys in its `match`
-(an `env:` map counts each key). The most specific active arm wins. Written
-order is irrelevant — the map reads like a set because it *is* one.
+**1. A declared target beats every built-in.** You named it deliberately;
+that is the signal. `{ noble: apt, ubuntu: cargo }` on Ubuntu 24.04 resolves
+to `apt`.
 
-This is not a preference. Written-order selection is a live footgun:
+**2. Among declared targets, `targets:` declaration order wins.** First
+declared, first served. Co-occurrence of open predicates (`distro_version
+>= 24.04` versus `hostname: khaymah`) is not decidable in general, so
+Bedouin does not pretend to decide it — it uses the order the user wrote,
+which is visible in one place at the top of the file. This also restores the
+handoff's stated `targets:` semantics (§15).
+
+**3. Among built-ins, the arm with the largest implied fact set wins, and
+ties are a parse error.**
+
+Specificity is the size of the **implied** fact set from §6.1's table, not
+the count of characters in the key. This matters:
+
+```yaml
+from:
+  ubuntu: apt          # implies 3 facts (distro, distro_like, os)
+  linux: cargo         # implies 1 fact  (os)
+  default: brew
+```
+
+`ubuntu` strictly refines `linux`, so on Ubuntu it wins and the config means
+what it obviously means. Under revision 1's "count the pinned facts" rule
+both arms scored 1, co-occurred, and the file was rejected at parse time with
+no expressible fix — "apt on Ubuntu, cargo on other Linuxes" was unwritable.
+That was the sharpest bug the review found.
+
+Only genuinely **orthogonal** arms tie:
 
 ```yaml
 version:
-  macos: "1.80"
-  macos-arm64: nightly     # under written-order, unreachable on every machine
+  macos: "1.80"        # os axis
+  arm64: nightly       # arch axis — neither implies the other
   default: stable
 ```
 
-On an Apple Silicon Mac both arms are active. Under first-match-wins the
-`macos-arm64` arm — which exists solely for that machine — can never fire, on
-any machine, with no warning, and reordering two lines in a merge silently
-changes the meaning of the config. Under most-specific-wins it resolves to
-`nightly`, and the file can be sorted by a formatter without changing
-behavior.
+This is a parse error naming both arms and suggesting `macos-arm64`, which
+exists in the vocabulary precisely for it.
 
-**Ambiguous ties are a parse error.** Two arms of equal specificity whose
-fact sets can co-occur (`macos` and `arm64`, both specificity 1, both true on
-one machine) are rejected at parse time, naming both arms and suggesting the
-conjunction `macos-arm64`. Arms that cannot co-occur (`macos` and `ubuntu`)
-are fine. Co-occurrence is decidable over a closed vocabulary, which is the
-second thing the closed vocabulary buys.
+Written order of arms is irrelevant throughout. The map reads like a set
+because it is one, and a formatter that sorts keys cannot change meaning.
+Under written-order selection, `{macos: "1.80", macos-arm64: nightly}` would
+make the nightly arm unreachable on every machine, silently.
+
+**Target `vars:` fold by the same rules.** With two active targets each
+setting `editor`, rule 2 decides: the first-declared target wins. Revision 1
+left this undefined, which meant two implementers would produce different
+renderings of the same config.
 
 ### 6.4 `default` is optional, and its absence is a real error
 
@@ -278,13 +398,16 @@ version:
 ```
 
 On Linux this is a **resolve-time error** naming the arms that exist and the
-active target set, not a silent fallthrough.
+active target set — not a silent fallthrough.
 
-The mandatory-`default` alternative was rejected under review: it makes "a
-fact that is not true yet" indistinguishable from "a machine the author
-decided about". The first-ever apply on a fresh box — the one run that
-matters — would silently take the catch-all, which is precisely the failure
-this design exists to prevent.
+Mandatory-`default` was rejected: it makes "a fact that is not true yet"
+indistinguishable from "a machine the author decided about", so the
+first-ever apply on a fresh box would silently take the catch-all. That is
+the failure this design exists to prevent.
+
+Note the division of labour with §6.6's `only:`: a missing `default:` means
+*the author did not decide*; `only:` means *the author decided the item does
+not exist here*. Both must be expressible, and they must not look alike.
 
 ### 6.5 What is not in the mechanism
 
@@ -295,32 +418,72 @@ reason is ordering, not purity:
 > imaged box that means it runs before Bedouin has installed anything, so
 > `fromScript: doctor determine-version` can never see a tool Bedouin itself
 > installs. On the machine class this tool exists for, the script branch is
-> dead code and `fallback:` *is* the value — an elaborate mechanism whose only
-> real behavior on a fresh machine is its default, with the config's most
-> important number hidden behind a decorative key.
+> dead code and `fallback:` *is* the value — an elaborate mechanism whose
+> only real behavior on a fresh machine is its default, with the config's
+> most important number hidden behind a decorative key.
 
 Deferred to v2 as a declared `sources:` block: named, top-level, mandatory
 default, argv rather than shell, timeout, resolved once during fact
-resolution and frozen into the plan artifact (§7.3) so `apply` never re-reads
-it. Confining the impurity to one visible block is what makes it reviewable;
-scattering it across arbitrary values is what makes it not.
+resolution and frozen into the plan artifact (§7.3). Confining the impurity
+to one visible block is what makes it reviewable; scattering it across
+arbitrary values is what makes it not.
 
-`fromEnv` is also rejected — permanently, not deferred. It is
-`{{ env.ZELLIJ_VERSION | default('latest') }}` and minijinja already does it.
-Both rejected keys are in the did-you-mean table so that writing one produces
-a message naming the replacement.
+`fromEnv` is rejected permanently, not deferred: it is
+`{{ env.ZELLIJ_VERSION | default('latest') }}`. Both rejected keys are in the
+did-you-mean table, so writing one produces a message naming the replacement.
 
-### 6.6 Which fields are evaluatable
+### 6.6 What is evaluatable, and `only:`
 
-Every scalar-or-list leaf: `version`, `from`, `path`, `installer`, `src`,
-`dest`, `file`, `content`, and each `vars` value.
+**Evaluatable leaves:** `version`, `from`, `installer`, `path`, `src`,
+`dest`, `mode`, `file`, `content`, `needs`, `package_managers`, and each
+`vars` value.
 
-Not evaluatable: `version:` (the schema version), `includes:`, `targets:`
-itself, and `name:` on a package. A package's name is its state-file
-identity; a name that varies by machine is an identity that varies by
-machine, and uninstall stops working. A tool packaged as `fd` on brew and
-`fd-find` on apt is expressed through `from:` plus per-manager aliases in M2,
-or as two declarations until then.
+**Not evaluatable, with reasons:**
+
+- `version:` (the schema version) and `includes:` — arms resolve at stage 7,
+  but stages 4–6 need the full file set already loaded. Evaluatable includes
+  invert the loader's ordering.
+- `targets:` itself — it is the thing arms are defined against.
+- `name:` on a package — it is the state-file identity. A name that varies by
+  machine is an identity that varies by machine, and uninstall stops working.
+  A tool packaged `fd` on brew and `fd-find` on apt is expressed through
+  per-manager aliases in M2, or two `only:`-gated declarations until then.
+
+**`only:` — the membership conditional.** Arms choose between values; they
+cannot make an item not exist. Without a way to say "not on this platform",
+one config in git cannot cover Ubuntu and macOS, which is the product
+premise. Four of the six review lenses found this independently.
+
+```yaml
+packages:
+  - name: xclip
+    from: apt
+    only: linux                    # one arm name, or a list of them
+  - name: mas
+    from: brew
+    only: [macos]
+```
+
+Valid on `packages`, `languages`, and `files`. The payload is one arm name or
+a list, drawn from the same §6.1 closed vocabulary with the same did-you-mean
+on a typo, OR-ed together. No nesting, no negation — declare a target
+instead. No specificity applies: there is no winner to pick.
+
+`only:` is evaluated **first** in stage 7, and a pruned item's other fields
+are never resolved. Without that ordering the fix does not work:
+`only: [ubuntu, opensuse]` on an entry whose `from:` is
+`{ubuntu: apt, opensuse: zypper}` would still trip §6.4's no-default error on
+macOS. Pruning also interacts correctly with §7.2 removal — state is
+per-machine, so a pruned item was never in this machine's state and no
+spurious `- package` is emitted.
+
+**`package_managers:` is evaluatable**, and a declared manager that cannot
+exist on the resolved OS is dropped from the DAG rather than planned. Only
+brew, mise, rustup, and cargo have bootstrap recipes; apt and zypper are
+distro-provided and are never installed by Bedouin. `-v` reports each drop.
+No applicability table is needed: if dropping leaves some package's `from:`
+with no viable manager, §7.1's existing plan-time error fires, naming the
+package and the managers it asked for.
 
 ### 6.7 Rust representation
 
@@ -333,57 +496,105 @@ pub enum Value<T> {
 }
 ```
 
+Fields are concrete instantiations — `Value<String>`,
+`Value<OneOrMany<String>>` — so no type parameter or trait bound propagates
+into the schema structs. The generic stops at the field.
+
 `Deserialize` is hand-written, not `#[serde(untagged)]`. Untagged enums emit
 `data did not match any variant of untagged enum`, and a config tool's error
-messages are its user interface. The visitor dispatches on the YAML node
-kind: a mapping means arms, everything else means `Const`.
+messages are its user interface. The visitor dispatches on YAML node kind: a
+mapping means arms, everything else means `Const`.
 
 Known arm names reach the visitor through a `scoped_thread_local` set
-populated by stage 3, so name validation and did-you-mean happen inside
-deserialization where the `file:line:col` span is still available.
+populated by stage 4, so name validation and did-you-mean happen inside
+deserialization while the span is still available.
 
-Two coercions the visitor handles deliberately:
+Three deliberate coercion rules, applied on **both** the `Const` path and
+each arm payload — revision 1 applied them only to `Const`, which let
+`{macos: 1.80, default: latest}` through:
 
-- `visit_f64` is **rejected**, not coerced. YAML reads `version: 1.80` as the
-  float `1.8`, and by the time a visitor sees it the original text is gone —
-  it would silently install the wrong version. The error says to quote it.
-- `visit_i64`/`visit_u64` are accepted (`version: 3` is unambiguous).
+- `f64` is **rejected**. YAML reads `version: 1.80` as the float `1.8`, and
+  by the time a visitor sees it the original text is gone — it would silently
+  install the wrong version. The error says to quote it.
+- `i64`/`u64` are accepted; `version: 3` is unambiguous.
+- `bool` is rejected; YAML 1.1's `on`/`no` reaching a version field is a typo,
+  not an intention.
 
-`resolve(Value<T>, &Facts) -> Result<T>` is a pure function. It is the
-single most test-dense unit in the crate and needs no `Host`.
+`resolve(Value<T>, &Facts) -> Result<T>` is a pure function and the most
+test-dense unit in the crate. It needs no `Host`.
+
+**minijinja runs with `UndefinedBehavior::Strict`.** The default is lenient:
+`{{ hom }}/.cargo/bin` renders to `/.cargo/bin` and ships a wrong PATH entry
+silently. Strict mode makes it an error, which is the only setting consistent
+with §6.1's whole argument about typos.
+
+**Template context**, defined once here because revision 1 left it to be
+inferred from examples: facts are bare (`os`, `arch`, `home`, `user`,
+`hostname`, `distro`, `distro_like`, `distro_version`, `shell.*`), user
+variables are namespaced (`vars.*`), and the environment is namespaced
+(`env.*`). Nothing else is in scope.
 
 ## 7. `plan`
 
 ### 7.1 The DAG
 
-Node order, which is also dependency order:
+Stage order, which is also dependency order:
 
-    package managers -> languages -> packages -> files -> rc blocks -> PATH
+    package managers -> languages -> shell package -> packages
+                     -> files -> rc blocks -> PATH
 
-Edges beyond that ordering come from `from:`. A package with `from: cargo`
-depends on the `rust` language node; a package with `from: brew` depends on
-the brew manager node. `from: cargo` with no `rust` entry in `languages:`
-adds one implicitly and warns — the warning is printed, the node is real, and
-the plan shows it.
+The shell's own package is pulled ahead of the general package stage so the
+run that installs zsh can write into `~/.zshrc.d` (§3.1).
 
-`from:` as a list is a fallback order resolved against the `managers` fact:
-first manager that exists (or that Bedouin will have installed by that point
-in the DAG) wins. If none will exist, that is a plan-time error naming the
-package and the managers it asked for.
+Edges beyond stage order:
+
+- `from:` — `from: cargo` depends on the `rust` language node; `from: brew`
+  depends on the brew manager node. `from: cargo` with no `rust` entry adds
+  one implicitly and warns; the warning is printed and the node is real.
+- **`needs:`** — an explicit edge to another package in the same config, for
+  build prerequisites the DAG cannot infer. `zellij` from cargo needs a C
+  toolchain, and nothing in `from: cargo` says so. Revision 1 had no
+  inter-package edges at all, so `build-essential` and `zellij` sat in one
+  unordered stage.
+- Within a stage, with no edge to separate them, **declaration order**.
+  Deterministic beats arbitrary, and it is the order the user can see.
+
+A cycle in `needs:` is a plan-time error naming the cycle.
+
+`from:` as a list is a fallback order resolved against the `managers` fact
+**as of that point in the DAG** — a manager Bedouin will have installed by
+then counts as available. If none will exist, that is a plan-time error
+naming the package and the managers it asked for.
 
 ### 7.2 Diffing
 
-Each node produces an item with a stable id (`package/zellij`,
-`language/rust`, `file/~/.gitconfig`, `rc/70-zellij.zsh`, `path/~/.cargo/bin`).
-The item is compared against:
+Each node produces an item with a stable id built from the normalized path or
+name (§4.1): `package/zellij`, `language/rust`, `file//home/u/.gitconfig`,
+`rc/zellij/70-zellij.zsh`, `path//home/u/.cargo/bin`. The rc id carries the
+owning package because two packages may write files of the same basename.
 
-- **state.json** — for ownership and last-applied version/hash.
-- **the machine** — a read-only probe for what is actually installed.
+**Duplicate ids are a parse error** naming both source files. Revision 1's
+"concatenate list sections" let two includes declare the same package,
+producing two DAG nodes competing for one state key.
 
-Four outcomes: create, update, remove, no-op. Remove fires only for items
-present in state with `owner: bedouin` and absent from config. An item
-present on the machine but not in state is recorded `owner: preexisting` and
-never removed, only adopted.
+Items compare against two sources:
+
+- **state.json** — ownership, last-applied version, hashes.
+- **the machine** — a read-only probe of what is installed.
+
+Four outcomes: create, update, remove, no-op. Remove fires only for items in
+state with `owner: bedouin` that are absent from the config. An item present
+on the machine but not in state is recorded `owner: preexisting` and is never
+removed, only adopted.
+
+**`version: latest` means "install if absent; never upgrade automatically."**
+Diff: absent → create, present → no-op, regardless of what the registry now
+holds. This is what keeps `plan` deterministic, offline, and fast; it is also
+what makes the plan you reviewed the plan that applies. Upgrading is an
+explicit `bedouin upgrade` (post-M1). A pinned `version: "1.80"` diffs
+against the installed version and maps to per-manager syntax through the
+installer recipe table (§8.4). Revision 1 left `latest` undefined and its
+§7.4 example implied a network read that §7.2's probe list did not have.
 
 Read-only probes during `plan` run **Bedouin's own commands** — `brew list
 --versions`, `cargo install --list`, `dpkg-query -W`, `rustup toolchain
@@ -394,24 +605,32 @@ auditable, and degrade to "not installed" when the manager is absent.
 
 ### 7.3 The plan artifact
 
-`plan` resolves facts once and freezes them, together with the resolved item
-list, into a plan artifact.
-
 ```
 bedouin plan                 # resolve, print, discard
-bedouin plan -o plan.json    # resolve, print, write the artifact
+bedouin plan -o plan.json    # also write the artifact
 bedouin apply                # resolve and execute in one process
 bedouin apply -f plan.json   # execute a previously reviewed artifact
 ```
 
-The artifact records the resolved facts *including the environment*, so a
-plan reviewed in one terminal applies identically in another. Without it,
-`{{ env.X }}` and `match: { env: … }` reintroduce exactly the plan/apply
-divergence that §6.5 rejects scripts to avoid — env is process-scoped and
-otherwise unpersisted.
+The artifact records: an artifact `schema_version`, the config root, the
+resolved facts, the referenced environment (below), the resolved item list
+with each item's diff outcome, and the state digest it was computed against.
 
-`apply -f` re-checks that the machine still matches the artifact's assumed
-state and refuses on mismatch rather than applying a stale plan.
+**Only the environment variables the config actually references are frozen** —
+the union of `match: { env: … }` keys and `env.X` occurrences in templates.
+Revision 1 froze the whole process environment, which writes every secret in
+the user's shell into a file made to be reviewed and shared. The artifact is
+written mode 0600 regardless.
+
+Freezing the referenced env is what makes `{{ env.X }}` and `match: {env:}`
+safe: env is process-scoped and otherwise unpersisted, so without the
+artifact a plan reviewed in one terminal applies differently in another —
+exactly the divergence §6.5 rejects scripts to avoid.
+
+`apply -f` re-checks **the state digest and the facts, not the environment**.
+The environment is what the artifact exists to carry forward; re-checking it
+would reject precisely the case the artifact is for. A facts or state
+mismatch refuses the stale plan and says which fact moved.
 
 ### 7.4 Output
 
@@ -430,57 +649,122 @@ Bedouin will make the following changes:
 Plan: 5 to add, 2 to change, 1 to remove.
 ```
 
-`-v` annotates every value that came from a conditional with the arm that
-won: `version = "nightly"   (target: macos-arm64)`. This is the only visible
-trace of arm selection, and it is the thing a user reaches for when a config
-resolves differently than expected.
+`-v` annotates each value that came from a conditional with the arm that won
+(`version = "nightly"   (target: macos-arm64)`), and reports items pruned by
+`only:` and managers dropped as inapplicable. This is the only visible trace
+of arm selection, and it is what a user reaches for when a config resolves
+differently than expected.
 
-`--dry-run` on `apply` is an alias for `plan`.
+Exit codes: **0** no changes pending, **2** changes pending, **1** error.
+`plan` exiting 2 on pending changes is what makes it usable in a CI drift
+check, which is the first thing anyone scripts it for. `--dry-run` on `apply`
+is an alias for `plan`.
 
 ## 8. `apply`
 
-### 8.1 Step environment
+### 8.1 Step environment and bin directories
 
 Every step is spawned with an environment Bedouin constructs, never the
-inherited one. `PATH` is assembled from the state manifest's recorded bin
-directories plus a minimal system base, so a step that needs `cargo` gets
-`~/.cargo/bin/cargo` because a previous step recorded it there.
+inherited one. `PATH` is assembled from a minimal system base plus **every
+bin directory recorded in the state manifest**, so a step needing `cargo`
+finds `~/.cargo/bin/cargo` because an earlier step recorded it.
 
-This is the fix for the Ansible reload problem and it is not an optimization:
-it is why installing Rust and installing a cargo package can happen in one
-run.
+This is the fix for the Ansible reload problem and the reason installing Rust
+and a cargo package can happen in one run.
 
-### 8.2 sudo
+For that to work, bin directories must actually be recorded — and revision 1
+recorded none. `path:` existed only on packages, so no language or manager
+ever contributed anything, the manifest was empty on a first run, and the
+headline feature could not work. Every review lens found this independently.
 
-`sudo -n true` at fact resolution classifies the machine as `none`,
-`passwordless`, or `password`. Steps declare whether they need root. On a
-`password` machine, `apply` prompts **once**, up front, before any step runs,
-listing the steps that will need it — not per-step, halfway through, after
-twenty minutes of compiling.
+**Manager and language nodes record their bin directories into state from
+their installer recipe (§8.4), not from user configuration.** The user should
+not have to tell Bedouin where rustup puts cargo:
+
+| Node | Recorded bin dirs |
+|---|---|
+| `language/rust` (rustup) | `{home}/.cargo/bin` |
+| `language/go` (mise) | `{home}/.local/share/mise/shims` |
+| `manager/brew` (macos-arm64) | `/opt/homebrew/bin` |
+| `manager/brew` (linux) | `/home/linuxbrew/.linuxbrew/bin` |
+| `manager/mise` | `{home}/.local/bin` |
+
+A package's `path:` entries are additional and still user-declared; they are
+what lands in the rendered PATH file (§9), which is a different question from
+what a step's env needs.
+
+### 8.2 Privilege
+
+The `privilege` fact is four-valued because a three-valued one cannot be
+computed. `sudo -n true` has two outcomes and cannot distinguish "no sudo
+rights" from "sudo needs a password", yet revision 1 gated a refuse-to-start
+decision on exactly that distinction.
+
+    euid == 0                     -> root
+    sudo -n true succeeds         -> passwordless
+    sudo -n -l lists any rule     -> password
+    otherwise                     -> unavailable
+
+`root` matters in practice: containers run as root, and §11's layer-3 smoke
+tests run in containers. Revision 1 had no `root` case, so `apply` would have
+refused to start inside its own test harness.
+
+Steps declare whether they need root. On `password`, `apply` validates once
+up front (`sudo -v`), listing the steps that will need it, and then **holds
+the credential with a keepalive** — a background `sudo -n true` every 60
+seconds for the duration of the run. Without it the promise of a single
+prompt is false: sudo's timestamp expires after 15 minutes by default, and
+§8.3's own scenario is a twenty-minute compile. The keepalive stops when
+`apply` exits.
+
+<!-- ponytail: keepalive covers timestamp_timeout>0; on a hardened box with
+     timestamp_timeout=0 every privileged step prompts. Detect and say so up
+     front rather than surprising the user mid-run. -->
 
 apt and zypper steps are batched into a single privileged invocation per
-manager. On a `none` machine, plan items requiring root are reported as
-blocked with the reason, and `apply` refuses to start rather than failing
-partway.
+manager, passed as argv — never as a shell string. On `unavailable`, plan
+items requiring root are reported as blocked with the reason and `apply`
+refuses to start rather than failing partway.
 
 ### 8.3 Failure semantics
 
 `apply` is **not transactional** and does not pretend to be. Rolling back a
 package manager is not something Bedouin can do honestly.
 
-- Steps commit to state as they succeed. State is flushed after each step, so
-  an interrupted run leaves a truthful record.
+- **Intent is recorded before the work, not after.** A step writes
+  `status: incomplete, owner: bedouin` to state before it begins and flips it
+  to `complete` when it succeeds. Revision 1 recorded only on success, so a
+  run interrupted between "installed" and "flushed" left a package that
+  Bedouin had installed looking `preexisting` — permanently un-removable,
+  silently. An `incomplete` item re-diffs as needing work, and it is never
+  adopted as preexisting.
 - On failure, `apply` **stops**. It does not continue to dependent steps, and
-  it does not continue to independent ones either in v1 — a half-configured
-  machine that reports success is worse than one that reports where it broke.
-- Exit is nonzero. The failed step, its captured stderr, and the list of
-  steps not attempted are printed.
-- Re-running `apply` resumes: completed items diff as no-ops.
+  not to independent ones either in v1: a half-configured machine reporting
+  success is worse than one reporting where it broke.
+- Exit is nonzero. The failed step, its stderr, and the steps not attempted
+  are printed.
+- Re-running `apply` resumes; completed items diff as no-ops.
 
-`--keep-going` is deferred. It is a real want for long runs, but it needs a
-failure-summary design that M1 does not need to block on.
+**Step output streams** rather than being captured silently. A twenty-minute
+rustup or cargo build printing nothing is indistinguishable from a hang.
+Output is prefixed with the step id, and `-q` reduces it to a spinner while
+still retaining the tail for the failure report.
 
-## 9. Managed blocks and PATH
+`--keep-going` is deferred; it needs a failure-summary design M1 need not
+block on.
+
+### 8.4 Installer recipes
+
+A recipe is compiled-in, not user-supplied, and gives per manager or
+installer: the probe command, the install command, the remove command, the
+version-pin syntax, and the bin directories to record (§8.1). M1 ships
+recipes for brew, apt, zypper, cargo, rustup, and mise.
+
+`languages[].installer` accepts `rustup` and `mise` in M1. Any other value is
+a parse error listing the supported installers — not a silent fallthrough to
+a generic path that does not exist.
+
+## 9. Managed blocks, files, and PATH
 
 rc content is written between sentinels:
 
@@ -488,127 +772,234 @@ rc content is written between sentinels:
     eval "$(zellij setup --generate-auto-start zsh)"
     # <<< bedouin: zellij <<<
 
-Content between markers is owned by that config entry. The rendered hash is
-recorded in state; a mismatch is drift, flagged by `doctor` in M2 and lifted
-back into the config by `absorb` in M4. In M1 a drifted block is **overwritten
-by `apply` after printing what it replaced**, and the replaced text is kept in
-the state file's `superseded` field so nothing is unrecoverably lost.
+Content between markers is owned by that config entry. Two protocol rules
+revision 1 omitted, both of which leave login-shell code in an unowned state:
+
+- **Rendered content containing a sentinel line is a render-time error.** A
+  template that emits `# >>> bedouin: …` could otherwise split or capture a
+  neighbouring block.
+- **A start marker with no matching end marker is a hard error**, naming the
+  file and line. Bedouin does not guess where the block ended and does not
+  rewrite the file.
+
+The rendered hash is recorded in state. A mismatch is drift: flagged by
+`doctor` in M2, lifted back into config by `absorb` in M4. In M1 a drifted
+block is overwritten after printing what it replaced, and the replaced text
+is kept in state's `superseded` field.
+
+<!-- ponytail: `superseded` is unbounded and may hold a secret the user
+     hand-pasted into a block. M2's `doctor` should surface and expire it. -->
+
+### 9.1 Managed files
+
+`files[]` gains `mode:` (default `0644`, and `0600` for anything under
+`~/.ssh` or `~/.gnupg`), parent directories are created, and:
+
+- **An existing file at `dest` that is not in state is backed up** to
+  `<dest>.bedouin-bak` before the first write, and the backup path is
+  recorded in state. Revision 1 gave packages a `preexisting` protection and
+  gave files nothing, so a first apply silently destroyed the user's
+  `~/.gitconfig`.
+- **Symlinks at `dest` are not followed.** Bedouin refuses and says so;
+  writing through a symlink means writing somewhere the config does not name.
+- The **rendered output is snapshotted** in state per managed file. The
+  handoff requires this for M4's three-way absorb, and revision 1 dropped it;
+  it is cheap now and unreconstructible later.
+
+### 9.2 PATH
 
 PATH is never string-edited. Bedouin renders exactly one file,
-`{shell.rc_dir}/00-bedouin-path.{shell.name}`, from the structured `path:`
-entries across all packages. Provenance and removal are automatic: drop the
-package from the config and its PATH entry disappears with it.
+`{shell.rc_dir}/00-bedouin-path.{ext}`, from the structured `path:` entries
+across all packages. Entries are ordered by package declaration order, then
+by their order within a package — deterministic, and visible in the config.
 
-The same sentinel mechanism ensures `shell.rc_file` sources `shell.rc_dir`
-(§3.1), as a block owned by Bedouin itself rather than by any package.
+Per-shell syntax, because the file is Bedouin's to write:
+
+| Shell | Line |
+|---|---|
+| zsh, bash | `export PATH="<dir>:$PATH"` |
+| fish | `fish_add_path <dir>` |
+
+Provenance and removal are automatic: drop the package and its PATH entry
+goes with it. The same sentinel mechanism makes `shell.rc_file` source
+`shell.rc_dir` (§3.1), as a block owned by Bedouin itself.
 
 ## 10. State
+
+### 10.1 Shape
 
 `~/.local/state/bedouin/state.json`:
 
 ```json
 {
   "schema_version": 1,
-  "machine_id": "…",
   "last_apply": "2026-08-30T11:04:22Z",
   "items": {
     "package/zellij": {
+      "kind": "package",
       "owner": "bedouin",
+      "status": "complete",
       "version": "0.40.1",
       "method": { "manager": "cargo" },
-      "files": [],
+      "bin_dirs": [],
+      "path": ["/home/u/.cargo/bin"],
       "rc_blocks": [
-        { "file": "~/.zshrc.d/70-zellij.zsh",
-          "marker": "zellij",
-          "hash": "sha256:…",
-          "superseded": null }
+        { "file": "/home/u/.zshrc.d/70-zellij.zsh", "marker": "zellij",
+          "hash": "sha256:…", "superseded": null }
       ],
-      "path": ["~/.cargo/bin"],
       "resolved_from": { "version": "default", "from": "default" }
+    },
+    "language/rust": {
+      "kind": "language", "owner": "bedouin", "status": "complete",
+      "version": "1.80", "method": { "installer": "rustup" },
+      "bin_dirs": ["/home/u/.cargo/bin"]
+    },
+    "file//home/u/.gitconfig": {
+      "kind": "file", "owner": "bedouin", "status": "complete",
+      "hash": "sha256:…", "render_snapshot": "…",
+      "backup": "/home/u/.gitconfig.bedouin-bak", "mode": "0644"
     }
   }
 }
 ```
 
-`owner` is what makes uninstall safe: removing an entry from the config
-removes only `owner: bedouin` artifacts. A `jq` that was already on the
-machine when Bedouin first ran is `preexisting` and survives.
+Every item kind — `manager/`, `language/`, `package/`, `file/`, `rc/`,
+`path/` — carries `kind`, `owner`, and `status`. Revision 1 showed only the
+package shape, leaving five kinds to be invented.
 
-`resolved_from` records which arm won for each conditional field. It costs
-almost nothing and it is what lets M2's `doctor` say "this resolved
-differently than last apply" — the failure mode that a conditional config
-otherwise makes invisible.
+`owner` is what makes uninstall safe: removing a config entry removes only
+`owner: bedouin` artifacts. A `jq` already present when Bedouin first ran is
+`preexisting` and survives.
 
-`method` is recorded rather than assumed, so a package that moves from `apt`
-to `cargo` between applies is removed and reinstalled rather than
-double-installed.
+`bin_dirs` is what §8.1 assembles the step PATH from. `resolved_from` records
+which arm won per conditional field — nearly free, and what lets M2's
+`doctor` say "this resolved differently than last apply", the failure a
+conditional config otherwise makes invisible. `method` is recorded rather
+than assumed, so a package moving from apt to cargo is removed and
+reinstalled rather than double-installed.
+
+`machine_id` is dropped: revision 1 carried it with no source, no consumer,
+and no defined behavior on change.
+
+### 10.2 Durability
+
+Four rules, none of which revision 1 stated, and each of whose absence
+degrades to "treat state as empty" — the outcome that erases ownership and
+makes every Bedouin-installed package look preexisting.
+
+- **Lock.** An advisory `flock` on `state.json` for the duration of `apply`.
+  A second `apply` waits or fails with "another bedouin is running", rather
+  than interleaving writes.
+- **Atomic write.** Serialize to `state.json.tmp` in the same directory,
+  `fsync`, then `rename`. A crash mid-write leaves the previous state intact.
+- **Mode 0600.**
+- **An unreadable, malformed, or newer-`schema_version` state file is a hard
+  error**, never an empty state. Bedouin refuses to run and says how to
+  inspect or move the file aside. Silently continuing would re-adopt every
+  managed package as `preexisting` and disable uninstall permanently.
+
+A missing state file *is* an empty state — that is a first run, and it is the
+only case that means it.
 
 ## 11. The Host seam and testing
 
 All I/O in `bedouin-core` goes through one trait:
 
 ```rust
+pub struct Cmd {
+    pub argv: Vec<String>,          // argv, never a shell string
+    pub env: BTreeMap<String, String>,
+    pub cwd: Option<PathBuf>,
+    pub root: bool,                 // §8.2
+    pub timeout: Option<Duration>,
+}
+
 pub trait Host {
-    fn run(&self, cmd: &Cmd) -> Result<Output>;
-    fn which(&self, bin: &str) -> Option<PathBuf>;
+    fn run(&self, cmd: &Cmd, out: &mut dyn FnMut(Line)) -> Result<ExitStatus>;
+    fn which(&self, bin: &str, path: &[PathBuf]) -> Option<PathBuf>;
     fn read(&self, p: &Path) -> Result<Option<Vec<u8>>>;
     fn write(&self, p: &Path, bytes: &[u8], mode: u32) -> Result<()>;
     fn remove(&self, p: &Path) -> Result<()>;
     fn mkdir_p(&self, p: &Path) -> Result<()>;
+    fn symlink_meta(&self, p: &Path) -> Result<Option<Meta>>;   // §9.1
     fn env(&self) -> &BTreeMap<String, String>;
 }
 ```
 
-Two implementations: `OsHost` for real runs, `FakeHost` for tests — an
-in-memory filesystem plus a scripted command table that records invocations
-and returns canned exit codes and output.
+`run` takes a line callback rather than returning captured output, because
+§8.3 streams. `Cmd` carries a timeout because §11's own test list asserts
+behavior for "command times out", which revision 1's signature could not
+express. `which` takes the search path explicitly — §8.1's whole point is
+that Bedouin constructs the PATH rather than inheriting one, and a `which`
+that consults the ambient environment would quietly undo that.
+
+Two implementations: `OsHost`, and `FakeHost` — an in-memory filesystem plus
+a scripted command table recording invocations and returning canned exit
+codes, output, and timeouts.
 
 Three test layers:
 
-1. **Pure unit tests, no Host.** Arm selection, specificity, tie detection,
-   the deserializer's error messages, DAG construction, diffing. `resolve()`
+1. **Pure unit tests, no Host.** Arm selection, the implication lattice,
+   tie detection, `only:` pruning, the deserializer's error messages, path
+   normalization, DAG construction and cycle detection, diffing. `resolve()`
    is a pure function of (config, facts) and carries the densest coverage.
 2. **`FakeHost` integration tests.** Whole `plan` and `apply` runs against a
-   simulated fresh machine. This is what makes the fresh-box path — the one
-   nobody can test by hand repeatedly — actually testable, including the
-   failure paths: manager missing, command exits nonzero, command times out,
-   command prints garbage, sudo unavailable partway.
+   simulated fresh machine, including the failure paths: manager missing,
+   command nonzero, command times out, command prints garbage, privilege
+   unavailable partway, state file locked, interrupted apply resumed.
+   This is what makes the fresh-box path — the one nobody can hand-test
+   repeatedly — actually testable.
 3. **Docker smoke tests.** One image per distro (`ubuntu:24.04`,
-   `opensuse/tumbleweed`), running a real `apply` against a real package
+   `opensuse/tumbleweed`) running a real `apply` against a real package
    manager, asserting the binary exists and the rc file is sourced. Slow,
-   few, and CI-only. macOS is covered by a CI runner, not a container.
+   few, CI-only. macOS uses a CI runner, not a container. These run as root,
+   which is why §8.2 needs its `root` case.
 
-Layer 2 is where the behavioral confidence lives. Layer 3 exists to catch the
+Layer 2 is where behavioral confidence lives. Layer 3 exists to catch the
 lies in layer 2's fakes.
 
 ## 12. Errors
 
 Every parse error carries `file:line:col` and, where a name was involved, a
-did-you-mean over the known set. The rejected keys `fromEnv`, `fromScript`,
-`script`, `exitCode`, and `matcher` are in that table with messages naming
-their replacement rather than merely reporting them unknown.
+did-you-mean over the known set. `deny_unknown_fields` is not used directly —
+serde's derived unknown-field error cannot carry the rejected-key table — so
+each struct implements the check itself, letting `fromEnv`, `fromScript`,
+`script`, `exitCode`, and `matcher` produce messages naming their
+replacement rather than merely reporting them unknown.
 
-    bedouin.yaml:14:7: unknown target `mcaos`
+    bedouin.yaml:14:7: unknown arm `mcaos`
        |
     14 |       mcaos: nightly
        |       ^^^^^ did you mean `macos`?
        |
-       = known targets: macos, linux, ubuntu, …, and 1 declared: work
+       = built-in arms: macos, linux, ubuntu, … (see --list-arms)
+       = declared targets: work, noble
 
 Caret rendering via `annotate-snippets` is a nice-to-have; `file:line:col`
-plus the hint is sufficient for M0.
+plus the hint suffices for M0.
+
+Three cases that are errors, not surprises: no config file found anywhere in
+§4.1's search order; a `version:` other than `0`; and a config that parses to
+zero items (which reports "nothing declared" rather than planning an empty
+run against a populated state and proposing to remove everything).
 
 ## 13. Milestone split
 
-**M0** — crates, schema types, the hand-written `Value<T>` deserializer,
-facts resolver, the six-stage loader, `resolve()`, DAG construction, diffing
-against an empty or existing state, `plan` output, plan artifact write.
-`Host` exists and `FakeHost` is used throughout. Nothing mutates the machine.
+**M0** — crates, schema types, the hand-written `Value<T>` deserializer, the
+facts resolver, the seven-stage loader, `only:` pruning, `resolve()`, path
+normalization, DAG construction, diffing against state, `plan` output and the
+plan artifact. `Host` exists; `FakeHost` drives every test. `OsHost` gains
+only its **read-only** methods in M0 — `plan` genuinely probes the machine,
+so a read-only `OsHost` is an M0 deliverable, and the state store gains its
+reader. Nothing mutates the machine.
 
-**M1** — `OsHost`, the executor for managers/languages/packages/files/rc
-blocks/PATH, sudo handling, state store reads and writes, `apply` and
-`apply -f`, failure semantics, docker smoke tests, musl and universal release
-builds.
+**M1** — `OsHost`'s write and execute paths, the executor for
+managers/languages/shell/packages/files/rc blocks/PATH, installer recipes,
+privilege handling and the keepalive, state writes with locking and atomic
+replacement, `apply` and `apply -f`, failure and resume semantics, docker
+smoke tests, musl and universal release builds.
+
+**M1.5** — `init`, `add`, `sync`.
 
 ## 14. Deferred, with reasons
 
@@ -618,8 +1009,33 @@ builds.
 | `fromEnv` | never | `{{ env.X \| default(…) }}` |
 | Nested conditionals | never | unrepresentable by construction (§6.7) |
 | Vars referencing vars | never | keeps resolution two flat layers, not a fixpoint |
-| Per-manager package aliases | M2 | SUSE support is what forces the issue |
+| Negation in `only:` | never | declare a target instead |
+| `bedouin upgrade` | post-M1 | `latest` deliberately does not auto-upgrade (§7.2) |
 | `--keep-going` | post-M1 | needs a failure-summary design |
-| `doctor`, drift, `remove` | M2 | |
+| Per-manager package aliases | M2 | SUSE support forces the issue |
+| `init`, `add`, `sync` | M1.5 | conveniences over a core that must work first |
+| `doctor`, drift reporting, `remove` command | M2 | removal as a plan outcome is in M1 |
 | Tauri app | M3 | webkit2gtk must stay off the bootstrap path |
 | `absorb`, `reconcile --watch` | M4 | |
+
+## 15. Departures from the handoff
+
+The handoff is approved; these are the places this spec knowingly differs.
+Everything else it does not contradict remains in force.
+
+1. **`targets:` gains `name:`** and its entries double as arm names (§6.2).
+   The handoff's `targets:` had no names because nothing referenced them.
+2. **Target resolution is stated, not changed.** The handoff says first match
+   wins; §6.3 rule 2 keeps that for declared targets, and adds a rule for
+   built-in arms, which the handoff did not have.
+3. **A top-level `shell:` declaration** is added (§3.1). The handoff treated
+   shell purely as a fact, which breaks on the fresh box where Bedouin is
+   installing the shell.
+4. **`only:` and evaluatable `package_managers:`** are additions (§6.6),
+   required for one config to cover Ubuntu and macOS.
+5. **`needs:`** is an addition (§7.1) for build prerequisites the DAG cannot
+   infer.
+6. **`version: latest` does not auto-upgrade** (§7.2). The handoff wrote
+   `version: latest` without defining it.
+7. **`init`, `add`, `sync` move to M1.5** (§1). The handoff lists them in v1
+   without assigning a milestone.
