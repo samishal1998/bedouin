@@ -22,6 +22,16 @@ pub fn digest(s: &str) -> String {
     format!("fnv1a:{h:016x}")
 }
 
+/// The hash of a block's content, normalised the way the file stores it.
+///
+/// `upsert_block` writes the content as lines between markers, so a trailing
+/// newline in the config does not survive the round trip. Hashing the raw
+/// string in one place and the extracted lines in the other made every block
+/// look edited the moment it was written.
+pub fn block_digest(content: &str) -> String {
+    digest(content.trim_end_matches('\n'))
+}
+
 pub fn start_marker(id: &str) -> String {
     format!("# >>> bedouin: {id} >>>")
 }
@@ -78,6 +88,15 @@ fn find_block(text: &str, id: &str) -> Result<Option<(usize, usize)>, BlockError
             line: from + 1,
         }),
     }
+}
+
+/// The content between a block's markers, if the block is there.
+///
+/// This is what `doctor` compares against the hash state recorded: it must see
+/// exactly what `upsert_block` would have written, and nothing around it.
+pub fn extract_block(text: &str, id: &str) -> Result<Option<String>, BlockError> {
+    let lines: Vec<&str> = text.lines().collect();
+    Ok(find_block(text, id)?.map(|(from, to)| lines[from + 1..to].join("\n")))
 }
 
 /// What replacing a block displaced, so nothing edited by hand is lost.
@@ -284,6 +303,44 @@ mod tests {
         let with = upsert_block(RC, "only", "x").unwrap().text;
         let without = remove_block(&with, "only").unwrap();
         assert_eq!(without.text, RC, "no stray blank lines left behind");
+    }
+
+    #[test]
+    fn a_blocks_content_can_be_read_back_out_of_the_file() {
+        // What `doctor` compares against the recorded hash, so it must round
+        // trip exactly through upsert.
+        let content = "eval \"$(zellij setup)\"\nexport X=1";
+        let text = upsert_block(RC, "zellij", content).unwrap().text;
+        assert_eq!(extract_block(&text, "zellij").unwrap().as_deref(), Some(content));
+        assert_eq!(extract_block(&text, "absent").unwrap(), None);
+        assert_eq!(digest(&extract_block(&text, "zellij").unwrap().unwrap()), digest(content));
+    }
+
+    #[test]
+    fn a_block_hashes_the_same_whether_from_config_or_from_disk() {
+        // The round trip drops a trailing newline, so hashing the raw config
+        // string and the extracted block must still agree -- otherwise every
+        // block reads as drifted the instant it is written.
+        for content in ["alias j=jq\n", "alias j=jq", "a\nb\n", "a\nb"] {
+            let text = upsert_block(RC, "x", content).unwrap().text;
+            let back = extract_block(&text, "x").unwrap().unwrap();
+            assert_eq!(
+                block_digest(content),
+                block_digest(&back),
+                "content {content:?} did not round trip"
+            );
+        }
+    }
+
+    #[test]
+    fn a_hand_edit_inside_the_markers_changes_the_hash() {
+        let text = upsert_block(RC, "zellij", "original").unwrap().text;
+        let edited = text.replace("original", "someone changed this");
+        assert_ne!(
+            digest(&extract_block(&edited, "zellij").unwrap().unwrap()),
+            digest("original"),
+            "drift must be detectable"
+        );
     }
 
     #[test]

@@ -1,3 +1,5 @@
+pub mod edit;
+pub mod doctor;
 pub mod apply;
 pub mod arm;
 pub mod facts;

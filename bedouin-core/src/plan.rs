@@ -321,6 +321,34 @@ fn topo(cfg: &Config) -> Result<Vec<usize>> {
     Ok(order)
 }
 
+/// The action for a piece of managed content, three ways.
+///
+/// Config versus state answers "did the user change what they want". Disk
+/// versus state answers "did something change it behind our back". Comparing
+/// only the first two made `doctor` report drift that `apply` then refused to
+/// fix -- a promise the tool did not keep.
+fn content_action(
+    recorded: Option<&str>,
+    want: &str,
+    on_disk: Option<String>,
+) -> Action {
+    match recorded {
+        None => Action::Create,
+        Some(had) if had != want => Action::Upgrade {
+            from: "config changed".into(),
+            to: "current".into(),
+        },
+        Some(had) => match on_disk {
+            Some(found) if found == had => Action::NoOp,
+            Some(_) => Action::Upgrade {
+                from: "edited on disk".into(),
+                to: "managed".into(),
+            },
+            None => Action::Create, // it was here and is not any more
+        },
+    }
+}
+
 fn arms_of(p: &crate::schema::Provenance) -> BTreeMap<String, String> {
     p.iter()
         .filter(|(_, w)| !matches!(w, crate::value::Winner::Literal))
@@ -580,16 +608,16 @@ pub fn build(
             kind: ItemKind::File,
             name: display_home(&dest, facts),
             action: match state.done(&id) {
-                Some(s) if s.hash.as_deref() == Some(want.as_str()) => Action::NoOp,
-                Some(_) => Action::Upgrade {
-                    from: "previous".into(),
-                    to: "current".into(),
-                },
                 // §9.1: back the user's file up before the first write. A
                 // create and an adopt are different work, so they are
                 // different actions.
                 None if exists => Action::Adopt,
                 None => Action::Create,
+                Some(st) => content_action(
+                    st.hash.as_deref(),
+                    &want,
+                    read_digest(host, &dest)?,
+                ),
             },
             detail: format!("from {}", f.src),
             needs_root: !dest.starts_with(&facts.home),
@@ -662,20 +690,18 @@ pub fn build(
                 let id = "rc/bedouin/source".to_string();
                 let snippet =
                     crate::writers::source_dir_snippet(&dir.display().to_string(), cfg.shell);
-                let want = crate::writers::digest(&snippet);
+                let want = crate::writers::block_digest(&snippet);
                 items.push(Item {
                     id: id.clone(),
                     kind: ItemKind::Rc,
                     name: display_home(&facts.shell.rc_file, facts),
                     action: match state.done(&id) {
-                        Some(s) if s.rc_blocks.first().map(|b| b.hash.as_str()) == Some(want.as_str()) => {
-                            Action::NoOp
-                        }
-                        Some(_) => Action::Upgrade {
-                            from: "previous".into(),
-                            to: "current".into(),
-                        },
                         None => Action::Create,
+                        Some(st) => content_action(
+                            st.rc_blocks.first().map(|b| b.hash.as_str()),
+                            &want,
+                            read_block_digest(host, &facts.shell.rc_file, "source")?,
+                        ),
                     },
                     detail: format!("managed block: source {}", display_home(dir, facts)),
                     needs_root: false,
@@ -703,23 +729,20 @@ pub fn build(
                 // The id carries the owning package: two packages may write
                 // files of the same basename.
                 let id = format!("rc/{}/{base}", p.name);
-                let want = crate::writers::digest(&block.content);
+                let want = crate::writers::block_digest(&block.content);
                 items.push(Item {
                     id: id.clone(),
                     kind: ItemKind::Rc,
                     name: display_home(&file, facts),
+                    // Content-addressed, so editing `content:` in the config
+                    // takes effect, and so does a hand edit inside the markers.
                     action: match state.done(&id) {
-                        // Content-addressed, so editing `content:` in the
-                        // config actually takes effect. Presence alone made
-                        // every managed block write-once.
-                        Some(s) if s.rc_blocks.first().map(|b| b.hash.as_str()) == Some(want.as_str()) => {
-                            Action::NoOp
-                        }
-                        Some(_) => Action::Upgrade {
-                            from: "previous".into(),
-                            to: "current".into(),
-                        },
                         None => Action::Create,
+                        Some(st) => content_action(
+                            st.rc_blocks.first().map(|b| b.hash.as_str()),
+                            &want,
+                            read_block_digest(host, &file, &p.name)?,
+                        ),
                     },
                     detail: format!("owned by {}", p.name),
                     needs_root: false,
@@ -766,12 +789,10 @@ pub fn build(
                 kind: ItemKind::Path,
                 name: display_home(&file, facts),
                 action: match state.done(&id) {
-                    Some(s) if s.hash.as_deref() == Some(want.as_str()) => Action::NoOp,
-                    Some(_) => Action::Upgrade {
-                        from: "previous".into(),
-                        to: "current".into(),
-                    },
                     None => Action::Create,
+                    Some(st) => {
+                        content_action(st.hash.as_deref(), &want, read_digest(host, &file)?)
+                    }
                 },
                 detail: format!(
                     "{} {} from {}",
@@ -845,6 +866,36 @@ pub fn build(
         pruned: cfg.pruned.clone(),
         warnings,
     })
+}
+
+/// Hash of a whole file as it stands, or `None` if it is not there.
+fn read_digest(host: &dyn Host, p: &std::path::Path) -> Result<Option<String>> {
+    Ok(host
+        .read(p)
+        .map_err(|e| ConfigError::new(e.to_string()))?
+        .map(|b| crate::writers::digest(&String::from_utf8_lossy(&b))))
+}
+
+/// Hash of one owned block inside a file, or `None` if the block is not there.
+fn read_block_digest(
+    host: &dyn Host,
+    p: &std::path::Path,
+    marker: &str,
+) -> Result<Option<String>> {
+    let Some(bytes) = host
+        .read(p)
+        .map_err(|e| ConfigError::new(e.to_string()))?
+    else {
+        return Ok(None);
+    };
+    // An unterminated block is not "absent"; leave it to the executor, which
+    // refuses rather than guessing where it ended.
+    Ok(
+        crate::writers::extract_block(&String::from_utf8_lossy(&bytes), marker)
+            .ok()
+            .flatten()
+            .map(|c| crate::writers::block_digest(&c)),
+    )
 }
 
 /// Print paths under `$HOME` with a `~`, which is how the user wrote them.

@@ -330,7 +330,17 @@ fn an_interrupted_item_re_diffs_as_needing_work() {
             .with_file(STATE, &state(status))
             // zellij is on the machine: the interrupt landed between installing
             // it and flushing the state.
-            .with_binary("/home/t/.cargo/bin/zellij");
+            .with_binary("/home/t/.cargo/bin/zellij")
+            // ...and the PATH file it wrote is actually there. The diff is
+            // three-way, so a completed record whose file is missing correctly
+            // plans as a create.
+            .with_file(
+                "/home/t/.zshrc.d/00-bedouin-path.zsh",
+                &bedouin_core::writers::path_file(
+                    &["/home/t/.cargo/bin".to_string()],
+                    bedouin_core::facts::Shell::Zsh,
+                ),
+            );
         run::plan_for(
             &h,
             Some(Path::new("/cfg/bedouin.yaml")),

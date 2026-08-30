@@ -461,7 +461,7 @@ impl Executor<'_> {
                 rec.rc_blocks = vec![state::RcRecord {
                     file: file.display().to_string(),
                     marker: marker.clone(),
-                    hash: writers::digest(content),
+                    hash: writers::block_digest(content),
                     superseded: u.superseded,
                 }];
             }
