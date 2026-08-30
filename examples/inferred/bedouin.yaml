@@ -128,12 +128,14 @@ packages:
     from: brew
     only: macos
 
+  # NOT `apt install delta`: Ubuntu's `delta` is a file minimiser, and the
+  # dotfiles Ansible role asks for it by that name. The git pager is
+  # `git-delta`, which Debian does not package -- so cargo, everywhere but
+  # Homebrew.
   - name: git-delta
-    from: brew
-    only: macos
-  - name: delta
-    from: apt
-    only: linux
+    from: { macos: brew, default: cargo }
+    needs: [build-essential]
+    path: ["{{ home }}/.cargo/bin"]
 
   # ---- Linux build toolchain, from roles/linux
   - name: build-essential
@@ -185,8 +187,75 @@ packages:
     from: brew
     only: macos
 
+  # ---- on this machine but not in the dotfiles repo, from apt history
+  - name: lua5.4
+    from: apt
+    only: linux
+  - name: luarocks
+    from: apt
+    only: linux
+  - name: python3-venv
+    from: apt
+    only: linux
+  - name: ansible
+    from: { macos: brew, debian-like: apt }
+
+  - name: wasm-bindgen-cli
+    from: cargo
+    version: "0.2.127"
+    needs: [build-essential]
+    path: ["{{ home }}/.cargo/bin"]
+
+  # These four come from third-party apt repositories that bedouin cannot add
+  # -- each needs a keyring and a sources.list entry first. Left declared so
+  # the plan names them, and see the note at the bottom of this file.
+  - name: gh
+    from: { macos: brew, debian-like: apt }
+  - name: 1password-cli
+    from: { macos: brew, debian-like: apt }
+  - name: caddy
+    from: apt
+    only: linux
+  - name: tailscale
+    from: apt
+    only: linux
+
+  # This box also runs an XFCE desktop over RDP, added May 2026.
+  - name: xrdp
+    from: apt
+    only: linux
+  - name: xfce4
+    from: apt
+    only: linux
+  - name: xfce4-goodies
+    from: apt
+    only: linux
+
 files:
   - src: templates/gitconfig.j2
     dest: ~/.gitconfig
   - src: templates/functions.zsh
     dest: "{{ shell.rc_dir }}/50-functions.zsh"
+
+# ---------------------------------------------------------------------------
+# What this config cannot express, and why -- rather than pretending otherwise.
+#
+# 1. Third-party apt repositories. gh, 1password-cli, caddy, tailscale and
+#    docker each need a keyring and a sources.list entry before apt can see
+#    them. Bedouin installs packages; it does not add repositories. Your
+#    `development_tools` Ansible role does real work here with no equivalent.
+#
+# 2. Tarball-into-/opt. Your neovim is /opt/nvim-linux-x86_64 -- and apt
+#    history shows you REMOVED the apt neovim to get there, so `from: apt`
+#    would undo a deliberate decision. Not declared for that reason.
+#
+# 3. lazygit. Ubuntu 24.04 does not package it at all; your Ansible role pulls
+#    a GitHub release. `lzg` is aliased above to something this config cannot
+#    install.
+#
+# 4. `rustup component add rustfmt clippy` from your languages role. Bedouin's
+#    `languages:` takes name, version and installer -- there is no components
+#    or targets field. The wasm32 targets you have are in the same position.
+#
+# 5. The 1Password secrets block. ~/.zshrc.d/01-secrets.zsh reads op:// refs at
+#    shell start. It stays yours; nothing here touches it.
