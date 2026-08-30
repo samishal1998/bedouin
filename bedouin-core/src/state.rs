@@ -40,6 +40,7 @@ pub enum Status {
 #[serde(rename_all = "snake_case")]
 pub enum ItemKind {
     Manager,
+    Dir,
     Language,
     Package,
     File,

@@ -66,7 +66,15 @@ pub fn locate(
     for c in candidates {
         match host.read(&c) {
             Ok(Some(_)) => return Ok(c),
-            _ => tried.push(c),
+            Ok(None) => tried.push(c),
+            // Present but unreadable is not absent. Reporting "no config file
+            // found" while naming a path that exists sends the user to `ls`.
+            Err(e) => {
+                return Err(ConfigError::new(format!(
+                    "{} exists but could not be read: {e}",
+                    c.display()
+                )))
+            }
         }
     }
     Err(ConfigError::new(format!(
@@ -92,13 +100,42 @@ fn read_text(host: &dyn Host, p: &Path) -> Result<String> {
 /// Attach `file:line:col` to a YAML error. `serde_yaml_ng` knows the position
 /// but not which file it was reading, so the loader supplies that half.
 fn yaml_err(file: &Path, e: &serde_yaml_ng::Error) -> ConfigError {
-    let at = match e.location() {
-        Some(l) => format!("{}:{}:{}", file.display(), l.line(), l.column()),
+    yaml_err_in(file, None, e)
+}
+
+/// Locate a YAML error, refining the line where possible.
+///
+/// serde reports where the *mapping* began, not where the offending key sits,
+/// so an unknown-arm error inside `{ macos: x, mcaos: y }` points at `macos`.
+/// When the message names a key in backticks and the file text is available,
+/// scan forward for the line that actually declares it.
+fn yaml_err_in(file: &Path, text: Option<&str>, e: &serde_yaml_ng::Error) -> ConfigError {
+    let msg_full = e.to_string();
+    let mut line_col = e.location().map(|l| (l.line(), l.column()));
+    if let (Some(text), Some((line, _))) = (text, line_col) {
+        if let Some(key) = msg_full
+            .split('`')
+            .nth(1)
+            .filter(|k| !k.is_empty() && !k.contains(' '))
+        {
+            let needle = format!("{key}:");
+            if let Some((n, l)) = text
+                .lines()
+                .enumerate()
+                .skip(line.saturating_sub(1))
+                .find(|(_, l)| l.trim_start().starts_with(&needle))
+            {
+                line_col = Some((n + 1, l.len() - l.trim_start().len() + 1));
+            }
+        }
+    }
+    let at = match line_col {
+        Some((l, c)) => format!("{}:{l}:{c}", file.display()),
         None => file.display().to_string(),
     };
     // serde_yaml_ng appends its own " at line N column M". The location is
     // already the prefix, so printing it twice is just noise.
-    let msg = e.to_string();
+    let msg = msg_full;
     let trimmed = msg
         .rfind(" at line ")
         .map_or(msg.as_str(), |i| &msg[..i])
@@ -287,7 +324,8 @@ pub fn load(entry: &Path, host: &dyn Host) -> Result<Loaded> {
     let mut parsed: Vec<(PathBuf, RawConfig)> = Vec::new();
     for (path, text) in files.iter().zip(&texts) {
         let cfg = with_known_arms(names.clone(), || {
-            serde_yaml_ng::from_str::<RawConfig>(text).map_err(|e| yaml_err(path, &e))
+            serde_yaml_ng::from_str::<RawConfig>(text)
+                .map_err(|e| yaml_err_in(path, Some(text), &e))
         })?;
         parsed.push((path.clone(), cfg));
     }

@@ -245,7 +245,9 @@ impl Vocabulary {
     pub fn new(declared: Vec<Target>) -> Result<Self, VocabError> {
         let mut index = BTreeMap::new();
         for (i, t) in declared.iter().enumerate() {
-            if arm::builtin(&t.name).is_some() {
+            // `default` is the catch-all arm key, consumed before any name
+            // lookup, so a target called `default` could never be selected.
+            if t.name == "default" || arm::builtin(&t.name).is_some() {
                 return Err(VocabError::ShadowsBuiltin(t.name.clone()));
             }
             if t.r#match.is_empty() {

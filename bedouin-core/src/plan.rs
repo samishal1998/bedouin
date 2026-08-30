@@ -22,10 +22,23 @@ use crate::state::{ItemKind, State};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
+/// What `apply` must actually do.
+///
+/// Not merely "something differs": the executor does completely different work
+/// for a version bump, a change of install method, and adopting a file that
+/// was already there. Encoding the intent here is what keeps the plan a
+/// faithful prediction -- otherwise the executor re-derives the diff and the
+/// two can disagree.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     Create,
-    Update { from: String, to: String },
+    /// Something unmanaged already sits at this path. Back it up, then write.
+    Adopt,
+    /// Same install method, different version.
+    Upgrade { from: String, to: String },
+    /// The install method changed. Remove via the old one, install via the new,
+    /// rather than installing twice (§10).
+    Reinstall { from_method: String, to_method: String },
     Remove,
     NoOp,
 }
@@ -34,10 +47,15 @@ impl Action {
     pub fn sigil(&self) -> char {
         match self {
             Self::Create => '+',
-            Self::Update { .. } => '~',
+            Self::Adopt | Self::Upgrade { .. } | Self::Reinstall { .. } => '~',
             Self::Remove => '-',
             Self::NoOp => ' ',
         }
+    }
+
+    /// Whether the executor has work to do.
+    pub fn is_change(&self) -> bool {
+        !matches!(self, Self::NoOp)
     }
 }
 
@@ -75,7 +93,7 @@ impl Plan {
         for i in self.changes() {
             match i.action {
                 Action::Create => c.0 += 1,
-                Action::Update { .. } => c.1 += 1,
+                Action::Adopt | Action::Upgrade { .. } | Action::Reinstall { .. } => c.1 += 1,
                 Action::Remove => c.2 += 1,
                 Action::NoOp => {}
             }
@@ -157,6 +175,7 @@ impl Plan {
 fn kind_label(k: ItemKind) -> &'static str {
     match k {
         ItemKind::Manager => "manager",
+        ItemKind::Dir => "dir",
         ItemKind::Language => "language",
         ItemKind::Package => "package",
         ItemKind::File => "file",
@@ -426,8 +445,16 @@ pub fn build(
         let on_machine =
             !state.interrupted(&id) && (known.is_some() || host.which(&p.name, &search).is_some());
         let action = match (known, on_machine) {
-            (Some(s), _) if s.version.as_deref() != p.version.as_deref() && p.version.is_some() => {
-                Action::Update {
+            // The method moved, so the old install has to come out first --
+            // installing twice would leave two copies and one unowned.
+            (Some(s), _) if s.method.as_deref().is_some_and(|m| m != manager.as_str()) => {
+                Action::Reinstall {
+                    from_method: s.method.clone().unwrap_or_default(),
+                    to_method: manager.to_string(),
+                }
+            }
+            (Some(s), _) if p.version.is_some() && s.version.as_deref() != p.version.as_deref() => {
+                Action::Upgrade {
                     from: s.version.clone().unwrap_or_else(|| "unknown".into()),
                     to: p.version.clone().unwrap_or_default(),
                 }
@@ -499,10 +526,10 @@ pub fn build(
             action: if state.done(&id).is_some() {
                 Action::NoOp
             } else if exists {
-                Action::Update {
-                    from: "unmanaged".into(),
-                    to: "managed".into(),
-                }
+                // §9.1: back the user's file up before the first write. A
+                // create and an adopt are different work, so they are
+                // different actions.
+                Action::Adopt
             } else {
                 Action::Create
             },
@@ -525,6 +552,53 @@ pub fn build(
         ));
     }
     if rc_capable {
+        let writes_shell_files = cfg
+            .packages
+            .iter()
+            .any(|p| !p.rc.is_empty() || !p.path.is_empty());
+        if writes_shell_files {
+            // §3.1: `plan` reports these; `apply` creates them.
+            let dir = &facts.shell.rc_dir;
+            let dir_id = format!("dir/{}", dir.display());
+            let dir_exists = host
+                .symlink_meta(dir)
+                .map_err(|e| ConfigError::new(e.to_string()))?
+                .is_some();
+            items.push(Item {
+                id: dir_id.clone(),
+                kind: ItemKind::Dir,
+                name: display_home(dir, facts),
+                action: if dir_exists || state.done(&dir_id).is_some() {
+                    Action::NoOp
+                } else {
+                    Action::Create
+                },
+                detail: format!("drop-in directory for {}", cfg.shell),
+                needs_root: false,
+                arms: BTreeMap::new(),
+            });
+            declared_ids.insert(dir_id);
+
+            // fish sources conf.d natively and needs no block.
+            if cfg.shell != Shell::Fish {
+                let id = "rc/bedouin/source".to_string();
+                items.push(Item {
+                    id: id.clone(),
+                    kind: ItemKind::Rc,
+                    name: display_home(&facts.shell.rc_file, facts),
+                    action: if state.done(&id).is_some() {
+                        Action::NoOp
+                    } else {
+                        Action::Create
+                    },
+                    detail: format!("managed block: source {}", display_home(dir, facts)),
+                    needs_root: false,
+                    arms: BTreeMap::new(),
+                });
+                declared_ids.insert(id);
+            }
+        }
+
         for p in &cfg.packages {
             for block in &p.rc {
                 let file = normalize(&block.file, &facts.home, &facts.home);
