@@ -264,16 +264,19 @@ pub fn source_dir_snippet(rc_dir: &str, shell: Shell) -> String {
         // zsh finds completions through fpath, and fpath must be set before
         // compinit runs -- which is why this sits in the rc file rather than a
         // drop-in that may be sourced afterwards.
+        // `(N)` is zsh's null_glob qualifier. Without it an unmatched glob
+        // trips NOMATCH, which aborts the REST of ~/.zshrc -- and a config
+        // with completions but no drop-ins leaves the directory empty, so
+        // that is the normal state, not an edge case.
         Shell::Zsh => format!(
             "fpath=(\"{comp}\" $fpath)\n\
-             if [ -d \"{rc_dir}\" ]; then\n  \
-             for f in \"{rc_dir}\"/*.zsh; do [ -r \"$f\" ] && . \"$f\"; done\nfi"
+             for f in \"{rc_dir}\"/*.zsh(N); do [ -f \"$f\" ] && . \"$f\"; done"
         ),
+        // `-f` rather than `-r`: an unmatched glob leaves the pattern itself
+        // in `$f`, and `completions/` is a readable directory.
         _ => format!(
-            "if [ -d \"{rc_dir}\" ]; then\n  \
-             for f in \"{rc_dir}\"/*; do [ -r \"$f\" ] && . \"$f\"; done\nfi\n\
-             if [ -d \"{comp}\" ]; then\n  \
-             for f in \"{comp}\"/*; do [ -r \"$f\" ] && . \"$f\"; done\nfi"
+            "for f in \"{rc_dir}\"/*; do [ -f \"$f\" ] && . \"$f\"; done\n\
+             for f in \"{comp}\"/*; do [ -f \"$f\" ] && . \"$f\"; done"
         ),
     }
 }
@@ -430,8 +433,17 @@ mod tests {
         assert!(source_dir_snippet("/home/t/.config/fish/conf.d", Shell::Fish).is_empty());
         let zsh = source_dir_snippet("/home/t/.zshrc.d", Shell::Zsh);
         assert!(zsh.contains("/home/t/.zshrc.d"));
-        // Guarded, so an rc file survives the directory not existing yet.
-        assert!(zsh.contains("-d"));
+        // `(N)` is zsh's null_glob qualifier. Without it an unmatched glob
+        // trips NOMATCH, which aborts the rest of ~/.zshrc -- and a config with
+        // completions but no drop-ins leaves that directory empty, which is
+        // the normal state rather than an edge case.
+        assert!(zsh.contains("(N)"), "{zsh}");
+        assert!(zsh.contains("fpath="), "completions need fpath set before compinit");
+        // `-f`, not `-r`: an unmatched glob leaves the pattern in $f, and the
+        // completions directory is readable.
+        assert!(zsh.contains("-f "), "{zsh}");
+        let bash = source_dir_snippet("/home/t/.bashrc.d", Shell::Bash);
+        assert!(bash.contains("-f "), "{bash}");
     }
 
     #[test]

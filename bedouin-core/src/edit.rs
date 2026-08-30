@@ -57,6 +57,30 @@ fn value_is(raw: &str, name: &str) -> bool {
     v == name
 }
 
+/// The line that declares a top-level section.
+///
+/// Column 0 specifically: a block scalar's content is always indented deeper
+/// than its own key, so nothing inside one can sit at column 0. Matching
+/// `trim_start()` instead found `packages:` written *inside* a `vars:` banner
+/// and scanned the wrong region of the file entirely.
+fn section_head(lines: &[&str], section: Section) -> Option<usize> {
+    lines
+        .iter()
+        .position(|l| *l == section.key())
+}
+
+/// The line ending the file actually uses.
+///
+/// `str::lines()` strips `\r`, so re-joining with `\n` silently rewrites every
+/// line of a CRLF config -- turning a one-entry edit into a whole-file diff.
+fn newline_of(text: &str) -> &'static str {
+    if text.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    }
+}
+
 fn indent_of(line: &str) -> usize {
     line.len() - line.trim_start().len()
 }
@@ -111,7 +135,7 @@ fn entry_span(lines: &[&str], start: usize) -> (usize, usize) {
 pub fn remove_entry(text: &str, section: Section, name: &str) -> Result<String> {
     let lines: Vec<&str> = text.lines().collect();
 
-    let Some(head) = lines.iter().position(|l| l.trim_start() == section.key()) else {
+    let Some(head) = section_head(&lines, section) else {
         return Err(ConfigError::new(format!(
             "this config has no `{}` section, so there is no `{name}` to remove",
             section.key()
@@ -151,9 +175,10 @@ pub fn remove_entry(text: &str, section: Section, name: &str) -> Result<String> 
     let mut kept: Vec<&str> = Vec::with_capacity(lines.len());
     kept.extend_from_slice(&lines[..from]);
     kept.extend_from_slice(&lines[to..]);
-    let mut out = kept.join("\n");
+    let nl = newline_of(text);
+    let mut out = kept.join(nl);
     if text.ends_with('\n') {
-        out.push('\n');
+        out.push_str(nl);
     }
 
     // Verify by re-parsing rather than trusting the surgery. Nothing here is
@@ -164,13 +189,57 @@ pub fn remove_entry(text: &str, section: Section, name: &str) -> Result<String> 
              Refusing to write it. Remove the entry by hand"
         ))
     })?;
-    if still_present(&parsed, section, name) {
+    let before: serde_yaml_ng::Value = serde_yaml_ng::from_str(text)
+        .map_err(|e| ConfigError::new(format!("this config does not parse: {e}")))?;
+    let key = section.key().trim_end_matches(':');
+    let mut parsed = parsed;
+    // Emptying the list leaves a bare `packages:` -- null, not `[]`.
+    if parsed.get(key).is_some_and(serde_yaml_ng::Value::is_null) {
+        parsed[key] = serde_yaml_ng::Value::Sequence(vec![]);
+    }
+    // The edit is allowed to produce exactly one thing: the document minus that
+    // one entry. Asking only "is the target gone" let the text scan delete
+    // lines out of an unrelated entry -- a `- name: x` inside a block scalar is
+    // prose, not structure, and nothing downstream could tell.
+    if parsed != expected_after(&before, section, name) {
         return Err(ConfigError::new(format!(
-            "could not cleanly remove `{name}` -- it is still there after the edit.\n  \
-             Refusing to guess. Remove the entry by hand"
+            "could not cleanly remove `{name}`: the edit would change more than \
+             that one entry.\n  Refusing to write it. Remove the entry by hand"
         )));
     }
     Ok(out)
+}
+
+/// The document the edit is allowed to produce: `before` minus exactly the
+/// first `section` element named `name`.
+fn expected_after(
+    before: &serde_yaml_ng::Value,
+    section: Section,
+    name: &str,
+) -> serde_yaml_ng::Value {
+    let key = section.key().trim_end_matches(':');
+    let mut doc = before.clone();
+    let Some(items) = doc.get_mut(key).and_then(|v| v.as_sequence_mut()) else {
+        return doc;
+    };
+    if let Some(i) = items
+        .iter()
+        .position(|i| i.get("name").is_some_and(|n| scalar_is(n, name)))
+    {
+        items.remove(i);
+    }
+    doc
+}
+
+/// `- name: 8` and `- name: true` are scalars too, and `as_str()` returns None
+/// for both -- which made the old guard pass unconditionally for them.
+fn scalar_is(v: &serde_yaml_ng::Value, name: &str) -> bool {
+    match v {
+        serde_yaml_ng::Value::String(s) => s == name,
+        serde_yaml_ng::Value::Number(n) => n.to_string() == name,
+        serde_yaml_ng::Value::Bool(b) => b.to_string() == name,
+        _ => false,
+    }
 }
 
 /// Append a package to `packages:`, creating the section if it is absent.
@@ -194,7 +263,7 @@ pub fn add_package(text: &str, name: &str, from: &str, version: Option<&str>) ->
     };
 
     let lines: Vec<&str> = text.lines().collect();
-    let out = match lines.iter().position(|l| l.trim_start() == "packages:") {
+    let out = match section_head(&lines, Section::Packages) {
         // Append to the end of the existing section rather than the file: a
         // `packages:` block followed by `files:` must not swallow the latter.
         Some(head) => {
@@ -224,7 +293,7 @@ pub fn add_package(text: &str, name: &str, from: &str, version: Option<&str>) ->
         }
     };
     let mut out = out;
-    out.push('\n');
+    out.push_str(newline_of(text));
 
     let parsed: serde_yaml_ng::Value = serde_yaml_ng::from_str(&out).map_err(|e| {
         ConfigError::new(format!(
@@ -252,9 +321,7 @@ pub fn set_rc_content(
     new_content: &str,
 ) -> Result<String> {
     let lines: Vec<&str> = text.lines().collect();
-    let head = lines
-        .iter()
-        .position(|l| l.trim_start() == Section::Packages.key())
+    let head = section_head(&lines, Section::Packages)
         .ok_or_else(|| ConfigError::new("this config has no `packages:` section"))?;
 
     let start = (head + 1..lines.len())
@@ -350,7 +417,7 @@ fn still_present(doc: &serde_yaml_ng::Value, section: Section, name: &str) -> bo
         .is_some_and(|items| {
             items
                 .iter()
-                .any(|i| i.get("name").and_then(|n| n.as_str()) == Some(name))
+                .any(|i| i.get("name").is_some_and(|n| scalar_is(n, name)))
         })
 }
 
@@ -543,5 +610,77 @@ files:
         let out = remove_entry(cfg, Section::Packages, "jq").unwrap();
         let doc: serde_yaml_ng::Value = serde_yaml_ng::from_str(&out).unwrap();
         assert!(doc["packages"].is_null() || doc["packages"].as_sequence().is_none_or(|s| s.is_empty()));
+    }
+}
+
+#[cfg(test)]
+mod review_regressions {
+    use super::*;
+
+    /// A `- name:` inside a block scalar is prose, not structure.
+    const PROSE: &str = r#"version: 0
+shell: zsh
+
+packages:
+  - name: zellij
+    from: cargo
+    rc:
+      - file: "{{ shell.rc_dir }}/70-zellij.zsh"
+        content: |
+          # my carefully tuned zellij setup
+          eval "$(zellij setup)"
+          # NOTE: if you want ripgrep too, add:
+          - name: ripgrep
+            from: apt
+
+  - name: jq
+    from: apt
+"#;
+
+    #[test]
+    fn a_name_inside_a_block_scalar_is_not_an_entry() {
+        // This used to report success and delete zellij's entire rc block --
+        // silently, with exit 0 and no backup, for a package that was never in
+        // the config at all.
+        let e = remove_entry(PROSE, Section::Packages, "ripgrep").unwrap_err();
+        assert!(
+            e.message.contains("no package named") || e.message.contains("more than that one entry"),
+            "{e}"
+        );
+        // The real entries still come out cleanly.
+        let out = remove_entry(PROSE, Section::Packages, "jq").unwrap();
+        assert!(out.contains("carefully tuned zellij setup"), "prose survives");
+        assert!(out.contains("- name: ripgrep"), "and so does the note about it");
+    }
+
+    #[test]
+    fn a_packages_key_inside_a_block_scalar_is_not_the_section() {
+        let cfg = "version: 0\nvars:\n  banner: |\n    packages:\n      - name: fd\n        from: apt\npackages:\n  - name: jq\n    from: apt\n";
+        let e = remove_entry(cfg, Section::Packages, "fd").unwrap_err();
+        assert!(e.message.contains("no package named") || e.message.contains("more than"), "{e}");
+        // And the banner is untouched by a legitimate removal.
+        let out = remove_entry(cfg, Section::Packages, "jq").unwrap();
+        assert!(out.contains("      - name: fd"), "the banner survives: {out}");
+    }
+
+    #[test]
+    fn a_name_yaml_reads_as_a_number_or_bool_is_still_guarded() {
+        // `as_str()` returns None for these, which made the old guard vacuous.
+        let cfg = "version: 0\npackages:\n  - name: 8\n    from: apt\n  - name: jq\n    from: apt\n";
+        let out = remove_entry(cfg, Section::Packages, "8").unwrap();
+        let doc: serde_yaml_ng::Value = serde_yaml_ng::from_str(&out).unwrap();
+        assert_eq!(doc["packages"].as_sequence().unwrap().len(), 1);
+        assert_eq!(doc["packages"][0]["name"].as_str(), Some("jq"));
+    }
+
+    #[test]
+    fn a_crlf_config_keeps_its_line_endings() {
+        // Re-joining with \n turned a one-entry removal into a whole-file diff.
+        let cfg = "version: 0\r\npackages:\r\n  - name: jq\r\n    from: apt\r\n  - name: fd\r\n    from: apt\r\n";
+        let out = remove_entry(cfg, Section::Packages, "fd").unwrap();
+        assert!(out.contains("\r\n"), "CRLF preserved");
+        assert!(!out.replace("\r\n", "").contains('\n'), "no bare LF introduced: {out:?}");
+        let doc: serde_yaml_ng::Value = serde_yaml_ng::from_str(&out).unwrap();
+        assert_eq!(doc["packages"].as_sequence().unwrap().len(), 1);
     }
 }

@@ -833,13 +833,23 @@ pub fn build(
                         from: "package changed".into(),
                         to: "regenerated".into(),
                     },
-                    Some(st) => content_action(
-                        st.method.as_deref(),
-                        &want,
-                        // The file being gone is drift; its contents changing
-                        // is not something plan can see. §16.2 says so.
-                        read_digest(host, &dest)?.map(|_| want.clone()),
-                    ),
+                    // Two questions, and they need different answers. Did the
+                    // COMMAND change (state.method) -- plan can see that. Did
+                    // the FILE change -- plan can see that too, by hashing it
+                    // against what apply recorded. What plan cannot see is
+                    // whether re-running would now produce different output.
+                    Some(st) if st.method.as_deref() != Some(want.as_str()) => Action::Upgrade {
+                        from: "generator changed".into(),
+                        to: "regenerated".into(),
+                    },
+                    Some(st) => match (st.hash.as_deref(), read_digest(host, &dest)?) {
+                        (_, None) => Action::Create,
+                        (Some(had), Some(found)) if had != found => Action::Upgrade {
+                            from: "edited on disk".into(),
+                            to: "regenerated".into(),
+                        },
+                        _ => Action::NoOp,
+                    },
                 },
                 detail: format!("{} completions from `{}`", cfg.shell, argv.join(" ")),
                 needs_root: false,

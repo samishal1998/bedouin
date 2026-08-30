@@ -164,6 +164,44 @@ fn confirm_absorb() -> bool {
     matches!(a.trim().to_ascii_lowercase().as_str(), "y" | "yes")
 }
 
+/// Write an edited config, then prove it still loads.
+///
+/// The edit was written before anything checked it could still be read, and
+/// `main` loads the config before dispatching ANY subcommand -- so a bad edit
+/// bricked the tool: plan, doctor, facts and remove itself all died at load,
+/// and the only way out was a text editor. Back up, write, verify, restore on
+/// failure.
+fn write_config_verified(
+    host: &OsHost,
+    entry: &std::path::Path,
+    text: &str,
+    cli_config: Option<&std::path::Path>,
+    cwd: &std::path::Path,
+) -> Result<run::Outcome, String> {
+    let original = std::fs::read_to_string(entry).map_err(|e| e.to_string())?;
+    let backup = PathBuf::from(format!("{}.bedouin-bak", entry.display()));
+    std::fs::write(&backup, &original).map_err(|e| format!("{}: {e}", backup.display()))?;
+    std::fs::write(entry, text).map_err(|e| format!("{}: {e}", entry.display()))?;
+
+    match run::plan(host, cli_config, cwd) {
+        Ok(o) => {
+            let _ = std::fs::remove_file(&backup);
+            Ok(o)
+        }
+        Err(e) => {
+            // Put it back exactly as it was, rather than leaving the user with
+            // a config the tool itself can no longer read.
+            let _ = std::fs::write(entry, &original);
+            let _ = std::fs::remove_file(&backup);
+            Err(format!(
+                "{e}\n  The edit would have left a config bedouin cannot load, so \
+                 {} has been restored unchanged.",
+                entry.display()
+            ))
+        }
+    }
+}
+
 /// Applying changes a machine, so say so and wait.
 fn confirm() -> bool {
     use std::io::Write;
@@ -360,21 +398,23 @@ fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
-            if let Err(e) = std::fs::write(entry, &edited) {
-                eprintln!("bedouin: {}: {e}", entry.display());
-                return ExitCode::FAILURE;
-            }
+            let after = match write_config_verified(
+                &host,
+                entry,
+                &edited,
+                cli.config.as_deref(),
+                &cwd,
+            ) {
+                Ok(o) => o,
+                Err(e) => {
+                    eprintln!("bedouin: {e}");
+                    return ExitCode::FAILURE;
+                }
+            };
             println!("Added `{name}` from `{manager}` to {}.", entry.display());
             if no_apply {
                 return ExitCode::SUCCESS;
             }
-            let after = match run::plan(&host, cli.config.as_deref(), &cwd) {
-                Ok(o) => o,
-                Err(e) => {
-                    eprintln!("bedouin: {e}\n  The config was edited; fix it or run `bedouin remove {name}`.");
-                    return ExitCode::FAILURE;
-                }
-            };
             if !after.plan.has_changes() {
                 println!("Already on this machine; nothing to do.");
                 return ExitCode::SUCCESS;
@@ -562,8 +602,10 @@ fn main() -> ExitCode {
                 println!("\nNothing absorbed.");
                 return ExitCode::SUCCESS;
             }
-            if let Err(e) = std::fs::write(&entry, &text) {
-                eprintln!("bedouin: {}: {e}", entry.display());
+            if let Err(e) =
+                write_config_verified(&host, &entry, &text, cli.config.as_deref(), &cwd)
+            {
+                eprintln!("bedouin: {e}");
                 return ExitCode::FAILURE;
             }
             println!("\nAbsorbed {absorbed} edit(s) into {}.", entry.display());
@@ -641,25 +683,26 @@ fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
-            if let Err(e) = std::fs::write(entry, &edited) {
-                eprintln!("bedouin: {}: {e}", entry.display());
-                return ExitCode::FAILURE;
-            }
-            println!("Removed {} `{name}` from {}.", section.label(), entry.display());
-            if no_apply {
-                println!("Config edited only. Run `bedouin apply` when ready.");
-                return ExitCode::SUCCESS;
-            }
-
             // Re-plan against the edited config: the removal is a plan outcome
-            // like any other, not a special path.
-            let after = match run::plan(&host, cli.config.as_deref(), &cwd) {
+            // like any other, not a special path. Verified before it sticks.
+            let after = match write_config_verified(
+                &host,
+                entry,
+                &edited,
+                cli.config.as_deref(),
+                &cwd,
+            ) {
                 Ok(o) => o,
                 Err(e) => {
                     eprintln!("bedouin: {e}");
                     return ExitCode::FAILURE;
                 }
             };
+            println!("Removed {} `{name}` from {}.", section.label(), entry.display());
+            if no_apply {
+                println!("Config edited only. Run `bedouin apply` when ready.");
+                return ExitCode::SUCCESS;
+            }
             if !after.plan.has_changes() {
                 println!("Nothing to undo on this machine.");
                 return ExitCode::SUCCESS;

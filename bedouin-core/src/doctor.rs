@@ -34,6 +34,8 @@ pub enum Drift {
     /// A block Bedouin owns was opened and never closed, so nothing can safely
     /// rewrite that file.
     Unterminated { id: String, file: String, why: String },
+    /// A step recorded its intent and never finished. The next apply redoes it.
+    Incomplete { id: String },
 }
 
 impl Drift {
@@ -42,7 +44,8 @@ impl Drift {
             Self::Edited { id, .. }
             | Self::Missing { id, .. }
             | Self::Resolved { id, .. }
-            | Self::Unterminated { id, .. } => id,
+            | Self::Unterminated { id, .. }
+            | Self::Incomplete { id } => id,
         }
     }
 }
@@ -65,6 +68,11 @@ impl std::fmt::Display for Drift {
             Self::Unterminated { id, file, why } => write!(
                 f,
                 "  x {id}\n      {file}: {why}"
+            ),
+            Self::Incomplete { id } => write!(
+                f,
+                "  ! {id}\n      a previous run started this and did not finish; \
+                 `apply` will redo it"
             ),
         }
     }
@@ -120,6 +128,21 @@ pub fn check(state: &State, cfg: &Config, facts: &Facts, host: &dyn Host) -> Res
     for (id, item) in &state.items {
         if item.owner == Owner::Preexisting {
             report.preexisting.push(id.clone());
+            continue;
+        }
+        // An item left `incomplete` by a failed or interrupted run is not
+        // clean, whatever its hashes say -- and doctor exiting 0 while `plan`
+        // exits 2 is the two of them disagreeing about the same machine.
+        if item.status == crate::state::Status::Incomplete {
+            report.drift.push(Drift::Incomplete { id: id.clone() });
+            report.checked += 1;
+            continue;
+        }
+
+        // Only items whose content doctor can actually verify are counted;
+        // otherwise "N managed items match what bedouin last wrote" claims more
+        // than was checked. A package's presence is `plan`'s question.
+        if item.hash.is_none() && item.rc_blocks.is_empty() {
             continue;
         }
         report.checked += 1;
@@ -189,6 +212,12 @@ pub fn check(state: &State, cfg: &Config, facts: &Facts, host: &dyn Host) -> Res
     let now = resolutions(cfg);
     for (id, item) in &state.items {
         for (field, was) in &item.resolved_from {
+            // `Winner::Literal` is not an arm; comparing its display form
+            // ("literal") against a real arm name invented permanent drift for
+            // every field that is simply not conditional.
+            if matches!(was, crate::value::Winner::Literal) {
+                continue;
+            }
             if let Some(current) = now.get(&(id.clone(), field.clone())) {
                 let was = was.to_string();
                 if *current != was {
@@ -213,6 +242,9 @@ fn resolutions(cfg: &Config) -> std::collections::BTreeMap<(String, String), Str
     let mut out = std::collections::BTreeMap::new();
     for p in &cfg.packages {
         for (field, winner) in &p.resolved_from {
+            if matches!(winner, crate::value::Winner::Literal) {
+                continue;
+            }
             out.insert(
                 (format!("package/{}", p.name), field.clone()),
                 winner.to_string(),
@@ -221,6 +253,9 @@ fn resolutions(cfg: &Config) -> std::collections::BTreeMap<(String, String), Str
     }
     for l in &cfg.languages {
         for (field, winner) in &l.resolved_from {
+            if matches!(winner, crate::value::Winner::Literal) {
+                continue;
+            }
             out.insert(
                 (format!("language/{}", l.name), field.clone()),
                 winner.to_string(),

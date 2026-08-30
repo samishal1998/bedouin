@@ -192,9 +192,20 @@ impl Host for OsHost {
         if let Some(so) = child.stdout.take() {
             let tx = tx.clone();
             pumps.push(std::thread::spawn(move || {
-                for l in BufReader::new(so).lines().map_while(std::result::Result::ok) {
-                    if tx.send(Line::Out(l)).is_err() {
-                        break;
+                // Bytes, not `lines()`: that stops at the first invalid-UTF-8
+                // line and silently drops the rest of the stream. Everywhere
+                // else output is log noise, but a completion generator's stdout
+                // IS the file, so truncating it corrupts what gets written.
+                let mut r = BufReader::new(so);
+                let mut buf = Vec::new();
+                while matches!(r.read_until(b'\n', &mut buf), Ok(n) if n > 0) {
+                    while buf.last().is_some_and(|b| *b == b'\n' || *b == b'\r') {
+                        buf.pop();
+                    }
+                    let line = String::from_utf8_lossy(&buf).into_owned();
+                    buf.clear();
+                    if tx.send(Line::Out(line)).is_err() {
+                        return;
                     }
                 }
             }));
@@ -202,9 +213,16 @@ impl Host for OsHost {
         if let Some(se) = child.stderr.take() {
             let tx = tx.clone();
             pumps.push(std::thread::spawn(move || {
-                for l in BufReader::new(se).lines().map_while(std::result::Result::ok) {
-                    if tx.send(Line::Err(l)).is_err() {
-                        break;
+                let mut r = BufReader::new(se);
+                let mut buf = Vec::new();
+                while matches!(r.read_until(b'\n', &mut buf), Ok(n) if n > 0) {
+                    while buf.last().is_some_and(|b| *b == b'\n' || *b == b'\r') {
+                        buf.pop();
+                    }
+                    let line = String::from_utf8_lossy(&buf).into_owned();
+                    buf.clear();
+                    if tx.send(Line::Err(line)).is_err() {
+                        return;
                     }
                 }
             }));
