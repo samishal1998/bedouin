@@ -1,0 +1,65 @@
+---
+title: plan & apply
+description: See what would change, then change it.
+---
+
+## `bedouin plan`
+
+Resolves facts, resolves the config for this machine, diffs against what is
+recorded and what is on disk, and prints the result. It changes nothing.
+
+```
+Bedouin will make the following changes:
+
+  + manager   brew                          not installed
+  ~ package   zellij      0.39.2 -> 0.40.1  cargo
+  - package   ripgrep                       was: apt, owner: bedouin
+
+Plan: 1 to add, 1 to change, 1 to remove.
+```
+
+Exit codes are made for scripting: **0** nothing pending, **2** changes
+pending, **1** error. A CI drift check just reads the status.
+
+`-v` annotates each conditional value with the arm that won, and lists what
+`only:` pruned:
+
+```
+  + package   neovim      latest  apt
+                from = noble
+```
+
+That is the one visible trace of arm selection, and it is what you reach for
+when a config resolves differently than you expected.
+
+## `bedouin apply`
+
+Shows the plan, asks, then executes. `-y` skips the question.
+
+**It is not transactional, and does not pretend to be** — rolling back a
+package manager is not something anything can do honestly. Instead:
+
+- A step records its intent *before* it begins and marks it complete after. A
+  run interrupted between installing and recording leaves an honest record, not
+  a package that looks like it was always there.
+- On failure it **stops**, prints the failed step, its output, and what it did
+  not attempt. A half-configured machine reporting success is worse than one
+  reporting where it broke.
+- Re-running resumes, because `plan` re-diffs. There is no separate resume.
+
+## Reviewing a plan, applying it later
+
+```sh
+bedouin plan -o plan.json
+# read it, commit it, hand it to someone
+bedouin apply -f plan.json
+```
+
+The artifact freezes the resolved facts **including the environment variables
+your config reads** — only those, at mode 0600. Without that, a plan reviewed
+in one terminal could mean something else in another, since the environment is
+process-scoped and otherwise unrecorded.
+
+`apply -f` re-checks the machine state and facts and refuses a stale plan. It
+does *not* re-check the environment: that is the thing the artifact exists to
+carry forward.

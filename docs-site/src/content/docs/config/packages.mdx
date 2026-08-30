@@ -1,0 +1,100 @@
+---
+title: Packages & languages
+description: Where things come from, in what order, and what happens when they change.
+---
+
+## Packages
+
+```yaml
+packages:
+  - name: zellij           # the state identity; not conditional
+    from: cargo            # one manager, or a fallback list
+    version: latest
+    needs: [build-essential]
+    only: linux
+    path: ["{{ home }}/.cargo/bin"]
+```
+
+`from:` may be a list, and the first manager that will exist wins:
+
+```yaml
+from: [brew, apt, zypper]
+```
+
+If none of them will exist on this machine, that is a plan-time error naming
+the package and what it asked for — not a failure twenty minutes into an apply.
+
+`name:` is deliberately **not** conditional. It is the state-file identity, and
+a name that varies by machine is an identity that varies by machine, at which
+point uninstall stops working.
+
+### `version:` and what `latest` means
+
+`latest` means **install if absent, never upgrade**. That is what keeps `plan`
+deterministic, offline and fast, and it is what makes the plan you reviewed the
+plan that applies. A pinned version diffs against what is installed and maps to
+each manager's own syntax (`jq=1.7` for apt, `jq@1.7` for brew,
+`--version 1.7` for cargo).
+
+### `needs:`
+
+Build prerequisites nothing can infer. Nothing in `from: cargo` says a package
+wants a C toolchain:
+
+```yaml
+- name: build-essential
+  from: apt
+  only: linux
+- name: zellij
+  from: cargo
+  needs: [build-essential]
+```
+
+A `needs:` naming a package that `only:` pruned simply drops the edge — the
+prerequisite genuinely does not exist here. A `needs:` naming a package that
+was never declared is an error.
+
+## Languages
+
+```yaml
+languages:
+  - name: rust
+    version: "1.80"
+    installer: rustup      # rustup or mise
+```
+
+A package with `from: cargo` and no `rust` language gets one added implicitly,
+with a warning. The implication is stated, never silent.
+
+Toolchains record their own bin directories — `rustup` records
+`~/.cargo/bin` — which is what lets the cargo step in the same run find cargo.
+You never configure that.
+
+## Package managers
+
+```yaml
+package_managers:
+  macos: [brew]
+  default: [apt, mise]
+```
+
+Bedouin bootstraps `brew`, `mise`, `rustup` and `cargo` if they are missing.
+It does **not** install apt, zypper or dnf — those are the distro's. A declared
+manager that cannot exist on this OS is dropped from the plan rather than
+attempted.
+
+## What apply actually does
+
+The order is the dependency order:
+
+```
+managers → languages → the shell's own package → packages
+        → files → rc blocks → PATH
+```
+
+The shell is pulled ahead of the general package stage so the run that installs
+zsh can write into `~/.zshrc.d`. Within a stage, declaration order — the order
+you can see.
+
+Each step is spawned with an environment Bedouin builds: `PATH` from the bin
+directories recorded in state, plus a minimal system base. Never your shell's.

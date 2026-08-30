@@ -1,0 +1,72 @@
+---
+title: Facts reference
+description: What Bedouin works out about the machine, so you do not have to say it.
+---
+
+Facts are resolved by the engine and never declared. The idea is that you ask
+*where is the rc dir* rather than writing conditionals about it.
+
+| Fact | Values | Notes |
+|---|---|---|
+| `os` | `macos`, `linux` | |
+| `distro` | `ubuntu`, `debian`, `fedora`, `opensuse`, `arch`, `macos`, `other` | from `/etc/os-release` |
+| `distro_like` | `debian`, `rhel`, `suse`, `arch`, `none` | `ID_LIKE` is believed over the built-in table |
+| `distro_version` | e.g. `24.04` | `VERSION_ID`, or the macOS product version |
+| `arch` | `x86_64`, `arm64` | |
+| `home`, `user`, `hostname` | | `user` falls back to `id -un` when `$USER` is unset |
+| `shell.name` | `zsh`, `bash`, `fish`, `other` | the shell you are **configuring** |
+| `shell.detected` | same | the shell you are **running** |
+| `shell.rc_file` | `~/.zshrc` … | |
+| `shell.rc_dir` | `~/.zshrc.d` … | the drop-in directory |
+| `privilege` | `root`, `passwordless`, `password`, `unavailable` | |
+| `env.NAME` | | the process environment |
+
+See them for your machine:
+
+```sh
+bedouin facts
+```
+
+Environment values are printed as `<set>` rather than their contents — that
+output ends up in bug reports.
+
+## In templates
+
+Facts are bare, variables are under `vars.`, environment under `env.`:
+
+```yaml
+path: ["{{ home }}/.cargo/bin"]
+rc:
+  - file: "{{ shell.rc_dir }}/70-tool.{{ shell.name }}"
+    content: "export EDITOR={{ vars.editor }}"
+version: "{{ env.TOOL_VERSION | default('latest') }}"
+```
+
+## Two facts you cannot match on
+
+`shell` and the set of installed managers are **not** arm names, and not
+`match:` keys. Bedouin installs your shell and your package managers, so an arm
+keyed on one would be chosen from the machine's state *before* Bedouin ran —
+wrong on exactly the fresh-box case the tool exists for.
+
+For the shell, declare what you are targeting instead:
+
+```yaml
+shell: zsh
+```
+
+Both remain readable in templates, where the same hazard exists but is visible
+at the point of use.
+
+## `distro: other` is deliberate
+
+An unrecognised distro must be representable, or Bedouin cannot run at all
+somewhere it has not been taught about. A Pop!_OS box reports `distro: other`
+and `distro_like: debian`, so `debian-like:` arms still match it.
+
+## Privilege
+
+`sudo -n true` has two outcomes and cannot tell *no sudo rights* from *sudo
+wants a password*, so Bedouin checks group membership for that distinction. If
+a plan needs root and the machine offers no way to escalate, `apply` **refuses
+to start** rather than failing nineteen steps in.

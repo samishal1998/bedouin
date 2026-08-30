@@ -1,0 +1,58 @@
+---
+title: add, remove & sync
+description: Editing the config from the command line, and pulling it from git.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+All three edit or reload the file you keep in git, so all three treat it
+carefully: text surgery rather than re-serialising, verified by re-parsing, and
+restored untouched if the result would not load.
+
+## `bedouin add`
+
+```sh
+bedouin add apt:ripgrep
+bedouin add cargo:zellij@0.40.1
+bedouin add brew:fd --no-apply
+```
+
+Appends to `packages:` and applies. The version is written quoted, so `1.80`
+stays `1.80` rather than becoming the float `1.8`.
+
+## `bedouin remove`
+
+```sh
+bedouin remove zellij
+bedouin remove rust --language
+```
+
+Drops the entry, then applies — which undoes it on this machine: the package is
+uninstalled the way it went in, its rc blocks come out, its PATH entries go,
+and any file it displaced is given back.
+
+<Aside type="tip" title="Adopted packages">
+Removing something that was already on the machine when Bedouin first ran tells
+you it will not be uninstalled. Bedouin never removes what it did not install.
+</Aside>
+
+Your comments survive. `add` followed by `remove` returns the file
+byte-for-byte — there is a test for exactly that, because a tool that reflows
+your config is one you stop trusting.
+
+## `bedouin sync`
+
+```sh
+bedouin sync
+```
+
+Pulls the config repository and applies what changed:
+
+1. **Refuses a dirty tree.** Uncommitted edits are yours; sync will not decide
+   what happens to them.
+2. `git pull --ff-only` — a divergence is your call, not a merge Bedouin
+   invents.
+3. Re-plans and shows it. **The plan is the diff.**
+4. Asks before applying.
+
+No credential handling: it uses whatever git setup you already have.

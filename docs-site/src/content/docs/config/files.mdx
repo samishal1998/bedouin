@@ -1,0 +1,86 @@
+---
+title: Files, rc blocks & PATH
+description: What Bedouin writes, what it owns, and what it gives back.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+## Managed files
+
+```yaml
+files:
+  - src: templates/gitconfig.j2
+    dest: ~/.gitconfig
+    mode: "0644"           # optional
+```
+
+`src:` resolves against the directory holding `bedouin.yaml`, not your working
+directory, and may not escape it. `plan` checks the source exists — a plan
+naming a template that is not there is not a prediction, it is a promise apply
+cannot keep.
+
+**A file already at `dest` is backed up before the first write**, to
+`<dest>.bedouin-bak`, and given back if you later remove the entry. Bedouin
+refuses to write through a symlink: that would put content somewhere the config
+does not name.
+
+Files under `~/.ssh` and `~/.gnupg` default to mode `0600`.
+
+## rc blocks
+
+```yaml
+packages:
+  - name: zellij
+    from: cargo
+    rc:
+      - file: "{{ shell.rc_dir }}/70-zellij.zsh"
+        content: |
+          eval "$(zellij setup --generate-auto-start zsh)"
+```
+
+Content is written between sentinels:
+
+```sh
+# >>> bedouin: zellij >>>
+eval "$(zellij setup --generate-auto-start zsh)"
+# <<< bedouin: zellij <<<
+```
+
+<Aside type="tip" title="Bedouin owns blocks, never files">
+You can point `file:` at `~/.zshrc` itself. Bedouin will insert its block and
+leave everything else in your file alone — and two packages can write into one
+drop-in file without either losing its block.
+</Aside>
+
+Two rules that keep this safe: rendered content containing a sentinel line is a
+render-time error, and a block opened but never closed is a hard error rather
+than a guess about where it ended.
+
+## PATH
+
+```yaml
+packages:
+  - name: zellij
+    path: ["{{ home }}/.cargo/bin"]
+```
+
+PATH is never string-edited. Bedouin renders exactly one file,
+`{rc_dir}/00-bedouin-path.{ext}`, from the structured entries across every
+package — so provenance and removal are automatic. Drop the package and its
+entry goes with it.
+
+Per shell:
+
+| Shell | Line |
+|---|---|
+| zsh, bash | `export PATH="<dir>:$PATH"` |
+| fish | `fish_add_path <dir>` |
+
+## The drop-in directory
+
+Bedouin creates `~/.zshrc.d` (or `.bashrc.d`, or fish's `conf.d`) and adds a
+block to your rc file that sources it. Both appear as plan items — `+ dir` and
+`+ rc` — before anything is created.
+
+For zsh that block also puts the completions directory on `fpath`, because
+`fpath` has to be set before `compinit` runs.

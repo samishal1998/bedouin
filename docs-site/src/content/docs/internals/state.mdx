@@ -1,0 +1,64 @@
+---
+title: State & ownership
+description: What Bedouin remembers, and why uninstall depends on it.
+---
+
+`~/.local/state/bedouin/state.json`, mode 0600.
+
+```json
+{
+  "schema_version": 1,
+  "items": {
+    "package/zellij": {
+      "kind": "package",
+      "owner": "bedouin",
+      "status": "complete",
+      "version": "0.40.1",
+      "method": "cargo",
+      "path": ["/home/you/.cargo/bin"],
+      "resolved_from": { "version": "macos-arm64" }
+    },
+    "language/rust": {
+      "kind": "language", "owner": "bedouin", "status": "complete",
+      "bin_dirs": ["/home/you/.cargo/bin"]
+    }
+  }
+}
+```
+
+## Ownership is what makes uninstall safe
+
+`owner: bedouin` means Bedouin installed it and may remove it. `owner:
+preexisting` means it was already there — adopted, never owned, and it survives
+being dropped from the config. A `jq` that predates Bedouin is yours.
+
+## The fields that earn their place
+
+**`bin_dirs`** is what each step's `PATH` is assembled from. It is recorded
+from the installer's own recipe, never from your config — you should not have
+to tell Bedouin where rustup puts cargo.
+
+**`method`** is recorded rather than assumed, so a package that moves from apt
+to cargo is removed and reinstalled rather than installed twice.
+
+**`resolved_from`** records which arm won for each conditional field. It costs
+almost nothing and it is what lets `doctor` say *this resolved differently than
+last apply* — the failure a conditional config otherwise makes invisible.
+
+**`status`** distinguishes a finished step from one that started and did not.
+An `incomplete` item re-diffs as needing work.
+
+## Durability
+
+Four rules, and each of them, absent, degrades to *treat state as empty* —
+which re-adopts everything Bedouin installed as pre-existing and disables
+uninstall permanently.
+
+- An advisory lock for the length of an apply. A second apply waits rather than
+  interleaving writes. A lock left by a killed run is taken over, not honoured.
+- Written to a temporary file and renamed, so a crash mid-write leaves the
+  previous state.
+- Mode 0600.
+- **An unreadable or newer state file is a hard error, never an empty state.**
+  A *missing* file is an empty state, because that is a first run — and it is
+  the only case that means it.

@@ -1,0 +1,60 @@
+---
+title: Why Bedouin
+description: The two things that break when you bootstrap machines with Ansible and chezmoi, and what Bedouin does instead.
+---
+
+Bedouin replaces an Ansible + chezmoi setup for bootstrapping dev machines. It
+exists because both break in specific, repeatable ways, and the design is
+shaped around those breakages rather than around being a general tool.
+
+## Ansible needs a working Python
+
+The one thing a freshly imaged machine cannot promise is a usable Python.
+Stock Python on Ubuntu is unreliable, and Galaxy plus the 3.10+ churn make it
+worse. A bootstrap tool cannot depend on the thing you are bootstrapping.
+
+Bedouin is a **single static binary with zero runtime dependencies**. On Linux
+it is musl-linked, so it does not even need a matching libc — it runs on a bare
+container image with nothing installed on it, which is exactly the machine it
+is for.
+
+## Ansible steps do not reload the environment
+
+Install Rust in one step and `cargo` is not on `PATH` for the next, because the
+step inherited the environment as it was when the run began. The usual
+workaround is splitting the work into sequential playbooks and re-entering the
+shell between them.
+
+Bedouin **constructs each step's environment itself**. Every install records
+where it put its binaries, and the next step's `PATH` is assembled from those
+recorded directories plus a minimal system base — never from your shell.
+
+```yaml
+languages:
+  - name: rust
+    installer: rustup      # records ~/.cargo/bin
+
+packages:
+  - name: zellij
+    from: cargo            # and this step's PATH has it
+```
+
+One run, both steps, correct order. You never tell Bedouin where rustup puts
+cargo; that is the installer's business and Bedouin knows it.
+
+## chezmoi renders one way
+
+chezmoi syncs templates. Once rendered, edits to the rendered file cannot flow
+back — you change something in your shell and the change is stranded on that
+machine.
+
+Bedouin owns the rendering, and [`absorb`](/bedouin/commands/doctor-absorb/)
+lifts an edit back into the config. `doctor` finds what you changed by hand,
+`absorb` puts it in the file that survives the machine.
+
+## What Bedouin is not
+
+Not a general configuration-management tool. No Windows, no secrets management
+(reference an external one — 1Password CLI, `age`), no service orchestration.
+It sets up dev environments. Ansible remains better at everything else, and
+that is fine.

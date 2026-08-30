@@ -1,0 +1,136 @@
+---
+title: Conditional values
+description: A mapping means branches. How arms are chosen, and why the vocabulary is closed.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+**A YAML mapping where a value is expected means branches. Anything else is the
+literal value.**
+
+```yaml
+packages:
+  - name: fd
+    from:
+      macos: brew
+      default: [apt, zypper]   # a list is still just a value
+    version: latest            # a scalar is still just a value
+```
+
+There is no `when:`, no `select:`, no `matcher:`. The shape carries the
+meaning, so the common case stays one line and the conditional case stays four.
+
+## Arm names come from a closed set
+
+Arm keys are built-in names, or names you declare under `targets:`. Anything
+else is a parse error with a did-you-mean:
+
+```
+bedouin.yaml:6:7: packages[0].from: unknown arm `mcaos`
+  did you mean: macos?
+```
+
+That is what the closed vocabulary buys: **the vocabulary does not depend on
+the machine**, so a config is valid or invalid identically everywhere. Only
+which arm *wins* varies. A typo cannot become a branch that silently never
+matches on a machine you are not sitting at.
+
+Built-ins:
+
+| Kind | Names |
+|---|---|
+| os | `macos`, `linux` |
+| distro | `ubuntu`, `debian`, `fedora`, `opensuse`, `arch`, `other-distro` |
+| family | `debian-like`, `rhel-like`, `suse-like`, `arch-like` |
+| arch | `x86_64`, `arm64` |
+| combined | every name above, plus `-x86_64` or `-arm64` |
+
+## The more specific arm wins
+
+Written order is irrelevant. Arms are compared by the facts they *imply*:
+
+```yaml
+version:
+  ubuntu: "1.80"      # implies os=linux, distro=ubuntu, distro_like=debian
+  linux: stable       # implies os=linux
+  default: latest
+```
+
+`ubuntu` contains everything `linux` contains and more, so it wins on Ubuntu —
+and the file can be sorted by a formatter without changing what it means.
+
+Only genuinely **incomparable** arms are ambiguous, and those are a parse
+error:
+
+```yaml
+version:
+  macos: "1.80"       # os axis
+  arm64: nightly      # arch axis -- neither contains the other
+```
+
+```
+arms `macos` and `arm64` can both be true on one machine and neither is more
+specific, so which one wins would be arbitrary.
+  Write `macos-arm64:` for the machine where both hold
+```
+
+## Declared targets
+
+For axes no enum can know — a distro version, a hostname, an environment
+variable — name the condition once:
+
+```yaml
+targets:
+  - name: noble
+    match: { distro: ubuntu, distro_version: ">=24.04" }
+  - name: work
+    match: { env: { BEDOUIN_PROFILE: work } }
+
+packages:
+  - name: neovim
+    from: { noble: apt, default: cargo }   # apt's nvim is stale before 24.04
+```
+
+A declared target beats every built-in — you named it deliberately. Among
+several active targets, the one declared first wins.
+
+`match:` accepts `os`, `distro`, `distro_like`, `distro_version`, `arch`,
+`hostname` and `env`. Version strings may lead with `>=`, `>`, `<=` or `<`.
+
+## `only:` — when an item should not exist at all
+
+Arms choose *between* values. They cannot make an item not exist, and without
+that one config cannot cover Ubuntu and macOS:
+
+```yaml
+packages:
+  - name: xclip
+    from: apt
+    only: linux
+  - name: mas
+    from: brew
+    only: [macos]
+```
+
+A pruned item's other fields are never evaluated, so `from: apt` on a
+Linux-only package costs nothing on a Mac.
+
+<Aside type="caution" title="Two different things">
+A missing `default:` means *you did not decide* — that is a resolve-time error
+naming the arms available. `only:` means *you decided the item does not exist
+here*. They must not look alike, so they do not.
+</Aside>
+
+## Templates
+
+Values are [minijinja](https://docs.rs/minijinja) templates, rendered after arm
+selection — so a losing arm is never evaluated, and a template only valid on
+one platform costs nothing on the others.
+
+```yaml
+path: ["{{ home }}/.cargo/bin"]
+version: "{{ env.ZELLIJ_VERSION | default('latest') }}"
+```
+
+Undefined names are an error, not an empty string: `{{ hom }}` would otherwise
+render `/​.cargo/bin` and ship a wrong PATH entry without a word.

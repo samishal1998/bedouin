@@ -1,0 +1,51 @@
+---
+title: reconcile & daemon
+description: Keeping a machine in line without being asked.
+---
+
+## `bedouin reconcile`
+
+Apply if anything drifted, then exit. This is what a timer runs.
+
+```sh
+bedouin reconcile                      # once
+bedouin reconcile --watch              # stay resident
+bedouin reconcile --watch --interval 300
+```
+
+Under `--watch` a config that fails to load is treated as temporary — somebody
+is editing it — so it says so and keeps waiting rather than dying and needing a
+restart.
+
+It polls rather than watching the filesystem. A reconcile loop is not latency
+sensitive, and inotify is a dependency plus another platform split.
+
+## `bedouin daemon install`
+
+Writes the unit your platform's own supervisor understands, and prints the
+command that enables it.
+
+```sh
+$ bedouin daemon install --interval 900
+Wrote ~/.config/systemd/user/bedouin-reconcile.timer
+Wrote ~/.config/systemd/user/bedouin-reconcile.service
+
+To start it:
+  systemctl --user daemon-reload
+  systemctl --user enable --now bedouin-reconcile.timer
+```
+
+On macOS it writes a launchd agent instead, with a `StartInterval` and
+`RunAtLoad` false — a reconcile that runs while the machine is still coming up
+is a reconcile against a half-ready machine.
+
+The command is **printed, not run**. Enabling a background service that mutates
+your machine is your decision, not a side effect of asking for a file.
+
+`bedouin daemon uninstall` removes the units.
+
+## Should you?
+
+Consider `reconcile` on a machine that drifts because other people or other
+tools touch it. On your own laptop, `sync` when you feel like it is usually
+enough — and `doctor` will tell you when something moved.

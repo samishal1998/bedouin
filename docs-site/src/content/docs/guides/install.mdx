@@ -1,0 +1,76 @@
+---
+title: Install
+description: Install Bedouin with one command, or build it from source.
+---
+
+import { Tabs, TabItem, Aside } from '@astrojs/starlight/components';
+
+## One command
+
+```sh
+curl -fsSL https://samishal1998.github.io/bedouin/install.sh | sh
+```
+
+It picks the right build for your platform, verifies it against the release's
+published checksums, and installs to `~/.local/bin`. It prints everything it is
+about to do before doing it.
+
+<Aside type="tip" title="Piping to a shell">
+If you would rather read it first — and you should, for anything you pipe to a
+shell — the script is at
+[install.sh](https://github.com/samishal1998/bedouin/blob/main/install.sh), or
+`curl -fsSL .../install.sh | less`.
+</Aside>
+
+Two knobs:
+
+```sh
+BEDOUIN_VERSION=v0.1.0 curl -fsSL .../install.sh | sh   # pin a release
+BEDOUIN_BIN_DIR=/usr/local/bin curl -fsSL .../install.sh | sh
+```
+
+## From a release
+
+Every release publishes a static binary per platform plus a `SHA256SUMS`.
+
+<Tabs>
+<TabItem label="Linux">
+```sh
+curl -fsSLO https://github.com/samishal1998/bedouin/releases/latest/download/bedouin-x86_64-unknown-linux-musl.tar.gz
+tar xzf bedouin-x86_64-unknown-linux-musl.tar.gz
+install -m755 bedouin ~/.local/bin/bedouin
+```
+</TabItem>
+<TabItem label="macOS">
+```sh
+curl -fsSLO https://github.com/samishal1998/bedouin/releases/latest/download/bedouin-aarch64-apple-darwin.tar.gz
+tar xzf bedouin-aarch64-apple-darwin.tar.gz
+install -m755 bedouin ~/.local/bin/bedouin
+```
+</TabItem>
+</Tabs>
+
+## From source
+
+```sh
+cargo install --git https://github.com/samishal1998/bedouin bedouin-cli
+```
+
+For the static build the releases ship:
+
+```sh
+rustup target add x86_64-unknown-linux-musl
+cargo build --release --target x86_64-unknown-linux-musl
+```
+
+## Check it
+
+```sh
+bedouin --version
+bedouin facts        # what it detected about this machine
+```
+
+`facts` prints the environment as variable *names* only, never their values —
+that output tends to end up in bug reports.
+
+Then [write your first config](/bedouin/guides/first-config/).

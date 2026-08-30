@@ -1,0 +1,86 @@
+---
+title: The execution model
+description: How a config becomes a plan, and a plan becomes a machine.
+---
+
+## Loading
+
+Seven stages, and two of the orderings are load-bearing.
+
+```
+locate → read → parse (per file) → collect targets → type → merge → resolve
+```
+
+**Parse each file before merging.** Merging the *text* first destroys the
+`file:line:col` every error message depends on, so each file is parsed from its
+own text — twice: once permissively to collect `targets:`, then again with
+those names in scope.
+
+**Collect target names across all files before typing any.** A target declared
+in `conf.d/10-targets.yaml` must be in scope when `conf.d/20-packages.yaml` is
+read; collecting per file would reject configs that are correct as a whole.
+
+Resolution itself is: **prune `only:`, then select arms, then render.** A
+pruned item's other fields are never touched, and a losing arm is never
+rendered. By the time the planner runs, **the config contains no conditionals
+at all** — which is what keeps arms out of the diff, the DAG and the state
+file.
+
+## Planning
+
+Nodes in dependency order:
+
+```
+managers → languages → the shell's package → packages → files → rc → PATH
+```
+
+Edges beyond that come from `from:` (a cargo package needs the rust node) and
+`needs:`. Within a stage with nothing to separate them, declaration order.
+
+The diff is **three-way**:
+
+- config vs recorded — did you change what you want?
+- disk vs recorded — did something change it behind our back?
+
+Comparing only the first two is why an early version reported drift in
+`doctor` that `apply` then refused to fix.
+
+## Applying
+
+Three invariants, each written down because getting it wrong is unrecoverable.
+
+**Intent before work.** A step records `status: incomplete` and flushes
+*before* it begins, then flips to complete. Recording only on success leaves a
+run interrupted between installing and flushing with a package Bedouin
+installed that looks pre-existing — permanently un-removable, silently.
+
+**The environment is constructed, never inherited.** `PATH` comes from the bin
+directories the state manifest records plus a minimal system base. This is the
+whole reason one run can install rustup and then a cargo package.
+
+**Stop on the first failure**, and name what was not attempted.
+
+## Privilege
+
+Steps declare whether they need root; only those get `sudo -n`. Running a
+per-user manager as root would put files in root's home.
+
+On a machine where sudo wants a password, `apply` validates **once, up front**,
+naming the steps that need it — then holds the credential with a keepalive,
+because sudo's timestamp expires after 15 minutes and a real apply can outlast
+that.
+
+## The Host seam
+
+Everything in the core reaches the world through one trait: run a command, read
+a file, write a file, look up a binary on an explicit path. Two
+implementations — the real one, and an in-memory machine used by the tests.
+
+That is what makes the fresh-box path testable. A machine with nothing
+installed, a command that exits nonzero, one that times out, one that prints
+garbage: none of those can be arranged by hand repeatedly, and all of them are
+where the interesting bugs live.
+
+The container tests exist to catch the lies in the fakes. A fresh Ubuntu image
+having no apt package lists is not something an in-memory fake will ever tell
+you.

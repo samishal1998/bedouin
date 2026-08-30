@@ -1,0 +1,90 @@
+---
+title: Bedouin
+description: Declarative environment manager. One YAML config, every machine. Zero runtime dependencies.
+template: splash
+head:
+  - tag: title
+    content: "Bedouin — one config, every machine"
+hero:
+  tagline: The house you strike, carry, and pitch again identically on new ground.
+  actions:
+    - text: Install
+      link: /bedouin/guides/install/
+      icon: right-arrow
+    - text: Why it exists
+      link: /bedouin/guides/why/
+      variant: minimal
+    - text: GitHub
+      link: https://github.com/samishal1998/bedouin
+      icon: external
+      variant: minimal
+---
+
+<svg class="hero-mark" viewBox="0 0 260 82" role="img" aria-label="Bedouin">
+  <title>Bedouin</title>
+  <path class="ground" d="M 12 68 L 248 68" fill="none" stroke="#17161A" stroke-width="1.8" opacity="0.35"/>
+  <g class="rope" fill="none" stroke="#A82A24" stroke-width="2.4" stroke-linecap="round">
+    <path d="M 66 46 L 20 66"/><path d="M 194 46 L 240 66"/>
+    <path d="M 20 62 L 20 69"/><path d="M 240 62 L 240 69"/>
+  </g>
+  <path class="tent" d="M 58 68 L 66 46 Q 76 38 98 14 Q 130 40 162 14 Q 184 38 194 46 L 202 68 Z M 116 68 L 123 44 L 137 44 L 144 68 Z" fill="#17161A" fill-rule="evenodd"/>
+</svg>
+
+<p class="tagline">
+One YAML config in git, and any machine — Ubuntu, SUSE, macOS — becomes yours.
+A single static binary that runs on a box with nothing installed on it.
+</p>
+
+<div class="install-line">
+```sh
+curl -fsSL https://samishal1998.github.io/bedouin/install.sh | sh
+```
+</div>
+
+```diff title="bedouin plan" frame="terminal"
+  Bedouin will make the following changes:
+
++   + manager   brew                          not installed
++   + language  rust        1.80              rustup
+!   ~ package   zellij      0.39.2 -> 0.40.1  cargo
++   + file      ~/.gitconfig                  from templates/gitconfig.j2
++   + rc        ~/.zshrc.d/70-zellij.zsh      owned by zellij
+-   - package   ripgrep                       was: apt, owner: bedouin
+
+  Plan: 4 to add, 1 to change, 1 to remove.
+```
+
+<div class="why">
+  <div>
+    <h3>Nothing to install first</h3>
+    <p>A static binary with zero runtime dependencies. Ansible needs a working
+    Python, which is the one thing a fresh machine cannot promise.</p>
+  </div>
+  <div>
+    <h3>One run, in order</h3>
+    <p>Install a toolchain and something that needs it in the same run. Bedouin
+    tracks where it put things and builds each step's environment itself
+    instead of inheriting your shell's.</p>
+  </div>
+  <div>
+    <h3>It tells you first</h3>
+    <p><code>plan</code> is a faithful prediction of <code>apply</code>. Where
+    it cannot be, it says so rather than guessing.</p>
+  </div>
+  <div>
+    <h3>Your edits survive</h3>
+    <p>Tweak an alias in your shell, then <code>absorb</code> it back into the
+    config. Bedouin owns blocks inside your rc files, never the files.</p>
+  </div>
+  <div>
+    <h3>Conditionals that cannot rot</h3>
+    <p>A mapping means branches, and arm names come from a closed set — so a
+    typo is an error, not a branch that never matches on a machine you are not
+    sitting at.</p>
+  </div>
+  <div>
+    <h3>It only removes what it installed</h3>
+    <p>Anything already there when Bedouin first ran is adopted, never owned,
+    and survives being dropped from the config.</p>
+  </div>
+</div>

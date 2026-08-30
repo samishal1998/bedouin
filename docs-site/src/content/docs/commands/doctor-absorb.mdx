@@ -1,0 +1,71 @@
+---
+title: doctor & absorb
+description: Find what you changed by hand, then keep it.
+---
+
+## `bedouin doctor`
+
+Compares what Bedouin recorded against what the machine holds. Read-only.
+
+```
+Drift in 2 of 7 items:
+
+  ~ rc/jq/70-jq.zsh
+      ~/.zshrc.d/70-jq.zsh was edited by hand; `apply` would overwrite it
+  - file//home/you/.gitconfig
+      ~/.gitconfig is gone; `apply` would put it back
+
+Run `bedouin plan` to see what apply would do about it.
+```
+
+Exit **0** clean, **2** drift — mirroring `plan`.
+
+It reports four things, and they are not the same problem:
+
+- **edited** — managed content changed by hand. Your edit is real, and the next
+  apply would overwrite it. This is what `absorb` is for.
+- **gone** — Bedouin wrote it and it is not there.
+- **resolved differently** — the config now picks a different arm than it did
+  last time. Nothing was touched; the machine moved. A conditional config makes
+  this invisible without somebody looking.
+- **incomplete** — a previous run started something and did not finish.
+
+For a block inside your own rc file, only the text *between the markers* is
+compared, so your own edits elsewhere in that file are not drift.
+
+## `bedouin absorb`
+
+The other half of the loop. `doctor` finds the edit; `absorb` lifts it back
+into the config, so it survives the machine.
+
+```sh
+$ bedouin absorb
+
+rc/jq/70-jq.zsh
+  from ~/.zshrc.d/70-jq.zsh:
+    | alias j="jq --color-output"
+    | alias jl="jq -r '.[] | @tsv'"
+  Lift this into the config? [y/N] y
+
+Absorbed 1 edit(s) into ~/.config/bedouin/bedouin.yaml.
+Run `bedouin apply` to record it, then commit the config.
+```
+
+Your comments and formatting survive: the config is edited by text surgery, not
+by re-serialising it. Every edit is verified by re-parsing, and if the result
+would not load, Bedouin restores your file and tells you to make the change by
+hand.
+
+That final `apply` writes the same bytes back — it is the bookkeeping that
+moves, not the machine.
+
+### What absorb will not do
+
+An **rc block** absorbs because the edit sits between markers Bedouin owns, so
+the block's current text *is* the new content. A **managed file whose template
+has no template syntax** absorbs because the template is a plain copy.
+
+A **templated file** is refused, with a diff. Mapping a rendered edit back
+through a template means inverting it, and there is no honest way to guess
+which part of the output came from which expression. Refusing loudly leaves you
+better off than a merge that guesses at the config you trust.

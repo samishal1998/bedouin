@@ -1,0 +1,102 @@
+---
+title: Your first config
+description: From an empty machine to a configured one, in four commands.
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+<Steps>
+
+1. **Start one.**
+
+   ```sh
+   bedouin init
+   ```
+
+   Writes a commented `bedouin.yaml` and a `templates/` directory beside it.
+   Keep this in git — it is the whole point.
+
+2. **Say what you want.**
+
+   ```yaml
+   version: 0
+   shell: zsh
+
+   vars:
+     editor: nvim
+
+   aliases:
+     ll: ls -alh
+
+   packages:
+     - name: fd
+       from: { macos: brew, default: [apt, zypper] }
+
+     - name: zellij
+       from: cargo
+       path: ["{{ home }}/.cargo/bin"]
+
+   files:
+     - src: templates/gitconfig.j2
+       dest: ~/.gitconfig
+   ```
+
+3. **See what it would do.** This changes nothing.
+
+   ```sh
+   bedouin plan
+   ```
+
+   ```
+   Bedouin will make the following changes:
+
+     + language  rust        latest            rustup
+     + package   fd          latest            apt
+     + package   zellij      latest            cargo
+     + file      ~/.gitconfig                  from templates/gitconfig.j2
+     + path      ~/.zshrc.d/00-bedouin-path.zsh  1 entry from zellij
+
+   Plan: 5 to add, 0 to change, 0 to remove.
+   ```
+
+   `zellij` is `from: cargo`, so Bedouin added the `rust` toolchain for you and
+   said so rather than doing it silently.
+
+4. **Do it.**
+
+   ```sh
+   bedouin apply
+   ```
+
+   It shows the plan again and asks before touching anything.
+
+</Steps>
+
+## The parts worth knowing
+
+**`shell:` is declared, not detected.** On a fresh machine you are usually
+running bash while installing and configuring zsh, so the shell Bedouin detects
+is the one you are about to stop using.
+
+**A mapping means branches.** `from: { macos: brew, default: apt }` is a
+conditional; `from: apt` is a value. There is no `when:` or `select:` — the
+shape carries the meaning. See [conditional
+values](/bedouin/config/conditionals/).
+
+**`{{ home }}` and friends are facts**, resolved by Bedouin rather than
+declared by you. The [facts reference](/bedouin/config/facts/) lists them.
+
+<Aside title="Run it again">
+`bedouin plan` after an apply should print *No changes*. That property —
+plan, apply, plan converging — is the one the whole test suite is built
+around.
+</Aside>
+
+## Next
+
+- Something already on the machine? Bedouin **adopts** it: recorded as
+  pre-existing, never removed, even if you later drop it from the config.
+- Edited a managed file by hand? [`doctor` and
+  `absorb`](/bedouin/commands/doctor-absorb/).
+- Want it to keep itself in line? [`reconcile` and
+  `daemon`](/bedouin/commands/daemon/).
