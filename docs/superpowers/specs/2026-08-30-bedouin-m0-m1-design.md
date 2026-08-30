@@ -348,11 +348,14 @@ Bedouin does not pretend to decide it — it uses the order the user wrote,
 which is visible in one place at the top of the file. This also restores the
 handoff's stated `targets:` semantics (§15).
 
-**3. Among built-ins, the arm with the largest implied fact set wins, and
-ties are a parse error.**
+**3. Among built-ins, a strictly refining arm wins; arms that neither
+refines are a parse error.**
 
-Specificity is the size of the **implied** fact set from §6.1's table, not
-the count of characters in the key. This matters:
+Compare arms by their **implied** fact sets from §6.1's table, by subset
+inclusion rather than by size. If one arm's implied set is a strict superset
+of another's, it refines it and wins. If two active arms' sets are
+incomparable, that is a parse error — even when one set is larger. This
+matters:
 
 ```yaml
 from:
@@ -367,26 +370,38 @@ both arms scored 1, co-occurred, and the file was rejected at parse time with
 no expressible fix — "apt on Ubuntu, cargo on other Linuxes" was unwritable.
 That was the sharpest bug the review found.
 
-Only genuinely **orthogonal** arms tie:
+Only **incomparable** arms tie:
 
 ```yaml
 version:
-  macos: "1.80"        # os axis
-  arm64: nightly       # arch axis — neither implies the other
+  macos: "1.80"        # implies {os}
+  arm64: nightly       # implies {arch} — neither set contains the other
   default: stable
 ```
 
 This is a parse error naming both arms and suggesting `macos-arm64`, which
 exists in the vocabulary precisely for it.
 
+Subset inclusion rather than set size is load-bearing, and a size rule looks
+right until it isn't: `{ debian-like: apt, arm64: cargo }` implies sets of
+size 2 and 1 that are nonetheless **disjoint**, and both are active on a
+Debian ARM box. Under a size rule `debian-like` would win silently — exactly
+the shadowing class this section exists to eliminate, reintroduced across
+axes. Under subset inclusion it is the parse error it should be. Where no
+conjunction exists in §6.1's vocabulary for the pair (there are no
+`{distro_like}-{arch}` names), the error says to declare a target.
+
 Written order of arms is irrelevant throughout. The map reads like a set
 because it is one, and a formatter that sorts keys cannot change meaning.
 Under written-order selection, `{macos: "1.80", macos-arm64: nightly}` would
 make the nightly arm unreachable on every machine, silently.
 
-**Target `vars:` fold by the same rules.** With two active targets each
-setting `editor`, rule 2 decides: the first-declared target wins. Revision 1
-left this undefined, which meant two implementers would produce different
+**Target `vars:` fold by the same rules, per key.** Active targets' `vars`
+blocks are merged key by key into the base `vars:`; where two active targets
+set the same key, rule 2 decides and the first-declared target wins. Merging
+is per key rather than wholesale, so a target that sets only `editor` does
+not drop another active target's unrelated `proxy`. Revision 1 left this
+undefined entirely, which meant two implementers would produce different
 renderings of the same config.
 
 ### 6.4 `default` is optional, and its absence is a real error
