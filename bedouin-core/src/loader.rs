@@ -96,7 +96,14 @@ fn yaml_err(file: &Path, e: &serde_yaml_ng::Error) -> ConfigError {
         Some(l) => format!("{}:{}:{}", file.display(), l.line(), l.column()),
         None => file.display().to_string(),
     };
-    ConfigError::new(e.to_string()).at(at)
+    // serde_yaml_ng appends its own " at line N column M". The location is
+    // already the prefix, so printing it twice is just noise.
+    let msg = e.to_string();
+    let trimmed = msg
+        .rfind(" at line ")
+        .map_or(msg.as_str(), |i| &msg[..i])
+        .trim_end();
+    ConfigError::new(trimmed.to_string()).at(at)
 }
 
 /// One path segment matched against `*` and `?`. No `**`.

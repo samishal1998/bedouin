@@ -1,0 +1,4 @@
+packages:
+  - name: neovim
+    from: { noble: apt, default: cargo }
+    version: latest

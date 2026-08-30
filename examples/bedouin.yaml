@@ -1,0 +1,42 @@
+version: 0
+shell: zsh
+
+includes:
+  - conf.d/*.yaml
+
+vars:
+  editor: nvim
+
+targets:
+  - name: noble
+    match: { distro: ubuntu, distro_version: ">=24.04" }
+
+package_managers:
+  macos: [brew]
+  default: [apt, mise]
+
+languages:
+  - name: rust
+    version: "1.80"
+    installer: rustup
+
+packages:
+  - name: jq
+    from: { macos: brew, debian-like: apt, suse-like: zypper }
+
+  - name: zellij
+    from: cargo
+    version: latest
+    path: ["{{ home }}/.cargo/bin"]
+    rc:
+      - file: "{{ shell.rc_dir }}/70-zellij.{{ shell.name }}"
+        content: |
+          eval "$(zellij setup --generate-auto-start {{ shell.name }})"
+
+  - name: xclip
+    from: apt
+    only: linux
+
+files:
+  - src: templates/gitconfig.j2
+    dest: ~/.gitconfig
