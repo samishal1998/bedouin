@@ -691,10 +691,21 @@ pub fn apply(
     // rather than claimed: it must survive being dropped from the config.
     for item in &plan.items {
         if item.action == Action::NoOp && !ex.state.items.contains_key(&item.id) {
-            ex.state.items.insert(
-                item.id.clone(),
-                StateItem::new(item.kind, Owner::Preexisting),
-            );
+            let mut rec = StateItem::new(item.kind, Owner::Preexisting);
+            // Adopt its bin directories as well as its existence: a toolchain
+            // that was already here must still reach later steps' PATH without
+            // re-probing the machine every run.
+            rec.bin_dirs = match &item.payload {
+                Payload::Language { bin_dirs, .. } => {
+                    bin_dirs.iter().map(|p| p.display().to_string()).collect()
+                }
+                Payload::Manager(m) => crate::recipe::bin_dirs(m.as_str(), facts)
+                    .iter()
+                    .map(|p| p.display().to_string())
+                    .collect(),
+                _ => Vec::new(),
+            };
+            ex.state.items.insert(item.id.clone(), rec);
         }
     }
     ex.flush()?;
