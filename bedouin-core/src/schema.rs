@@ -456,7 +456,7 @@ pub fn resolve(raw: &RawConfig, vocab: &Vocabulary, facts: &Facts) -> Result<Con
         // and reporting success.
         if let Some(bad) = from.iter().find(|m| **m == Manager::Rustup) {
             return Err(ConfigError::new(format!(
-                "`from: {bad}` installs toolchains, not packages\n                   For a Rust toolchain use `languages:`; for a crate use `from: cargo`"
+                "`from: {bad}` installs toolchains, not packages\n  For a Rust toolchain use `languages:`; for a crate use `from: cargo`"
             ))
             .in_item(&item));
         }

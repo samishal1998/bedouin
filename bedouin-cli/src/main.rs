@@ -285,7 +285,7 @@ fn main() -> ExitCode {
         } => {
             let Some((manager, rest)) = spec.split_once(':') else {
                 eprintln!(
-                    "bedouin: `{spec}` is not `manager:package`.\n                       For example: `bedouin add apt:ripgrep` or `bedouin add cargo:zellij@0.40.1`"
+                    "bedouin: `{spec}` is not `manager:package`.\n  For example: `bedouin add apt:ripgrep` or `bedouin add cargo:zellij@0.40.1`"
                 );
                 return ExitCode::FAILURE;
             };

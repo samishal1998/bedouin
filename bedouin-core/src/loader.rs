@@ -220,7 +220,7 @@ fn expand(host: &dyn Host, root: &Path, pattern: &str) -> Result<Vec<PathBuf>> {
         // already in state as `owner: bedouin` is then planned for REMOVAL. A
         // one-character typo would read as "uninstall all of this".
         return Err(ConfigError::new(format!(
-            "`includes:` pattern `{pattern}` matches no files\n  looked in: {}\n               Remove the pattern, or fix it -- an include that matches nothing \
+            "`includes:` pattern `{pattern}` matches no files\n  looked in: {}\n  Remove the pattern, or fix it -- an include that matches nothing \
              would silently drop every item it was meant to add",
             dir.display()
         )));
