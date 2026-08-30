@@ -30,6 +30,22 @@ enum Command {
     },
     /// Print the resolved facts for this machine.
     Facts,
+    /// Write a starter config here.
+    Init,
+    /// Pull the config repository, then apply what changed.
+    Sync {
+        #[arg(short = 'y', long)]
+        yes: bool,
+    },
+    /// Add a package to the config, then apply.
+    Add {
+        /// `manager:package` or `manager:package@version`, e.g. `cargo:zellij@0.40.1`.
+        spec: String,
+        #[arg(long)]
+        no_apply: bool,
+        #[arg(short = 'y', long)]
+        yes: bool,
+    },
     /// Report managed content that changed since the last apply.
     Doctor,
     /// Drop a package or language from the config, then apply.
@@ -117,10 +133,77 @@ fn confirm() -> bool {
     matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
 }
 
+const STARTER: &str = r#"# bedouin.yaml -- one config, every machine.
+#
+# `bedouin plan` shows what would change; `bedouin apply` makes it so.
+# Anything conditional is written as a mapping: `{ macos: brew, default: apt }`.
+version: 0
+
+# The shell you are configuring. On a fresh box this is usually NOT the shell
+# you are running, which is why it is declared rather than detected.
+shell: zsh
+
+vars:
+  editor: nvim
+
+# Named conditions. Use one wherever a built-in arm name is not enough --
+# a distro version, a hostname, an environment variable.
+# targets:
+#   - name: work
+#     match: { env: { BEDOUIN_PROFILE: work } }
+
+aliases:
+  ll: ls -alh
+
+packages:
+  - name: jq
+    from: { macos: brew, debian-like: apt, suse-like: zypper }
+
+# files:
+#   - src: templates/gitconfig.j2
+#     dest: ~/.gitconfig
+"#;
+
+fn git(root: &std::path::Path, args: &[&str]) -> Result<String, String> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .output()
+        .map_err(|e| format!("git: {e}"))?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let host = OsHost::new();
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+
+    // `init` has no config to load yet, so it runs before the pipeline.
+    if matches!(cli.command, Command::Init) {
+        let target = cli.config.clone().unwrap_or_else(|| cwd.join("bedouin.yaml"));
+        if target.exists() {
+            eprintln!(
+                "bedouin: {} already exists. Refusing to overwrite it",
+                target.display()
+            );
+            return ExitCode::FAILURE;
+        }
+        if let Some(parent) = target.parent() {
+            let _ = std::fs::create_dir_all(parent);
+            let _ = std::fs::create_dir_all(parent.join("templates"));
+        }
+        if let Err(e) = std::fs::write(&target, STARTER) {
+            eprintln!("bedouin: {}: {e}", target.display());
+            return ExitCode::FAILURE;
+        }
+        println!("Wrote {}", target.display());
+        println!("Next: edit it, then `bedouin plan`.");
+        return ExitCode::SUCCESS;
+    }
 
     let outcome = match run::plan(&host, cli.config.as_deref(), &cwd) {
         Ok(o) => o,
@@ -149,6 +232,120 @@ fn main() -> ExitCode {
             }
             ExitCode::SUCCESS
         }
+        Command::Sync { yes } => {
+            let root = &outcome.loaded.root;
+            // A dirty tree means uncommitted local edits; a pull would either
+            // fail or bury them. Neither is ours to decide.
+            match git(root, &["status", "--porcelain"]) {
+                Err(e) => {
+                    eprintln!("bedouin: {} is not a git repository, or git failed: {e}", root.display());
+                    return ExitCode::FAILURE;
+                }
+                Ok(s) if !s.is_empty() => {
+                    eprintln!("bedouin: {} has uncommitted changes:", root.display());
+                    eprintln!("{s}");
+                    eprintln!("  Commit or stash them first -- sync will not decide what happens to your edits");
+                    return ExitCode::FAILURE;
+                }
+                Ok(_) => {}
+            }
+            // --ff-only: sync pulls, it does not merge. A divergence is a
+            // decision for the user.
+            match git(root, &["pull", "--ff-only"]) {
+                Ok(out) => println!("{out}"),
+                Err(e) => {
+                    eprintln!("bedouin: git pull failed: {e}");
+                    return ExitCode::FAILURE;
+                }
+            }
+            // Re-plan against what was just pulled. The plan IS the diff.
+            let after = match run::plan(&host, cli.config.as_deref(), &cwd) {
+                Ok(o) => o,
+                Err(e) => {
+                    eprintln!("bedouin: {e}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            if !after.plan.has_changes() {
+                println!("Up to date; nothing to apply.");
+                return ExitCode::SUCCESS;
+            }
+            print!("{}", after.plan.render(cli.verbose));
+            if !yes && !confirm() {
+                println!("Pulled, nothing applied.");
+                return ExitCode::SUCCESS;
+            }
+            run_apply(&host, after, cli.verbose)
+        }
+
+        Command::Add {
+            spec,
+            no_apply,
+            yes,
+        } => {
+            let Some((manager, rest)) = spec.split_once(':') else {
+                eprintln!(
+                    "bedouin: `{spec}` is not `manager:package`.\n                       For example: `bedouin add apt:ripgrep` or `bedouin add cargo:zellij@0.40.1`"
+                );
+                return ExitCode::FAILURE;
+            };
+            let (name, version) = match rest.split_once('@') {
+                Some((n, v)) => (n, Some(v)),
+                None => (rest, None),
+            };
+            if bedouin_core::facts::Manager::parse(manager).is_none() {
+                let known: Vec<&str> = bedouin_core::facts::Manager::ALL
+                    .iter()
+                    .map(|m| m.as_str())
+                    .collect();
+                eprintln!("bedouin: unknown manager `{manager}`\n  known: {}", known.join(", "));
+                return ExitCode::FAILURE;
+            }
+
+            let entry = &outcome.loaded.entry;
+            let text = match std::fs::read_to_string(entry) {
+                Ok(t) => t,
+                Err(e) => {
+                    eprintln!("bedouin: {}: {e}", entry.display());
+                    return ExitCode::FAILURE;
+                }
+            };
+            let edited = match bedouin_core::edit::add_package(&text, name, manager, version) {
+                Ok(t) => t,
+                Err(e) => {
+                    eprintln!("bedouin: {e}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            if let Err(e) = std::fs::write(entry, &edited) {
+                eprintln!("bedouin: {}: {e}", entry.display());
+                return ExitCode::FAILURE;
+            }
+            println!("Added `{name}` from `{manager}` to {}.", entry.display());
+            if no_apply {
+                return ExitCode::SUCCESS;
+            }
+            let after = match run::plan(&host, cli.config.as_deref(), &cwd) {
+                Ok(o) => o,
+                Err(e) => {
+                    eprintln!("bedouin: {e}\n  The config was edited; fix it or run `bedouin remove {name}`.");
+                    return ExitCode::FAILURE;
+                }
+            };
+            if !after.plan.has_changes() {
+                println!("Already on this machine; nothing to do.");
+                return ExitCode::SUCCESS;
+            }
+            print!("{}", after.plan.render(cli.verbose));
+            if !yes && !confirm() {
+                println!("Config edited, nothing applied.");
+                return ExitCode::SUCCESS;
+            }
+            run_apply(&host, after, cli.verbose)
+        }
+
+        Command::Init => unreachable!("handled before the config is loaded"),
+
         Command::Doctor => {
             let report = match bedouin_core::doctor::check(
                 &outcome.state,

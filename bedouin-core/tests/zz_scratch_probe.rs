@@ -8,18 +8,19 @@ fn machine(cfg: &str) -> FakeHost {
     FakeHost::new()
         .with_file("/cfg/bedouin.yaml", cfg)
         .with_file("/etc/os-release", "ID=ubuntu\nID_LIKE=debian\nVERSION_ID=\"24.04\"\n")
-        .with_env("HOME", "/home/t")
-        .with_env("USER", "t")
-        .with_env("SHELL", "/bin/zsh")
-        .with_env("PATH", "/usr/bin:/bin")
+        .with_env("HOME", "/home/t").with_env("USER", "t")
+        .with_env("SHELL", "/bin/zsh").with_env("PATH", "/usr/bin:/bin")
         .with_binary("/usr/bin/apt-get")
-        .with_binary("/usr/bin/jq")
         .with_command("id -u", FakeRun::ok("1000"))
         .with_command("sudo -n true", FakeRun::ok(""))
+        .with_command("sudo -n apt-get update", FakeRun::ok(""))
+        .with_command("sudo -n apt-get install -y kubectl", FakeRun::ok("ok"))
+        .with_command("sudo -n apt-get remove -y kubectl", FakeRun::ok("ok"))
+        .with_command("sudo -n apt-get purge -y kubectl", FakeRun::ok("ok"))
+        .with_binary("/usr/bin/jq").with_command("kubectl completion zsh", FakeRun::ok("#compdef kubectl\n_k() { :; }"))
 }
 fn outcome(h: &FakeHost) -> run::Outcome {
-    run::plan_for(h, Some(Path::new("/cfg/bedouin.yaml")), Path::new("/cfg"), Os::Linux, Arch::X86_64)
-        .unwrap_or_else(|e| panic!("plan failed: {e}"))
+    run::plan_for(h, Some(Path::new("/cfg/bedouin.yaml")), Path::new("/cfg"), Os::Linux, Arch::X86_64).unwrap()
 }
 fn apply_on(h: &FakeHost) -> apply::Report {
     let o = outcome(h);
@@ -29,80 +30,67 @@ fn read(h: &FakeHost, p: &str) -> Option<String> {
     h.read(Path::new(p)).unwrap().map(|b| String::from_utf8_lossy(&b).into_owned())
 }
 
-const CFG: &str = r#"
+const FULL: &str = r#"
 version: 0
 shell: zsh
-aliases:
-  ll: ls -alh
+aliases: { ll: ls -alh }
 packages:
-  - name: jq
+  - name: kubectl
     from: apt
-    completions:
-      generate: ["jq", "--completion", "{{ shell.name }}"]
+    path: ["~/.krew/bin"]
+    aliases: { k: kubectl }
+    completions: { generate: ["kubectl", "completion", "{{ shell.name }}"] }
+    rc:
+      - file: "{{ shell.rc_dir }}/70-kubectl.zsh"
+        content: "export KUBE_EDITOR=vi"
 "#;
 
-fn fresh() -> FakeHost {
-    machine(CFG).with_command("jq --completion zsh", FakeRun::ok("#compdef jq\n_jq() { :; }"))
-}
-
 #[test]
-fn probe1_completions_hand_edit() {
-    let h = fresh();
+fn everything_at_once_then_remove() {
+    let h = machine(FULL);
     let r = apply_on(&h);
-    assert!(r.ok(), "{:?}", r.failure);
-    let f = "/home/t/.zshrc.d/completions/_jq";
-    println!("written: {:?}", read(&h, f));
-    // hand-edit the completions file
-    h.files.borrow_mut().insert(f.into(), b"# someone broke this\n".to_vec());
-
-    let o = outcome(&h);
-    let rep = bedouin_core::doctor::check(&o.state, &o.config, &o.facts, &h).unwrap();
-    println!("DOCTOR exit={} clean={}\n{}", rep.exit_code(), rep.is_clean(), rep.render(false));
-    println!("PLAN exit={} \n{}", o.plan.exit_code(), o.plan.render(false));
-    // now re-apply and re-check
-    let r2 = apply_on(&h);
-    println!("apply2 completed={:?} ok={}", r2.completed, r2.ok());
-    println!("file after apply2: {:?}", read(&h, f));
-    let o = outcome(&h);
-    let rep = bedouin_core::doctor::check(&o.state, &o.config, &o.facts, &h).unwrap();
-    println!("DOCTOR AGAIN exit={}\n{}", rep.exit_code(), rep.render(false));
-}
-
-#[test]
-fn probe3a_doctor_after_failed_apply() {
-    let h = machine(CFG).with_command("jq --completion zsh", FakeRun::fails(2, "nope"));
-    let r = apply_on(&h);
-    println!("apply failed at: {:?}", r.failure.as_ref().map(|f| f.id.clone()));
-    let o = outcome(&h);
-    let rep = bedouin_core::doctor::check(&o.state, &o.config, &o.facts, &h).unwrap();
-    println!("DOCTOR exit={}\n{}", rep.exit_code(), rep.render(false));
-    println!("PLAN exit={}\n{}", o.plan.exit_code(), o.plan.render(false));
-    println!("state: {}", serde_json::to_string_pretty(&o.state).unwrap());
-}
-
-#[test]
-fn probe3b_package_uninstalled_by_hand() {
-    let cfg = "version: 0\nshell: zsh\npackages:\n  - name: ripgrep\n    from: apt\n";
-    let h = machine(cfg).with_command("sudo -n apt-get update", FakeRun::ok(""))
-        .with_command("sudo -n apt-get install -y ripgrep", FakeRun::ok("done"));
-    let r = apply_on(&h);
-    println!("apply ok={} completed={:?} fail={:?}", r.ok(), r.completed, r.failure);
-    // uninstall by hand: the binary is not on the machine (never was in FakeHost)
-    let o = outcome(&h);
-    let rep = bedouin_core::doctor::check(&o.state, &o.config, &o.facts, &h).unwrap();
-    println!("DOCTOR exit={}\n{}", rep.exit_code(), rep.render(false));
-    println!("PLAN exit={}\n{}", o.plan.exit_code(), o.plan.render(false));
-}
-
-#[test]
-fn probe11_package_named_bedouin() {
-    let cfg = "version: 0\nshell: zsh\naliases:\n  ll: ls -alh\npackages:\n  - name: bedouin\n    from: apt\n    aliases:\n      b: bedouin\n";
-    let h = machine(cfg);
-    match run::plan_for(&h, Some(Path::new("/cfg/bedouin.yaml")), Path::new("/cfg"), Os::Linux, Arch::X86_64) {
-        Ok(o) => {
-            println!("PLAN OK:\n{}", o.plan.render(true));
-            for i in &o.plan.items { println!("  id={} name={}", i.id, i.name); }
-        }
-        Err(e) => println!("PLAN ERR: {}", e.message),
+    println!("apply1 ok={} completed={:?} fail={:?}", r.ok(), r.completed, r.failure);
+    for f in ["/home/t/.zshrc", "/home/t/.zshrc.d/10-bedouin-aliases.zsh",
+              "/home/t/.zshrc.d/30-kubectl-aliases.zsh", "/home/t/.zshrc.d/70-kubectl.zsh",
+              "/home/t/.zshrc.d/00-bedouin-path.zsh", "/home/t/.zshrc.d/completions/_kubectl"] {
+        println!("  {f} => {:?}", read(&h, f));
     }
+    println!("plan2 exit={} (idempotent?)", outcome(&h).plan.exit_code());
+    let o = outcome(&h);
+    println!("doctor exit={}", bedouin_core::doctor::check(&o.state, &o.config, &o.facts, &h).unwrap().exit_code());
+
+    // now drop the package entirely
+    let h2 = h.with_file("/cfg/bedouin.yaml", "version: 0\nshell: zsh\naliases: { ll: ls -alh }\npackages: [{name: jq, from: apt}]\n");
+    let r = apply_on(&h2);
+    println!("apply-remove ok={} completed={:?} fail={:?}", r.ok(), r.completed, r.failure);
+    for f in ["/home/t/.zshrc.d/30-kubectl-aliases.zsh", "/home/t/.zshrc.d/70-kubectl.zsh",
+              "/home/t/.zshrc.d/00-bedouin-path.zsh", "/home/t/.zshrc.d/completions/_kubectl",
+              "/home/t/.zshrc.d/10-bedouin-aliases.zsh"] {
+        println!("  {f} => {:?}", read(&h2, f));
+    }
+    println!("plan3 exit={}", outcome(&h2).plan.exit_code());
+    let o = outcome(&h2);
+    let rep3 = bedouin_core::doctor::check(&o.state, &o.config, &o.facts, &h2).unwrap();
+    println!("doctor3 exit={}\n{}", rep3.exit_code(), rep3.render(true));
+}
+
+#[test]
+fn rc_block_into_the_users_own_zshrc_and_removal() {
+    let cfg = r#"
+version: 0
+shell: zsh
+packages:
+  - name: kubectl
+    from: apt
+    rc:
+      - file: "~/.zshrc"
+        content: "export KUBE_EDITOR=vi"
+"#;
+    let h = machine(cfg).with_file("/home/t/.zshrc", "# my own zshrc\nexport EDITOR=vim\n");
+    let r = apply_on(&h);
+    println!("ok={} fail={:?}", r.ok(), r.failure);
+    println!("zshrc:\n{}", read(&h, "/home/t/.zshrc").unwrap());
+    let h2 = h.with_file("/cfg/bedouin.yaml", "version: 0\nshell: zsh\npackages: [{name: jq, from: apt}]\n");
+    apply_on(&h2);
+    println!("zshrc after removal:\n{:?}", read(&h2, "/home/t/.zshrc"));
 }

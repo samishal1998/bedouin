@@ -173,6 +173,73 @@ pub fn remove_entry(text: &str, section: Section, name: &str) -> Result<String> 
     Ok(out)
 }
 
+/// Append a package to `packages:`, creating the section if it is absent.
+///
+/// The insert mirror of [`remove_entry`], with the same verify-by-reparsing:
+/// this writes the file the user keeps in git, so it appends and touches
+/// nothing else.
+pub fn add_package(text: &str, name: &str, from: &str, version: Option<&str>) -> Result<String> {
+    if serde_yaml_ng::from_str::<serde_yaml_ng::Value>(text)
+        .ok()
+        .is_some_and(|d| still_present(&d, Section::Packages, name))
+    {
+        return Err(ConfigError::new(format!(
+            "`{name}` is already in this config"
+        )));
+    }
+
+    let entry = match version {
+        Some(v) => format!("  - name: {name}\n    from: {from}\n    version: \"{v}\"\n"),
+        None => format!("  - name: {name}\n    from: {from}\n"),
+    };
+
+    let lines: Vec<&str> = text.lines().collect();
+    let out = match lines.iter().position(|l| l.trim_start() == "packages:") {
+        // Append to the end of the existing section rather than the file: a
+        // `packages:` block followed by `files:` must not swallow the latter.
+        Some(head) => {
+            let mut end = head + 1;
+            let head_indent = indent_of(lines[head]);
+            let mut last_content = head;
+            while end < lines.len() {
+                let l = lines[end];
+                if !l.trim().is_empty() && indent_of(l) <= head_indent {
+                    break;
+                }
+                if !l.trim().is_empty() {
+                    last_content = end;
+                }
+                end += 1;
+            }
+            let mut kept: Vec<String> = lines[..=last_content].iter().map(|s| (*s).to_string()).collect();
+            kept.push(entry.trim_end().to_string());
+            kept.extend(lines[last_content + 1..].iter().map(|s| (*s).to_string()));
+            kept.join("\n")
+        }
+        None => {
+            let mut base = text.trim_end().to_string();
+            base.push_str("\n\npackages:\n");
+            base.push_str(entry.trim_end());
+            base
+        }
+    };
+    let mut out = out;
+    out.push('\n');
+
+    let parsed: serde_yaml_ng::Value = serde_yaml_ng::from_str(&out).map_err(|e| {
+        ConfigError::new(format!(
+            "adding `{name}` would leave a file that no longer parses: {e}\n  \
+             Refusing to write it. Add the entry by hand"
+        ))
+    })?;
+    if !still_present(&parsed, Section::Packages, name) {
+        return Err(ConfigError::new(format!(
+            "could not cleanly add `{name}`. Refusing to guess -- add it by hand"
+        )));
+    }
+    Ok(out)
+}
+
 fn still_present(doc: &serde_yaml_ng::Value, section: Section, name: &str) -> bool {
     let key = section.key().trim_end_matches(':');
     doc.get(key)
@@ -259,6 +326,52 @@ files:
         assert!(e.message.contains("no package named `ripgrep`"), "{e}");
         let e = remove_entry("version: 0\n", Section::Packages, "jq").unwrap_err();
         assert!(e.message.contains("no `packages:` section"), "{e}");
+    }
+
+    #[test]
+    fn adding_a_package_appends_to_its_section_and_nothing_else() {
+        let out = add_package(CFG, "ripgrep", "apt", None).unwrap();
+        let doc: serde_yaml_ng::Value = serde_yaml_ng::from_str(&out).unwrap();
+        let names: Vec<&str> = doc["packages"]
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .map(|p| p["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["jq", "zellij", "fd", "ripgrep"]);
+        // The section after `packages:` must not be swallowed.
+        assert!(out.contains("dest: ~/.gitconfig"));
+        assert!(out.contains("# a comment worth keeping"));
+    }
+
+    #[test]
+    fn adding_with_a_version_pins_it() {
+        let out = add_package(CFG, "zoxide", "cargo", Some("0.9.4")).unwrap();
+        let doc: serde_yaml_ng::Value = serde_yaml_ng::from_str(&out).unwrap();
+        let last = doc["packages"].as_sequence().unwrap().last().unwrap();
+        assert_eq!(last["name"].as_str(), Some("zoxide"));
+        assert_eq!(last["version"].as_str(), Some("0.9.4"), "quoted, so 1.80 stays 1.80");
+    }
+
+    #[test]
+    fn adding_something_already_there_is_refused() {
+        let e = add_package(CFG, "jq", "apt", None).unwrap_err();
+        assert!(e.message.contains("already in this config"), "{e}");
+    }
+
+    #[test]
+    fn a_config_with_no_packages_section_gains_one() {
+        let out = add_package("version: 0\nshell: zsh\n", "jq", "apt", None).unwrap();
+        let doc: serde_yaml_ng::Value = serde_yaml_ng::from_str(&out).unwrap();
+        assert_eq!(doc["packages"][0]["name"].as_str(), Some("jq"));
+        assert_eq!(doc["shell"].as_str(), Some("zsh"));
+    }
+
+    #[test]
+    fn add_then_remove_returns_the_file_to_where_it_started() {
+        let added = add_package(CFG, "ripgrep", "apt", None).unwrap();
+        let back = remove_entry(&added, Section::Packages, "ripgrep").unwrap();
+        assert_eq!(back, CFG, "a round trip must not reflow the file");
     }
 
     #[test]
