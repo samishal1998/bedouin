@@ -141,6 +141,22 @@ impl State {
             .collect()
     }
 
+    /// The item as state records it -- but only if the step that wrote it
+    /// finished. A `status` the diff ignores is a `status` that does nothing.
+    pub fn done(&self, id: &str) -> Option<&StateItem> {
+        self.items.get(id).filter(|i| i.status == Status::Complete)
+    }
+
+    /// A step recorded its intent and never flipped it. Such an item re-diffs
+    /// as needing work (spec 8.3), and the machine probe may not overrule it:
+    /// the probe is presence-only and cannot tell a half-install from a whole
+    /// one. Re-running an installer is idempotent; skipping a half-install is
+    /// a broken machine whose state stays wedged, because a no-op step never
+    /// runs and so never flips the status to complete.
+    pub fn interrupted(&self, id: &str) -> bool {
+        self.items.get(id).is_some_and(|i| i.status == Status::Incomplete)
+    }
+
     pub fn owned_by_bedouin(&self) -> impl Iterator<Item = (&String, &StateItem)> {
         self.items.iter().filter(|(_, i)| i.owner == Owner::Bedouin)
     }

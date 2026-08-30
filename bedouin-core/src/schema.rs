@@ -279,6 +279,12 @@ impl Resolver<'_> {
 /// no-default error on macOS, and nothing would be fixed.
 fn keeps(only: &Option<OneOrMany<String>>, vocab: &Vocabulary, facts: &Facts) -> Result<bool> {
     let Some(names) = only else { return Ok(true) };
+    if names.is_empty() {
+        return Err(ConfigError::new(
+            "`only: []` names no machine, so the item would never exist anywhere. \
+             Drop the item, or name the arms it applies to",
+        ));
+    }
     let mut any = false;
     for name in names.iter() {
         if !vocab.is_known(name) {
@@ -334,6 +340,11 @@ pub fn resolve(raw: &RawConfig, vocab: &Vocabulary, facts: &Facts) -> Result<Con
             if from_targets.contains_key(k) {
                 continue;
             }
+            // Every other evaluatable leaf validates before selecting. Skipping
+            // it here made the same arm pair a hard error in the base `vars:`
+            // block and a silent fallthrough to `default:` inside a target.
+            validate_arms(v, vocab)
+                .map_err(|e| ConfigError::new(format!("target `{}` var `{k}`: {e}", t.name)))?;
             let (payload, _) = v
                 .select(vocab, facts)
                 .map_err(|e| ConfigError::new(format!("target `{}` var `{k}`: {e}", t.name)))?;

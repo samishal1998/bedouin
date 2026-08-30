@@ -225,33 +225,35 @@ fn topo(cfg: &Config) -> Result<Vec<usize>> {
         .map(|(i, p)| (p.name.as_str(), i))
         .collect();
 
-    let mut state = vec![0u8; cfg.packages.len()]; // 0 unvisited, 1 on stack, 2 done
+    // 0 unvisited, 1 on the stack, 2 done.
+    let mut mark = vec![0u8; cfg.packages.len()];
     let mut order = Vec::new();
+    // Iterative rather than recursive: `visit` recursing once per edge blows
+    // the stack on a long chain, and a config is user input.
+    let mut stack: Vec<(usize, usize)> = Vec::new(); // (package, next edge)
 
-    fn visit(
-        i: usize,
-        cfg: &Config,
-        index: &BTreeMap<&str, usize>,
-        state: &mut Vec<u8>,
-        order: &mut Vec<usize>,
-        trail: &mut Vec<String>,
-    ) -> Result<()> {
-        match state[i] {
-            2 => return Ok(()),
-            1 => {
-                trail.push(cfg.packages[i].name.clone());
-                return Err(ConfigError::new(format!(
-                    "`needs:` forms a cycle: {}",
-                    trail.join(" -> ")
-                )));
-            }
-            _ => {}
+    for start in 0..cfg.packages.len() {
+        if mark[start] == 2 {
+            continue;
         }
-        state[i] = 1;
-        trail.push(cfg.packages[i].name.clone());
-        for need in &cfg.packages[i].needs {
-            let Some(j) = index.get(need.as_str()).copied() else {
-                if cfg.pruned.iter().any(|p| p == &format!("package/{need}")) {
+        stack.push((start, 0));
+        while let Some((i, edge)) = stack.pop() {
+            if edge == 0 {
+                if mark[i] == 2 {
+                    continue;
+                }
+                mark[i] = 1;
+            }
+            let needs = &cfg.packages[i].needs;
+            if edge >= needs.len() {
+                mark[i] = 2;
+                order.push(i);
+                continue;
+            }
+            stack.push((i, edge + 1));
+            let need = &needs[edge];
+            let Some(&j) = index.get(need.as_str()) else {
+                if cfg.pruned.iter().any(|q| q == &format!("package/{need}")) {
                     continue; // pruned here: the edge does not apply
                 }
                 return Err(ConfigError::new(format!(
@@ -259,16 +261,23 @@ fn topo(cfg: &Config) -> Result<Vec<usize>> {
                     cfg.packages[i].name
                 )));
             };
-            visit(j, cfg, index, state, order, trail)?;
+            match mark[j] {
+                2 => {}
+                1 => {
+                    let cycle: Vec<&str> = stack
+                        .iter()
+                        .filter(|(k, _)| mark[*k] == 1)
+                        .map(|(k, _)| cfg.packages[*k].name.as_str())
+                        .collect();
+                    return Err(ConfigError::new(format!(
+                        "`needs:` forms a cycle: {} -> {}",
+                        cycle.join(" -> "),
+                        cfg.packages[j].name
+                    )));
+                }
+                _ => stack.push((j, 0)),
+            }
         }
-        trail.pop();
-        state[i] = 2;
-        order.push(i);
-        Ok(())
-    }
-
-    for i in 0..cfg.packages.len() {
-        visit(i, cfg, &index, &mut state, &mut order, &mut Vec::new())?;
     }
     Ok(order)
 }
@@ -353,9 +362,10 @@ pub fn build(
         let id = format!("language/{}", l.name);
         let bin_dirs = recipe_bin_dirs(&l.name, facts);
         let probe = recipe_probe_bin(&l.name);
-        let installed = state.items.contains_key(&id)
-            || host.which(probe, &bin_dirs).is_some()
-            || host.which(probe, &system_path(facts)).is_some();
+        let installed = !state.interrupted(&id)
+            && (state.done(&id).is_some()
+                || host.which(probe, &bin_dirs).is_some()
+                || host.which(probe, &system_path(facts)).is_some());
         let installer = l.installer.unwrap_or(Manager::Mise);
         if installer == Manager::Cargo || installer == Manager::Rustup {
             available.insert(Manager::Cargo);
@@ -385,6 +395,13 @@ pub fn build(
     for i in topo(cfg)? {
         let p = &cfg.packages[i];
         let id = format!("package/{}", p.name);
+        if p.from.is_empty() {
+            return Err(ConfigError::new(format!(
+                "package `{}` has an empty `from:`, so there is no manager to \
+                 install it with",
+                p.name
+            )));
+        }
         let manager = p
             .from
             .iter()
@@ -405,8 +422,9 @@ pub fn build(
         // ponytail: presence only -- a binary on the search path counts as
         // installed. Version comparison needs the per-manager probe commands of
         // the installer recipe table, which lands with the executor in M1.
-        let known = state.items.get(&id);
-        let on_machine = known.is_some() || host.which(&p.name, &search).is_some();
+        let known = state.done(&id);
+        let on_machine =
+            !state.interrupted(&id) && (known.is_some() || host.which(&p.name, &search).is_some());
         let action = match (known, on_machine) {
             (Some(s), _) if s.version.as_deref() != p.version.as_deref() && p.version.is_some() => {
                 Action::Update {
@@ -446,7 +464,10 @@ pub fn build(
         // A plan that names a source which is not there is not a prediction of
         // apply, it is a promise apply cannot keep -- and checking is free.
         let src = normalize(&f.src, &facts.home, config_root);
-        if !crate::loader::contained_in(&src, config_root) && !f.src.starts_with('/') {
+        // No exemption for absolute paths: `src: /etc/shadow` is the case the
+        // rule exists for, and writing the same path absolutely must not be a
+        // way around it.
+        if !crate::loader::contained_in(&src, config_root) {
             return Err(ConfigError::new(format!(
                 "managed file `{}` reaches outside the config root\n  resolved to: {}\n  root:       {}",
                 f.src,
@@ -475,7 +496,7 @@ pub fn build(
             id: id.clone(),
             kind: ItemKind::File,
             name: display_home(&dest, facts),
-            action: if state.items.contains_key(&id) {
+            action: if state.done(&id).is_some() {
                 Action::NoOp
             } else if exists {
                 Action::Update {
@@ -518,7 +539,7 @@ pub fn build(
                     id: id.clone(),
                     kind: ItemKind::Rc,
                     name: display_home(&file, facts),
-                    action: if state.items.contains_key(&id) {
+                    action: if state.done(&id).is_some() {
                         Action::NoOp
                     } else {
                         Action::Create
@@ -547,7 +568,7 @@ pub fn build(
                 id: id.clone(),
                 kind: ItemKind::Path,
                 name: display_home(std::path::Path::new(&entry), facts),
-                action: if state.items.contains_key(&id) {
+                action: if state.done(&id).is_some() {
                     Action::NoOp
                 } else {
                     Action::Create
@@ -557,6 +578,20 @@ pub fn build(
                 arms: BTreeMap::new(),
             });
             declared_ids.insert(id);
+        }
+    }
+
+    // ---- one item, one id (§7.2): two nodes sharing a state key would
+    // fight over it, and one of the two would become unowned and unremovable.
+    {
+        let mut by_id: BTreeMap<&str, &str> = BTreeMap::new();
+        for i in &items {
+            if let Some(first) = by_id.insert(&i.id, &i.name) {
+                return Err(ConfigError::new(format!(
+                    "two items resolve to the same id `{}`\n  {first}\n  {}",
+                    i.id, i.name
+                )));
+            }
         }
     }
 

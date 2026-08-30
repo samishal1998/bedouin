@@ -363,9 +363,12 @@ impl Host for FakeHost {
     fn run(&self, cmd: &Cmd, out: &mut dyn FnMut(Line)) -> Result<ExitStatus> {
         self.ran.borrow_mut().push(cmd.clone());
         // An unscripted command is "not installed", which is the fresh machine.
+        let Some(program) = cmd.argv.first() else {
+            return Err(HostError::new("empty command"));
+        };
         let run = self.commands.get(&cmd.display()).cloned().unwrap_or(FakeRun {
             code: 127,
-            stderr: vec![format!("{}: command not found", cmd.argv[0])],
+            stderr: vec![format!("{program}: command not found")],
             ..Default::default()
         });
         for l in &run.stdout {

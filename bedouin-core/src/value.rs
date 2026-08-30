@@ -205,7 +205,7 @@ impl Tmpl {
 
     /// Whether rendering could change this. A literal needs no template pass.
     pub fn is_literal(&self) -> bool {
-        !self.0.contains("{{") && !self.0.contains("{%")
+        !self.0.contains("{{") && !self.0.contains("{%") && !self.0.contains("{#")
     }
 }
 

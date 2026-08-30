@@ -112,15 +112,37 @@ fn yaml_err(file: &Path, e: &serde_yaml_ng::Error) -> ConfigError {
 // and it is what a drop-in directory needs; add recursive matching if someone
 // actually nests them.
 fn glob_segment(pattern: &str, name: &str) -> bool {
-    fn go(p: &[u8], n: &[u8]) -> bool {
-        match p.first() {
-            None => n.is_empty(),
-            Some(b'*') => go(&p[1..], n) || (!n.is_empty() && go(p, &n[1..])),
-            Some(b'?') => !n.is_empty() && go(&p[1..], &n[1..]),
-            Some(c) => n.first() == Some(c) && go(&p[1..], &n[1..]),
+    // Two-pointer with a single backtrack point: linear in practice, where the
+    // obvious recursive version is exponential on patterns like `*a*a*a*b`.
+    let (p, n) = (pattern.as_bytes(), name.as_bytes());
+    let (mut pi, mut ni) = (0usize, 0usize);
+    let (mut star, mut resume) = (None, 0usize);
+    while ni < n.len() {
+        match p.get(pi) {
+            Some(b'*') => {
+                star = Some(pi);
+                resume = ni;
+                pi += 1;
+            }
+            Some(b'?') => {
+                pi += 1;
+                ni += 1;
+            }
+            Some(c) if *c == n[ni] => {
+                pi += 1;
+                ni += 1;
+            }
+            _ => match star {
+                Some(s) => {
+                    pi = s + 1;
+                    resume += 1;
+                    ni = resume;
+                }
+                None => return false,
+            },
         }
     }
-    go(pattern.as_bytes(), name.as_bytes())
+    p[pi..].iter().all(|c| *c == b'*')
 }
 
 /// Expand one `includes:` entry against the config root, lexicographically.
@@ -155,6 +177,17 @@ fn expand(host: &dyn Host, root: &Path, pattern: &str) -> Result<Vec<PathBuf>> {
                 .is_some_and(|n| glob_segment(&file_pat, &n.to_string_lossy()))
         })
         .collect();
+    if out.is_empty() {
+        // Expanding to nothing in silence is the worst outcome available: every
+        // package in that drop-in vanishes from the config, and anything
+        // already in state as `owner: bedouin` is then planned for REMOVAL. A
+        // one-character typo would read as "uninstall all of this".
+        return Err(ConfigError::new(format!(
+            "`includes:` pattern `{pattern}` matches no files\n  looked in: {}\n               Remove the pattern, or fix it -- an include that matches nothing \
+             would silently drop every item it was meant to add",
+            dir.display()
+        )));
+    }
     out.sort();
     Ok(out)
 }
@@ -191,7 +224,24 @@ pub fn normalize(raw: &str, home: &Path, base: &Path) -> PathBuf {
 
 /// True when `p` is inside `base` after normalisation.
 pub fn contained_in(p: &Path, base: &Path) -> bool {
-    p.starts_with(base)
+    // `Path::starts_with` is component-wise and purely lexical, so an
+    // uncollapsed `/cfg/../evil/x.yaml` "starts with" `/cfg`. Collapse both
+    // sides first. Symlinks out of the root are not chased: §1.1 trusts the
+    // config's own tree, and this guard is about accidents, not adversaries.
+    fn collapse(p: &Path) -> PathBuf {
+        let mut out = PathBuf::new();
+        for c in p.components() {
+            match c {
+                Component::ParentDir => {
+                    out.pop();
+                }
+                Component::CurDir => {}
+                other => out.push(other.as_os_str()),
+            }
+        }
+        out
+    }
+    collapse(p).starts_with(collapse(base))
 }
 
 pub fn load(entry: &Path, host: &dyn Host) -> Result<Loaded> {
@@ -446,6 +496,18 @@ mod tests {
         let err = load(Path::new("/cfg/bedouin.yaml"), &h).unwrap_err();
         assert!(err.at.as_deref().unwrap_or("").contains("10-p.yaml"), "{err}");
         assert!(err.message.contains("macos"), "{}", err.message);
+    }
+
+    #[test]
+    fn an_include_cannot_climb_out_of_the_config_root() {
+        let h = host_with(&[
+            ("/cfg/bedouin.yaml", "version: 0\nincludes: [\"../evil/x.yaml\"]\n"),
+            // FakeHost is a literal map; the real filesystem resolves `..` for us.
+            ("/cfg/../evil/x.yaml", "packages:\n  - { name: outside, from: apt }\n"),
+        ]);
+        let err = load(Path::new("/cfg/bedouin.yaml"), &h).unwrap_err();
+        assert!(err.message.contains("reaches outside the config root"), "{err}");
+        assert!(contained_in(Path::new("/cfg/conf.d/../a.yaml"), Path::new("/cfg")));
     }
 
     #[test]

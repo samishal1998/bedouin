@@ -43,15 +43,19 @@ str_enum!(Distro {
     Opensuse => "opensuse",
     ArchLinux => "arch",
     Macos => "macos",
-    Other => "other-distro",
+    Other => "other",
 });
 
+// The plain spelling, as `/etc/os-release` and `bedouin facts` use it. The arm
+// vocabulary spells these `debian-like` etc. and defines those names itself --
+// one string per purpose, so `match: { distro_like: debian }` means what it
+// looks like.
 str_enum!(DistroLike {
-    Debian => "debian-like",
-    Rhel => "rhel-like",
-    Suse => "suse-like",
-    Arch => "arch-like",
-    None => "none-like",
+    Debian => "debian",
+    Rhel => "rhel",
+    Suse => "suse",
+    Arch => "arch",
+    None => "none",
 });
 
 str_enum!(Arch { X86_64 => "x86_64", Arm64 => "arm64" });

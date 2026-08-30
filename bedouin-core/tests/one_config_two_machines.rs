@@ -287,3 +287,59 @@ fn an_implied_toolchain_is_added_with_a_warning_not_silently() {
         o.plan.warnings
     );
 }
+
+#[test]
+fn an_interrupted_item_re_diffs_as_needing_work() {
+    // Spec 8.3: a step records `status: incomplete` *before* the work and flips
+    // it on success, so an interrupt leaves an item the next run must redo.
+    // Presence in the state map is not enough -- and neither is the machine
+    // probe overruling it, which is presence-only and cannot tell a
+    // half-install from a whole one. A no-op step never runs, so it would never
+    // flip the status either: the item would stay wedged incomplete for good.
+    const STATE: &str = "/home/t/.local/state/bedouin/state.json";
+    let state = |status: &str| {
+        format!(
+            r#"{{"schema_version":1,"items":{{
+                 "package/zellij":{{"kind":"package","owner":"bedouin","status":"{status}","version":"latest"}},
+                 "language/rust":{{"kind":"language","owner":"bedouin","status":"{status}"}},
+                 "path//home/t/.cargo/bin":{{"kind":"path","owner":"bedouin","status":"{status}"}}
+               }}}}"#
+        )
+    };
+    let plan = |status: &str| {
+        let h = machine(Os::Linux)
+            .with_file(STATE, &state(status))
+            // zellij is on the machine: the interrupt landed between installing
+            // it and flushing the state.
+            .with_binary("/home/t/.cargo/bin/zellij");
+        run::plan_for(
+            &h,
+            Some(Path::new("/cfg/bedouin.yaml")),
+            Path::new("/cfg"),
+            Os::Linux,
+            Arch::X86_64,
+        )
+        .unwrap()
+    };
+
+    let resumed = plan("incomplete");
+    for name in ["zellij", "rust", "~/.cargo/bin"] {
+        assert_eq!(
+            named(&resumed, name).map(|i| i.action.clone()),
+            Some(Action::Create),
+            "an incomplete `{name}` must plan as work, not as done"
+        );
+    }
+    assert_eq!(resumed.plan.exit_code(), 2);
+
+    // The same state, completed, is the no-op it should be -- otherwise the
+    // check above would pass for the wrong reason.
+    let done = plan("complete");
+    for name in ["zellij", "rust", "~/.cargo/bin"] {
+        assert_eq!(
+            named(&done, name).map(|i| i.action.clone()),
+            Some(Action::NoOp),
+            "a completed `{name}` must not be redone"
+        );
+    }
+}

@@ -8,7 +8,7 @@
 //! and needs no Bedouin release to address a new machine class.
 
 use crate::arm::{self, Implied};
-use crate::facts::Facts;
+use crate::facts::{Arch, Distro, DistroLike, Facts, Os};
 use crate::value::OneOrMany;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
@@ -51,6 +51,59 @@ impl MatchSpec {
 
     pub fn is_empty(&self) -> bool {
         self.key_count() == 0
+    }
+
+    /// Every closed-enum value must be one the facts resolver can produce.
+    ///
+    /// Without this a misspelled `os: darwin` is not an error -- it is a branch
+    /// that never matches, on any machine, forever. That is the failure class
+    /// the closed arm vocabulary is bought to eliminate, and `match:` values
+    /// were the one place still comparing raw strings.
+    pub fn validate(&self, target: &str) -> std::result::Result<(), VocabError> {
+        fn check<T: 'static>(
+            spec: &Option<OneOrMany<String>>,
+            field: &str,
+            target: &str,
+            parse: impl Fn(&str) -> Option<T>,
+            all: &[&str],
+        ) -> std::result::Result<(), VocabError> {
+            let Some(vals) = spec else { return Ok(()) };
+            for v in vals.iter() {
+                if parse(v).is_none() {
+                    return Err(VocabError::UnknownMatchValue {
+                        target: target.to_string(),
+                        field: field.to_string(),
+                        value: v.clone(),
+                        known: all.iter().map(|s| (*s).to_string()).collect(),
+                    });
+                }
+            }
+            Ok(())
+        }
+        let names = |v: &[&'static str]| v.to_vec();
+        check(&self.os, "os", target, Os::parse, &names(&["macos", "linux"]))?;
+        check(
+            &self.distro,
+            "distro",
+            target,
+            Distro::parse,
+            &Distro::ALL.iter().map(|d| d.as_str()).collect::<Vec<_>>(),
+        )?;
+        check(
+            &self.distro_like,
+            "distro_like",
+            target,
+            DistroLike::parse,
+            &DistroLike::ALL.iter().map(|d| d.as_str()).collect::<Vec<_>>(),
+        )?;
+        check(
+            &self.arch,
+            "arch",
+            target,
+            Arch::parse,
+            &Arch::ALL.iter().map(|a| a.as_str()).collect::<Vec<_>>(),
+        )?;
+        Ok(())
     }
 
     pub fn matches(&self, f: &Facts) -> bool {
@@ -158,6 +211,12 @@ pub enum VocabError {
     ShadowsBuiltin(String),
     Duplicate(String),
     EmptyMatch(String),
+    UnknownMatchValue {
+        target: String,
+        field: String,
+        value: String,
+        known: Vec<String>,
+    },
 }
 
 impl std::fmt::Display for VocabError {
@@ -171,6 +230,12 @@ impl std::fmt::Display for VocabError {
             Self::EmptyMatch(n) => write!(
                 f,
                 "target `{n}` has an empty `match:`, so it matches everything; write `default:` instead"
+            ),
+            Self::UnknownMatchValue { target, field, value, known } => write!(
+                f,
+                "target `{target}` matches `{field}: {value}`, which is not a value \
+                 Bedouin can produce -- it would never match on any machine\n  known: {}",
+                known.join(", ")
             ),
         }
     }
@@ -186,6 +251,7 @@ impl Vocabulary {
             if t.r#match.is_empty() {
                 return Err(VocabError::EmptyMatch(t.name.clone()));
             }
+            t.r#match.validate(&t.name)?;
             if index.insert(t.name.clone(), i).is_some() {
                 return Err(VocabError::Duplicate(t.name.clone()));
             }

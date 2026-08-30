@@ -1070,6 +1070,29 @@ Recorded so the document going into M1 is truthful rather than aspirational.
    prediction of apply, and the check is read-only and free.
 6. **The built-in arm vocabulary includes `{distro_like}-{arch}` names**
    (§6.1), which the first draft claimed it did not.
+7. **Fact values have exactly one spelling.** `distro_like` is `debian` in
+   `match:`, in templates, in `bedouin facts`, and in the state file; the arm
+   vocabulary separately defines `debian-like` as an *arm name*. The two were
+   conflated, so `match: { distro_like: debian }` compared `debian` against
+   `debian-like` and silently never matched.
+8. **`match:` values are validated against the closed set the resolver can
+   produce.** `os: darwin` was not an error, it was a branch that never
+   matched on any machine — the failure class §6.1 exists to eliminate, in the
+   one place still comparing raw strings.
+9. **Empty collections are refused.** `only: []` pruned the item everywhere in
+   silence (and proposed uninstalling it if state owned it); `from: []`
+   produced a sentence with a hole in it. Both now error, matching the
+   existing treatment of `match: {}`.
+10. **An `includes:` pattern matching no files is an error.** Expanding to
+    nothing silently drops every item the drop-in declares, and anything
+    already in state as `owner: bedouin` is then planned for *removal* — a
+    one-character typo read as "uninstall all of this".
+11. **Item ids are checked for uniqueness across the whole plan**, not only
+    per kind. §7.2 mandated it; rc ids (`rc/{package}/{basename}`) collided
+    within a single package and the collision was silently deduped.
+12. **The diff honours `status: incomplete`** (§8.3). It read presence in the
+    state map alone, so a half-installed item planned as a no-op and `plan`
+    exited 0 claiming the machine matched the config.
 
 ## 15. Departures from the handoff
 
