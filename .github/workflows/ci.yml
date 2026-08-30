@@ -1,0 +1,53 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test --all
+
+  # Layer 3 of the test strategy: a real apply against a real package manager.
+  # It exists to catch the lies in the in-memory fakes -- a fresh Ubuntu image
+  # having no apt lists is not something FakeHost can tell you.
+  smoke:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: ubuntu:24.04
+            cfg: tests/docker/cfg
+            script: tests/docker/smoke.sh
+          - image: opensuse/tumbleweed
+            cfg: tests/docker/suse
+            script: tests/docker/suse/smoke.sh
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - run: cargo build --release --target x86_64-unknown-linux-musl
+      - name: apply for real, inside ${{ matrix.image }}
+        run: |
+          docker run --rm \
+            -v "$PWD/target/x86_64-unknown-linux-musl/release/bedouin:/bedouin:ro" \
+            -v "$PWD/${{ matrix.cfg }}:/cfg:ro" \
+            -v "$PWD/${{ matrix.script }}:/smoke.sh:ro" \
+            -e HOME=/root ${{ matrix.image }} /smoke.sh
