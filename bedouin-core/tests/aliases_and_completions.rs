@@ -46,6 +46,11 @@ fn apply_on(h: &FakeHost) -> apply::Report {
     apply::apply(&o.plan, &o.config, &o.facts, o.state, h, &mut |_: Line| {}).unwrap()
 }
 
+/// The three arguments every `plan_for` call in this file shares.
+fn h_path() -> Option<&'static Path> {
+    Some(Path::new("/cfg/bedouin.yaml"))
+}
+
 fn read(h: &FakeHost, p: &str) -> Option<String> {
     h.read(Path::new(p))
         .unwrap()
@@ -263,4 +268,106 @@ fn a_hand_edited_alias_block_reads_as_drift_and_is_repaired() {
     );
     apply_on(&h);
     assert!(read(&h, f).unwrap().contains("ls -alh"));
+}
+
+// ---- shell frameworks (§19) ----------------------------------------------
+
+const FW: &str = r#"
+version: 0
+shell:
+  name: zsh
+  framework: oh-my-zsh
+  theme: agnoster
+  plugins: [git, docker, zsh-autosuggestions]
+packages:
+  - name: zsh
+    from: apt
+"#;
+
+fn fw_machine() -> FakeHost {
+    machine(FW)
+        .with_command("sudo -n apt-get update", FakeRun::ok(""))
+        .with_command("sudo -n apt-get install -y zsh", FakeRun::ok(""))
+        .with_command(
+            "curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh -o /tmp/bedouin-omz.sh",
+            FakeRun::ok(""),
+        )
+        .with_command("sh /tmp/bedouin-omz.sh --unattended --keep-zshrc", FakeRun::ok("done"))
+}
+
+#[test]
+fn the_framework_block_goes_above_the_line_that_reads_it() {
+    // oh-my-zsh reads ZSH_THEME and plugins as it loads, so a block appended
+    // at the end of .zshrc -- where every other bedouin block goes -- is a
+    // silent no-op on exactly the machines this feature is for.
+    let h = fw_machine().with_file(
+        "/home/t/.zshrc",
+        "export ZSH=\"$HOME/.oh-my-zsh\"\nZSH_THEME=\"robbyrussell\"\nsource $ZSH/oh-my-zsh.sh\n# mine\n",
+    );
+    apply_on(&h);
+    let rc = read(&h, "/home/t/.zshrc").unwrap();
+    let block = rc.find(">>> bedouin: framework").expect("the block");
+    let loader = rc.find("source $ZSH/oh-my-zsh.sh").unwrap();
+    assert!(block < loader, "block must precede the loader:\n{rc}");
+    assert!(rc.contains("ZSH_THEME='agnoster'"));
+    assert!(rc.contains("plugins=(git docker zsh-autosuggestions)"));
+    assert!(rc.contains("# mine"), "the user's own file survives");
+}
+
+#[test]
+fn the_framework_is_installed_only_when_absent_and_never_owned() {
+    let h = fw_machine();
+    apply_on(&h);
+    assert!(h
+        .ran
+        .borrow()
+        .iter()
+        .any(|c| c.display().contains("bedouin-omz.sh")));
+    // --keep-zshrc matters: bedouin owns a BLOCK in .zshrc, and letting the
+    // installer replace the file would take the user's config with it.
+    assert!(h
+        .ran
+        .borrow()
+        .iter()
+        .any(|c| c.display().contains("--keep-zshrc")));
+
+    // Present already: adopted, not reinstalled, and never removed.
+    let h2 = fw_machine().with_file("/home/t/.oh-my-zsh/oh-my-zsh.sh", "# omz\n");
+    let o = outcome(&h2);
+    let fw = o.plan.items.iter().find(|i| i.name == "oh-my-zsh").unwrap();
+    assert_eq!(fw.action, Action::NoOp);
+}
+
+#[test]
+fn a_framework_on_the_wrong_shell_is_refused() {
+    let h = machine("version: 0\nshell:\n  name: bash\n  framework: oh-my-zsh\npackages: [{name: jq, from: apt}]\n");
+    let e = run::plan_for(&h, h_path(), Path::new("/cfg"), Os::Linux, Arch::X86_64)
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("needs `shell: zsh`"), "{e}");
+
+    let h = machine("version: 0\nshell:\n  name: zsh\n  framework: oh-my-fish\npackages: [{name: jq, from: apt}]\n");
+    let e = run::plan_for(&h, h_path(), Path::new("/cfg"), Os::Linux, Arch::X86_64)
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("supported: oh-my-zsh"), "{e}");
+}
+
+#[test]
+fn a_theme_without_a_framework_is_refused_rather_than_ignored() {
+    let h = machine(
+        "version: 0\nshell:\n  name: zsh\n  theme: agnoster\npackages: [{name: jq, from: apt}]\n",
+    );
+    let e = run::plan_for(&h, h_path(), Path::new("/cfg"), Os::Linux, Arch::X86_64)
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("need a `framework:`"), "{e}");
+}
+
+#[test]
+fn a_plain_shell_name_still_means_what_it_did() {
+    let h = machine("version: 0\nshell: zsh\npackages: [{name: jq, from: apt}]\n");
+    let o = outcome(&h);
+    assert_eq!(o.config.shell, Shell::Zsh);
+    assert!(o.config.framework.is_none());
 }

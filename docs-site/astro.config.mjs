@@ -37,6 +37,7 @@ export default defineConfig({
           label: 'The config',
           items: [
             { label: 'Conditional values', slug: 'config/conditionals' },
+            { label: 'Shell & frameworks', slug: 'config/shell' },
             { label: 'Packages & languages', slug: 'config/packages' },
             { label: 'Files, rc blocks & PATH', slug: 'config/files' },
             { label: 'Repos', slug: 'config/repos' },

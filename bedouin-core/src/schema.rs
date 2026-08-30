@@ -86,7 +86,7 @@ pub struct RawConfig {
     /// box Bedouin is usually installing the shell it configures, so the
     /// detected one is the wrong answer.
     #[serde(default)]
-    pub shell: Option<String>,
+    pub shell: Option<RawShell>,
     #[serde(default)]
     pub vars: BTreeMap<String, Val>,
     /// Shell aliases that belong to no package.
@@ -149,6 +149,59 @@ pub struct RawPackage {
     pub aliases: BTreeMap<String, Val>,
     #[serde(default)]
     pub completions: Option<RawCompletions>,
+}
+
+/// `shell: zsh`, or a block. Hand-written rather than `#[serde(untagged)]`,
+/// for the same reason `Value<T>` is: untagged enums say "data did not match
+/// any variant", and a config tool's errors are its user interface.
+#[derive(Debug, Clone, Default)]
+pub struct RawShell {
+    pub name: Option<String>,
+    pub framework: Option<String>,
+    pub theme: Option<String>,
+    pub plugins: Vec<String>,
+}
+
+impl<'de> serde::Deserialize<'de> for RawShell {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Block {
+            name: Option<String>,
+            framework: Option<String>,
+            theme: Option<String>,
+            #[serde(default)]
+            plugins: Vec<String>,
+        }
+        let v = serde_yaml_ng::Value::deserialize(d)?;
+        match v {
+            serde_yaml_ng::Value::String(name) => Ok(RawShell {
+                name: Some(name),
+                ..Default::default()
+            }),
+            serde_yaml_ng::Value::Mapping(_) => {
+                let b = Block::deserialize(v).map_err(serde::de::Error::custom)?;
+                Ok(RawShell {
+                    name: b.name,
+                    framework: b.framework,
+                    theme: b.theme,
+                    plugins: b.plugins,
+                })
+            }
+            _ => Err(serde::de::Error::custom(
+                "`shell:` is a shell name, or a block with `name:` and optionally \
+                 `framework:`, `theme:` and `plugins:`",
+            )),
+        }
+    }
+}
+
+/// What a shell framework asks for, once resolved.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Framework {
+    pub kind: String,
+    pub theme: Option<String>,
+    pub plugins: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -243,6 +296,7 @@ pub struct FileSpec {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Config {
     pub shell: Shell,
+    pub framework: Option<Framework>,
     pub vars: BTreeMap<String, String>,
     pub aliases: BTreeMap<String, String>,
     pub package_managers: Vec<Manager>,
@@ -602,7 +656,8 @@ pub fn resolve(raw: &RawConfig, vocab: &Vocabulary, facts: &Facts) -> Result<Con
         });
     }
 
-    let shell = match &raw.shell {
+    let declared = raw.shell.as_ref();
+    let shell = match declared.and_then(|s| s.name.as_ref()) {
         None => facts.shell.name,
         Some(s) => Shell::parse(s).ok_or_else(|| {
             let known: Vec<_> = Shell::ALL
@@ -623,8 +678,41 @@ pub fn resolve(raw: &RawConfig, vocab: &Vocabulary, facts: &Facts) -> Result<Con
         global_aliases.insert(k.clone(), r.one(v, &format!("aliases.{k}"), &mut prov)?);
     }
 
+    let framework = match declared.and_then(|s| s.framework.as_ref()) {
+        None => None,
+        Some(f) => {
+            // oh-my-zsh on zsh, and nothing else yet. A half-working fish port
+            // would be worse than saying so.
+            if f != "oh-my-zsh" {
+                return Err(ConfigError::new(format!(
+                    "`framework: {f}` is not one Bedouin knows\n  supported: oh-my-zsh"
+                )));
+            }
+            if shell != Shell::Zsh {
+                return Err(ConfigError::new(format!(
+                    "`framework: {f}` needs `shell: zsh`, but this config declares `{shell}`"
+                )));
+            }
+            Some(Framework {
+                kind: f.clone(),
+                theme: declared.and_then(|s| s.theme.clone()),
+                plugins: declared.map(|s| s.plugins.clone()).unwrap_or_default(),
+            })
+        }
+    };
+    if framework.is_none() {
+        if let Some(s) = declared {
+            if s.theme.is_some() || !s.plugins.is_empty() {
+                return Err(ConfigError::new(
+                    "`theme:` and `plugins:` need a `framework:` to read them",
+                ));
+            }
+        }
+    }
+
     Ok(Config {
         shell,
+        framework,
         aliases: global_aliases,
         vars: r.vars,
         package_managers,

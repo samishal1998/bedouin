@@ -1,0 +1,84 @@
+---
+title: Shell & frameworks
+description: Arriving on a bash-only machine with your shell, not just your packages.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+```yaml
+shell: zsh          # the simple form, and it still means what it did
+```
+
+```yaml
+shell:
+  name: zsh
+  framework: oh-my-zsh
+  theme: agnoster
+  plugins: [git, docker, fzf]
+```
+
+## Why `shell:` is declared and not detected
+
+On a fresh machine you are usually running bash while installing and
+configuring zsh. The shell Bedouin *detects* is the one you are about to stop
+using, so `shell.rc_dir`, the PATH file and every rc block key off the one you
+**declare**. `shell.detected` is still there if you need it.
+
+## Frameworks
+
+The framework is installed **if absent, and never updated** — the same shape as
+brew or rustup: fetch the installer, run it as a file, argv only.
+
+<Aside type="tip" title="Bedouin does not own ~/.oh-my-zsh">
+It is an adopted dependency with one owned side effect. Bedouin will not update
+it, will not manage what is inside it, and will not delete it when you drop
+`framework:` from your config. It installs with `--keep-zshrc`, because Bedouin
+owns a *block* in your `.zshrc` and letting the installer replace the file would
+take your config with it.
+</Aside>
+
+### The ordering, which is the whole difficulty
+
+oh-my-zsh reads `ZSH_THEME` and `plugins` **as it loads**. Every other Bedouin
+block is appended at the end of your rc file — and a framework block there
+would be set *after* omz had already loaded, so the theme would not change, the
+plugins would not load, and nothing would say why.
+
+So the framework block is **anchored**: written immediately above the line that
+sources the framework.
+
+```sh
+# >>> bedouin: framework >>>
+ZSH_THEME='agnoster'
+plugins=(git docker)
+# <<< bedouin: framework <<<
+
+source $ZSH/oh-my-zsh.sh      # ← reads them, so it must come after
+```
+
+### Plugins are names, not installations
+
+oh-my-zsh bundles most of what people list. The ones it does not —
+`zsh-autosuggestions`, `zsh-syntax-highlighting` — are git clones, so they are
+a [repo](/bedouin/config/repos/):
+
+```yaml
+shell:
+  name: zsh
+  framework: oh-my-zsh
+  plugins: [git, zsh-autosuggestions]
+
+repos:
+  - url: https://github.com/zsh-users/zsh-autosuggestions
+    dest: "{{ home }}/.oh-my-zsh/custom/plugins/zsh-autosuggestions"
+```
+
+Listing one without a repo for it is a warning naming the entry to write —
+Bedouin will not pretend a name is an installation. The framework is installed
+*before* repos run, since a plugin clones into its directory.
+
+## The honest cut
+
+`framework:` means oh-my-zsh, on zsh. Declaring it on bash or fish is an error
+naming what is supported, rather than a half-working port. fish's own ecosystem
+can follow when someone wants it.

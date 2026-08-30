@@ -1,0 +1,23 @@
+version: 0
+
+# A bash-only machine, arriving with a shell.
+shell:
+  name: zsh
+  framework: oh-my-zsh
+  theme: agnoster
+  plugins: [git, docker, zsh-autosuggestions]
+
+aliases:
+  ll: ls -alh
+
+packages:
+  - name: zsh
+    from: { debian-like: apt, macos: brew }
+  - name: git
+    from: { debian-like: apt, macos: brew }
+    aliases:
+      gs: git status
+
+repos:
+  - url: https://github.com/zsh-users/zsh-autosuggestions
+    dest: "{{ home }}/.oh-my-zsh/custom/plugins/zsh-autosuggestions"

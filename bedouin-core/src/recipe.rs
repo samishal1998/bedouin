@@ -160,6 +160,39 @@ pub fn bootstrap(m: Manager, facts: &Facts) -> Option<Vec<Cmd>> {
     }
 }
 
+/// Steps that install a shell framework, and where it lands.
+///
+/// Fetch-then-run, argv only, exactly like brew and rustup: the upstream
+/// one-liner pipes curl into sh, and keeping the two apart is what lets every
+/// step stay argv.
+pub fn framework_install(kind: &str, facts: &Facts) -> Option<(PathBuf, Vec<Cmd>)> {
+    match kind {
+        "oh-my-zsh" => {
+            let script = "/tmp/bedouin-omz.sh";
+            let mut run = Cmd::new(["sh", script, "--unattended", "--keep-zshrc"]);
+            // --keep-zshrc matters: bedouin owns a BLOCK in your .zshrc, and
+            // letting the installer replace the file would take your config
+            // with it.
+            run.env.insert("RUNZSH".into(), "no".into());
+            run.env.insert("CHSH".into(), "no".into());
+            Some((
+                facts.home.join(".oh-my-zsh"),
+                vec![
+                    Cmd::new([
+                        "curl",
+                        "-fsSL",
+                        "https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh",
+                        "-o",
+                        script,
+                    ]),
+                    run,
+                ],
+            ))
+        }
+        _ => None,
+    }
+}
+
 /// Bin directories a manager or language contributes once installed.
 pub fn bin_dirs(name: &str, facts: &Facts) -> Vec<PathBuf> {
     let home = &facts.home;

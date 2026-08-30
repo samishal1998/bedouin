@@ -1402,6 +1402,55 @@ user-supplied code determining a plan, but a fixed, auditable tool producing
 file content, invoked through the same argv-only path. Bedouin never passes a
 repository URL to a shell.
 
+## 19. Shell frameworks
+
+Bringing a config to a bash-only machine should mean arriving with your shell,
+not just your packages. `shell:` grows from a name into an optional block:
+
+```yaml
+shell:
+  name: zsh
+  framework: oh-my-zsh
+  theme: agnoster
+  plugins: [git, docker, fzf]
+```
+
+`shell: zsh` keeps working and means exactly what it did.
+
+### What Bedouin owns, and what it does not
+
+- **The framework is installed if absent, and never updated.** Same shape as
+  brew or rustup: fetch the installer, run it as a file, argv only. Bedouin
+  does not own `~/.oh-my-zsh` and does not manage what is inside it — it is an
+  adopted dependency with one owned side effect.
+- **`theme` and `plugins` render into a Bedouin-owned block**, like everything
+  else here.
+- **Plugins are names in an array, not installations.** oh-my-zsh bundles most
+  of what people list. One it does not bundle — `zsh-autosuggestions`,
+  `zsh-syntax-highlighting` — is a git clone into `$ZSH_CUSTOM/plugins`, which
+  is what §20's `repos:` is for. Bedouin warns and names the entry to write
+  rather than pretending to install it.
+
+### The ordering problem is the feature
+
+oh-my-zsh's `.zshrc` sets `ZSH_THEME` and `plugins` **before**
+`source $ZSH/oh-my-zsh.sh`. Variables set after that line do nothing.
+
+Bedouin's other rc blocks are appended at the end of the file. A framework
+block appended there would be a **silent no-op on exactly the machines this
+feature targets** — the theme would not change, the plugins would not load, and
+nothing would say why.
+
+So a framework block is **anchored**: inserted immediately above the line that
+sources the framework, and only appended if no such line exists. Verified
+against a real oh-my-zsh `.zshrc`, where the loader sits at line 92 of 225.
+
+### The honest cut
+
+`framework:` is oh-my-zsh on zsh. Declaring one on bash or fish is a parse
+error naming what is supported, rather than a half-working fish port. fish's
+own ecosystem (fisher, oh-my-fish) can follow when someone wants it.
+
 ## 15. Departures from the handoff
 
 The handoff is approved; these are the places this spec knowingly differs.

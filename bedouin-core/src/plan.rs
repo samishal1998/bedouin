@@ -101,6 +101,18 @@ pub enum Payload {
         file: PathBuf,
         entries: Vec<String>,
     },
+    /// Install a shell framework, if it is not already there.
+    Framework {
+        kind: String,
+        home: PathBuf,
+    },
+    /// A block that must sit above the line which reads it.
+    AnchoredBlock {
+        file: PathBuf,
+        marker: String,
+        content: String,
+        anchor: String,
+    },
     /// Clone or fast-forward a git repository.
     Repo {
         url: String,
@@ -662,6 +674,56 @@ pub fn build(
         declared_ids.insert(id);
     }
 
+    // ---- the shell framework, before repos: a repo may clone INTO the
+    // framework's own directory (a plugin under ~/.oh-my-zsh/custom), and
+    // creating that directory first makes the framework's installer refuse.
+    if let Some(fw) = &cfg.framework {
+        if let Some((home, _)) = crate::recipe::framework_install(&fw.kind, facts) {
+            let id = format!("framework/{}", fw.kind);
+            let present = host
+                .symlink_meta(&home)
+                .map_err(|e| ConfigError::new(e.to_string()))?
+                .is_some();
+            items.push(Item {
+                id: id.clone(),
+                kind: ItemKind::Manager,
+                name: fw.kind.clone(),
+                action: if present || state.done(&id).is_some() {
+                    Action::NoOp
+                } else {
+                    Action::Create
+                },
+                detail: format!("shell framework for {}", cfg.shell),
+                needs_root: false,
+                arms: BTreeMap::new(),
+                payload: Payload::Framework {
+                    kind: fw.kind.clone(),
+                    home,
+                },
+            });
+            declared_ids.insert(id);
+
+            // Only for plugins with no repo declared for them: naming one the
+            // user has already handled is noise, and noise trains people to stop
+            // reading warnings.
+            for p in crate::writers::unbundled_plugins(&fw.plugins) {
+                let handled = cfg
+                    .repos
+                    .iter()
+                    .any(|r| r.dest.trim_end_matches('/').ends_with(p.as_str()));
+                if handled {
+                    continue;
+                }
+                warnings.push(format!(
+                    "plugin `{p}` is not bundled with {}, so listing it does nothing on its own. \
+                 Add a repo: url https://github.com/zsh-users/{p}, dest \
+                 \"{{{{ home }}}}/.oh-my-zsh/custom/plugins/{p}\"",
+                    fw.kind
+                ));
+            }
+        }
+    }
+
     // ---- repos: config that lives in a git repository
     for repo in &cfg.repos {
         let dest = normalize(&repo.dest, &facts.home, &facts.home);
@@ -794,6 +856,41 @@ pub fn build(
                             &dir.display().to_string(),
                             cfg.shell,
                         ),
+                    },
+                });
+                declared_ids.insert(id);
+            }
+        }
+
+        // The framework block: the settings it reads as it loads.
+        if let Some(fw) = &cfg.framework {
+            let content = crate::writers::framework_block(fw.theme.as_deref(), &fw.plugins);
+            if !content.is_empty() {
+                let id = "rc/bedouin/framework".to_string();
+                let want = crate::writers::block_digest(&content);
+                items.push(Item {
+                    id: id.clone(),
+                    kind: ItemKind::Rc,
+                    name: display_home(&facts.shell.rc_file, facts),
+                    action: match state.done(&id) {
+                        None => Action::Create,
+                        Some(st) => content_action(
+                            st.rc_blocks.first().map(|b| b.hash.as_str()),
+                            &want,
+                            read_block_digest(host, &facts.shell.rc_file, "framework")?,
+                        ),
+                    },
+                    detail: match &fw.theme {
+                        Some(t) => format!("theme {t}, {} plugin(s)", fw.plugins.len()),
+                        None => format!("{} plugin(s)", fw.plugins.len()),
+                    },
+                    needs_root: false,
+                    arms: BTreeMap::new(),
+                    payload: Payload::AnchoredBlock {
+                        file: facts.shell.rc_file.clone(),
+                        marker: "framework".into(),
+                        content,
+                        anchor: crate::writers::OMZ_ANCHOR.to_string(),
                     },
                 });
                 declared_ids.insert(id);

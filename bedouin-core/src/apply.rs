@@ -523,6 +523,50 @@ impl Executor<'_> {
                 }];
             }
 
+            (_, Payload::Framework { kind, home }) => {
+                let Some((_, steps)) = recipe::framework_install(kind, self.facts) else {
+                    return Err((
+                        format!("`{kind}` is not a framework bedouin knows"),
+                        Vec::new(),
+                    ));
+                };
+                for mut cmd in steps {
+                    // The installer's own switches come from the recipe; the
+                    // constructed PATH goes underneath them.
+                    for (k, v) in step_env(&self.state, self.facts) {
+                        cmd.env.entry(k).or_insert(v);
+                    }
+                    self.run(&cmd)?;
+                }
+                rec.method = Some(kind.clone());
+                // Bedouin does NOT own ~/.oh-my-zsh. It is an adopted
+                // dependency with one owned side effect, so removal must not
+                // delete it.
+                let _ = home;
+            }
+
+            (
+                _,
+                Payload::AnchoredBlock {
+                    file,
+                    marker,
+                    content,
+                    anchor,
+                },
+            ) => {
+                self.refuse_symlink(file)?;
+                let existing = self.read_text(file)?;
+                let u = writers::upsert_block_before(&existing, marker, content, anchor)
+                    .map_err(|e| (e.to_string(), Vec::new()))?;
+                self.write_text(file, &u.text, 0o644)?;
+                rec.rc_blocks = vec![state::RcRecord {
+                    file: file.display().to_string(),
+                    marker: marker.clone(),
+                    hash: writers::block_digest(content),
+                    superseded: u.superseded,
+                }];
+            }
+
             (
                 action,
                 Payload::Repo {

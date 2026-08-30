@@ -26,6 +26,16 @@ pub fn plan(host: &dyn Host, explicit: Option<&Path>, cwd: &Path) -> Result<Outc
     plan_for(host, explicit, cwd, os, arch)
 }
 
+/// The shell a config declares, if it declares one.
+fn declared_shell(loaded: &Loaded) -> Result<Option<Shell>> {
+    let Some(s) = loaded.raw.shell.as_ref().and_then(|s| s.name.as_ref()) else {
+        return Ok(None);
+    };
+    Shell::parse(s)
+        .map(Some)
+        .ok_or_else(|| ConfigError::new(format!("`shell: {s}` is not a shell Bedouin knows")))
+}
+
 /// Load and resolve facts, but do not resolve the config.
 ///
 /// `bedouin env` exists to diagnose a config that will not resolve -- often
@@ -37,12 +47,7 @@ pub fn load_only(host: &dyn Host, explicit: Option<&Path>, cwd: &Path) -> Result
         })?);
     let entry = loader::locate(explicit, host, cwd, &home)?;
     let loaded = loader::load(&entry, host)?;
-    let declared = match &loaded.raw.shell {
-        None => None,
-        Some(s) => Some(Shell::parse(s).ok_or_else(|| {
-            ConfigError::new(format!("`shell: {s}` is not a shell Bedouin knows"))
-        })?),
-    };
+    let declared = declared_shell(&loaded)?;
     let (os, arch) = probe::host_platform();
     let mut facts = probe::facts_for(host, declared, os, arch)?;
     for (k, v) in crate::envfile::load(host, &loaded.root)? {
@@ -90,12 +95,7 @@ pub fn plan_for(
     // The declared shell has to reach fact resolution, because `shell.rc_dir`
     // and the PATH file name hang off it -- and on a fresh box the detected
     // shell is usually the one being replaced.
-    let declared = match &loaded.raw.shell {
-        None => None,
-        Some(s) => Some(Shell::parse(s).ok_or_else(|| {
-            ConfigError::new(format!("`shell: {s}` is not a shell Bedouin knows"))
-        })?),
-    };
+    let declared = declared_shell(&loaded)?;
     let mut facts = probe::facts_for(host, declared, os, arch)?;
 
     // `.env.bedouin` beside the config, if it is there. The process

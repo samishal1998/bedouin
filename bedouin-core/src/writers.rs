@@ -108,6 +108,42 @@ pub struct Upsert {
     pub changed: bool,
 }
 
+/// Insert or replace the block owned by `id`, above the first line containing
+/// `anchor`.
+///
+/// Ordering is load-bearing for a shell framework: oh-my-zsh reads `ZSH_THEME`
+/// and `plugins` when it loads, so a block appended at the end of `.zshrc`
+/// sets them too late and does nothing at all -- silently, on exactly the
+/// machines the feature is for.
+pub fn upsert_block_before(
+    existing: &str,
+    id: &str,
+    content: &str,
+    anchor: &str,
+) -> Result<Upsert, BlockError> {
+    // An existing block is rewritten where it already sits.
+    if find_block(existing, id)?.is_some() {
+        return upsert_block(existing, id, content);
+    }
+    let lines: Vec<&str> = existing.lines().collect();
+    let Some(at) = lines.iter().position(|l| l.contains(anchor)) else {
+        return upsert_block(existing, id, content);
+    };
+    let body: Vec<String> = std::iter::once(start_marker(id))
+        .chain(content.lines().map(str::to_string))
+        .chain(std::iter::once(end_marker(id)))
+        .chain(std::iter::once(String::new()))
+        .collect();
+    let mut out: Vec<String> = lines[..at].iter().map(|s| (*s).to_string()).collect();
+    out.extend(body);
+    out.extend(lines[at..].iter().map(|s| (*s).to_string()));
+    Ok(Upsert {
+        text: join(out),
+        superseded: None,
+        changed: true,
+    })
+}
+
 /// Insert or replace the block owned by `id`.
 pub fn upsert_block(existing: &str, id: &str, content: &str) -> Result<Upsert, BlockError> {
     if let Some(line) = content.lines().find(|l| is_marker(l)) {
@@ -258,6 +294,33 @@ pub fn completions_file(shell: Shell, dir: &std::path::Path, name: &str) -> std:
         Shell::Fish => dir.join(format!("{name}.fish")),
         _ => dir.join(format!("{name}.bash")),
     }
+}
+
+/// oh-my-zsh's own loader line, which everything it reads must precede.
+pub const OMZ_ANCHOR: &str = "oh-my-zsh.sh";
+
+/// The theme and plugin settings a framework reads when it loads.
+pub fn framework_block(theme: Option<&str>, plugins: &[String]) -> String {
+    let mut s = String::new();
+    if let Some(t) = theme {
+        s.push_str(&format!("ZSH_THEME={}\n", quote_for(t, Shell::Zsh)));
+    }
+    if !plugins.is_empty() {
+        s.push_str(&format!("plugins=({})\n", plugins.join(" ")));
+    }
+    s.trim_end().to_string()
+}
+
+/// Plugins oh-my-zsh does not bundle, which are a git clone rather than a name.
+pub fn unbundled_plugins(plugins: &[String]) -> Vec<&String> {
+    plugins
+        .iter()
+        .filter(|p| {
+            // The two everyone lists, and the shape of the rest: anything
+            // prefixed `zsh-` lives in its own repository.
+            p.starts_with("zsh-")
+        })
+        .collect()
 }
 
 /// The block that makes a shell's rc file read the drop-in directory.
@@ -412,6 +475,79 @@ mod tests {
             digest("original"),
             "drift must be detectable"
         );
+    }
+
+    #[test]
+    fn a_framework_block_goes_above_the_line_that_reads_it() {
+        // oh-my-zsh reads ZSH_THEME and plugins as it loads. Appended at the
+        // end of .zshrc -- where every other bedouin block goes -- it would be
+        // a silent no-op.
+        let zshrc = "export ZSH=\"$HOME/.oh-my-zsh\"\n\
+                     ZSH_THEME=\"robbyrussell\"\n\
+                     source $ZSH/oh-my-zsh.sh\n\
+                     # user configuration below\n";
+        let u =
+            upsert_block_before(zshrc, "framework", "ZSH_THEME='agnoster'", OMZ_ANCHOR).unwrap();
+        let at_block = u.text.find(">>> bedouin: framework").unwrap();
+        let at_source = u.text.find("source $ZSH/oh-my-zsh.sh").unwrap();
+        assert!(
+            at_block < at_source,
+            "block must precede the loader:\n{}",
+            u.text
+        );
+        assert!(
+            u.text.contains("# user configuration below"),
+            "nothing else moved"
+        );
+    }
+
+    #[test]
+    fn an_existing_framework_block_is_rewritten_where_it_sits() {
+        let zshrc = "a\nsource $ZSH/oh-my-zsh.sh\nb\n";
+        let once = upsert_block_before(zshrc, "framework", "ZSH_THEME='one'", OMZ_ANCHOR)
+            .unwrap()
+            .text;
+        let twice = upsert_block_before(&once, "framework", "ZSH_THEME='two'", OMZ_ANCHOR).unwrap();
+        assert_eq!(twice.text.matches(">>> bedouin: framework").count(), 1);
+        assert!(twice.text.contains("two") && !twice.text.contains("one"));
+        let at_block = twice.text.find(">>> bedouin: framework").unwrap();
+        assert!(
+            at_block < twice.text.find("source $ZSH").unwrap(),
+            "still above"
+        );
+    }
+
+    #[test]
+    fn with_no_anchor_it_falls_back_to_appending() {
+        let u = upsert_block_before("just a file\n", "framework", "x", OMZ_ANCHOR).unwrap();
+        assert!(u.text.starts_with("just a file"));
+        assert!(u.text.contains(">>> bedouin: framework"));
+    }
+
+    #[test]
+    fn the_framework_block_is_what_omz_actually_reads() {
+        let b = framework_block(Some("agnoster"), &["git".into(), "docker".into()]);
+        assert!(b.contains("ZSH_THEME='agnoster'"));
+        assert!(b.contains("plugins=(git docker)"));
+        assert_eq!(framework_block(None, &[]), "");
+    }
+
+    #[test]
+    fn plugins_omz_does_not_bundle_are_named() {
+        // These are git clones, not names -- bedouin says so rather than
+        // pretending a name is an installation.
+        let p: Vec<String> = [
+            "git",
+            "docker",
+            "zsh-autosuggestions",
+            "zsh-syntax-highlighting",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let un = unbundled_plugins(&p);
+        assert_eq!(un.len(), 2);
+        assert!(un.iter().all(|x| x.starts_with("zsh-")));
     }
 
     #[test]
