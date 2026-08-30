@@ -237,7 +237,11 @@ aliases:
 
 packages:
   - name: jq
-    from: { macos: brew, debian-like: apt, suse-like: zypper }
+    # A mapping means branches. `default:` is what runs on a machine none of
+    # the named arms match. Without one, such a machine is an error rather than
+    # a fallback -- deliberately: a missing default means you have not decided
+    # yet, and bedouin would rather say so than guess on your behalf.
+    from: { macos: brew, debian-like: apt, suse-like: zypper, default: apt }
 
 # files:
 #   - src: templates/gitconfig.j2
