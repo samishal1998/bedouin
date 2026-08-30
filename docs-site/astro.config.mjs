@@ -47,6 +47,7 @@ export default defineConfig({
           label: 'Commands',
           items: [
             { label: 'plan & apply', slug: 'commands/plan-apply' },
+            { label: 'env', slug: 'commands/env' },
             { label: 'doctor & absorb', slug: 'commands/doctor-absorb' },
             { label: 'add, remove & sync', slug: 'commands/manage' },
             { label: 'reconcile & daemon', slug: 'commands/daemon' },

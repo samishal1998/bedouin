@@ -4,6 +4,7 @@ pub mod artifact;
 pub mod daemon;
 pub mod doctor;
 pub mod edit;
+pub mod envfile;
 pub mod facts;
 pub mod host;
 pub mod loader;

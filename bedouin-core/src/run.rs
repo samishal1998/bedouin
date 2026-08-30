@@ -26,6 +26,31 @@ pub fn plan(host: &dyn Host, explicit: Option<&Path>, cwd: &Path) -> Result<Outc
     plan_for(host, explicit, cwd, os, arch)
 }
 
+/// Load and resolve facts, but do not resolve the config.
+///
+/// `bedouin env` exists to diagnose a config that will not resolve -- often
+/// *because* a variable is missing -- so it must not need resolution to run.
+pub fn load_only(host: &dyn Host, explicit: Option<&Path>, cwd: &Path) -> Result<(Loaded, Facts)> {
+    let home =
+        PathBuf::from(host.env().get("HOME").ok_or_else(|| {
+            ConfigError::new("$HOME is not set, so there is no home to configure")
+        })?);
+    let entry = loader::locate(explicit, host, cwd, &home)?;
+    let loaded = loader::load(&entry, host)?;
+    let declared = match &loaded.raw.shell {
+        None => None,
+        Some(s) => Some(Shell::parse(s).ok_or_else(|| {
+            ConfigError::new(format!("`shell: {s}` is not a shell Bedouin knows"))
+        })?),
+    };
+    let (os, arch) = probe::host_platform();
+    let mut facts = probe::facts_for(host, declared, os, arch)?;
+    for (k, v) in crate::envfile::load(host, &loaded.root)? {
+        facts.env.entry(k).or_insert(v);
+    }
+    Ok((loaded, facts))
+}
+
 /// Apply a previously written plan artifact.
 ///
 /// Facts and config come from the artifact, not from this machine: that is
@@ -71,10 +96,31 @@ pub fn plan_for(
             ConfigError::new(format!("`shell: {s}` is not a shell Bedouin knows"))
         })?),
     };
-    let facts = probe::facts_for(host, declared, os, arch)?;
+    let mut facts = probe::facts_for(host, declared, os, arch)?;
+
+    // `.env.bedouin` beside the config, if it is there. The process
+    // environment wins on a collision: what you exported for this command is
+    // more specific than what the file says in general.
+    for (k, v) in crate::envfile::load(host, &loaded.root)? {
+        facts.env.entry(k).or_insert(v);
+    }
     let config = schema::resolve(&loaded.raw, &loaded.vocab, &facts)?;
     let state = state::load(host, &state::default_path(&facts.home))?;
-    let plan = plan::build(&config, &facts, &state, host, &loaded.root)?;
+    let mut plan = plan::build(&config, &facts, &state, host, &loaded.root)?;
+
+    // A referenced variable that is unset AND unguarded resolves to nothing
+    // useful; saying so at plan time beats failing at apply.
+    for r in crate::envfile::referenced(&loaded.raw, &facts.env) {
+        if !r.set && !r.has_default {
+            plan.warnings.push(format!(
+                "`{}` is read by {} but is not set. Set it, give it a \
+                 `| default(...)`, or put it in {}",
+                r.name,
+                r.site,
+                crate::envfile::FILE_NAME
+            ));
+        }
+    }
 
     Ok(Outcome {
         loaded,

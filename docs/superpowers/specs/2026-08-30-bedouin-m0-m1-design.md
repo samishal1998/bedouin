@@ -1270,6 +1270,55 @@ showing the diff leaves them better off than a merge that guesses.
 config edit goes through the same reparse-verify as `add` and `remove` (§14a
 pattern): if the result would not parse, it refuses and says to edit by hand.
 
+## 18. `bedouin env` and `.env.bedouin`
+
+A config reads environment variables — `{{ env.X }}`, `match: { env: … }` — and
+nothing told you which. §7.3 already scans the raw config for exactly that set
+to freeze into a plan artifact; this exposes the same scan.
+
+```console
+$ bedouin env
+Variables this config reads:
+
+  BEDOUIN_PROFILE   set      targets.work
+  GIT_USER_EMAIL    not set  files[0].src (templates/gitconfig.j2)
+  ZELLIJ_VERSION    not set  packages[zellij].version   (has a default)
+
+2 of 3 are unset. 1 of those has no default and will fail to resolve.
+```
+
+**Names and set/unset only, never values** — same rule as `bedouin facts`, and
+for the same reason: this output ends up in bug reports.
+
+### `.env.bedouin` is read, not merely written
+
+`bedouin env --write` scaffolds a commented file beside the config:
+
+```sh
+# Variables bedouin.yaml reads. Values here are loaded before facts resolve.
+# NOT for secrets you would not want beside your config -- see below.
+# BEDOUIN_PROFILE=
+GIT_USER_EMAIL=
+```
+
+**Bedouin loads this file if it exists**, before resolving facts, with the
+process environment winning on a collision. A file the tool writes and never
+reads is a trap: the user fills it in, nothing consumes it, and the confusion
+is silent. Giving it a reader is what makes the scaffold honest.
+
+Consequences, stated because they are not free:
+
+- It goes in `.gitignore`. `--write` adds it if a `.gitignore` is present, and
+  says so.
+- Bedouin warns if it is group- or world-readable.
+- Its values reach the plan artifact like any other referenced variable, at
+  mode 0600 (§7.3).
+- For real secrets, keep using the shell — `01-secrets.zsh` reading `op://`
+  references stays the better pattern, and this does not replace it.
+
+`plan` also warns when a referenced variable is unset **and** has no
+`| default(…)`, since that is a resolve-time failure waiting to happen.
+
 ## 15. Departures from the handoff
 
 The handoff is approved; these are the places this spec knowingly differs.

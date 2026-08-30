@@ -78,6 +78,12 @@ enum Command {
         #[arg(short = 'y', long)]
         yes: bool,
     },
+    /// List the environment variables this config reads.
+    Env {
+        /// Write a commented .env.bedouin beside the config.
+        #[arg(long)]
+        write: bool,
+    },
     /// Report managed content that changed since the last apply.
     Doctor,
     /// Drop a package or language from the config, then apply.
@@ -201,6 +207,98 @@ fn write_config_verified(
     }
 }
 
+fn cmd_env(
+    host: &OsHost,
+    config: Option<&std::path::Path>,
+    cwd: &std::path::Path,
+    write: bool,
+) -> ExitCode {
+    let (loaded, facts) = match run::load_only(host, config, cwd) {
+        Ok(x) => x,
+        Err(e) => {
+            eprintln!("bedouin: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    use bedouin_core::envfile;
+    let refs = envfile::referenced(&loaded.raw, &facts.env);
+    if refs.is_empty() {
+        println!("This config reads no environment variables.");
+        return ExitCode::SUCCESS;
+    }
+
+    println!("Variables this config reads:\n");
+    let w = refs.iter().map(|r| r.name.len()).max().unwrap_or(4);
+    for r in &refs {
+        // Names and set/unset, never values -- this output lands in
+        // bug reports.
+        println!(
+            "  {:<w$}  {:<7}  {}{}",
+            r.name,
+            if r.set { "set" } else { "not set" },
+            r.site,
+            // A `match:` on an unset variable is not a failure -- the target
+            // simply does not match. Different from a template guarded by
+            // `| default(...)`, and worth saying differently.
+            if r.site.starts_with("targets.") {
+                "   (a target; unset just means it will not match)"
+            } else if r.has_default {
+                "   (has a default)"
+            } else {
+                ""
+            },
+            w = w
+        );
+    }
+    let unset: Vec<&_> = refs.iter().filter(|r| !r.set).collect();
+    let risky = unset.iter().filter(|r| !r.has_default).count();
+    println!();
+    if unset.is_empty() {
+        println!("All set.");
+    } else {
+        println!("{} of {} unset.", unset.len(), refs.len());
+        if risky > 0 {
+            println!("{risky} of those have no default and will fail to resolve.");
+        }
+    }
+
+    if write {
+        let path = envfile::path_beside(&loaded.root);
+        if path.exists() {
+            eprintln!(
+                "bedouin: {} already exists. Refusing to overwrite it",
+                path.display()
+            );
+            return ExitCode::FAILURE;
+        }
+        if let Err(e) = std::fs::write(&path, envfile::scaffold(&refs)) {
+            eprintln!("bedouin: {}: {e}", path.display());
+            return ExitCode::FAILURE;
+        }
+        println!("\nWrote {}", path.display());
+        println!("Bedouin reads it before resolving facts, so what you put there takes effect.");
+
+        // It holds values; it does not belong in the repository.
+        let gi = loaded.root.join(".gitignore");
+        if gi.exists() {
+            let cur = std::fs::read_to_string(&gi).unwrap_or_default();
+            if !cur.lines().any(|l| l.trim() == envfile::FILE_NAME) {
+                let sep = if cur.ends_with('\n') || cur.is_empty() {
+                    ""
+                } else {
+                    "\n"
+                };
+                if std::fs::write(&gi, format!("{cur}{sep}{}\n", envfile::FILE_NAME)).is_ok() {
+                    println!("Added it to {}", gi.display());
+                }
+            }
+        } else {
+            println!("It holds values -- add it to your .gitignore.");
+        }
+    }
+    ExitCode::SUCCESS
+}
+
 /// Applying changes a machine, so say so and wait.
 fn confirm() -> bool {
     use std::io::Write;
@@ -290,6 +388,12 @@ fn main() -> ExitCode {
         println!("Wrote {}", target.display());
         println!("Next: edit it, then `bedouin plan`.");
         return ExitCode::SUCCESS;
+    }
+
+    // `env` diagnoses configs that will not resolve, so it must not need
+    // resolution -- it runs on the loaded document and the facts alone.
+    if let Command::Env { write } = cli.command {
+        return cmd_env(&host, cli.config.as_deref(), &cwd, write);
     }
 
     let outcome = match run::plan(&host, cli.config.as_deref(), &cwd) {
@@ -434,7 +538,9 @@ fn main() -> ExitCode {
             run_apply(&host, after, cli.verbose)
         }
 
-        Command::Init => unreachable!("handled before the config is loaded"),
+        Command::Init | Command::Env { .. } => {
+            unreachable!("handled before the config is resolved")
+        }
 
         Command::Reconcile { watch, interval } => {
             let mut first = Some(outcome);
