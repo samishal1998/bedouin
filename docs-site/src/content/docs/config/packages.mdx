@@ -113,6 +113,10 @@ rustup nothing had installed. Use `package_managers:` to name a manager
 nothing references yet, or to pin which one a bare `from:` should resolve to.
 
 Bedouin bootstraps `brew`, `mise`, `rustup` and `cargo` if they are missing.
+On Linux, brew's bootstrap installs its own prerequisites first
+(`build-essential procps curl file git`, plus `unzip` for casks): Homebrew
+needs git to clone itself, and the package phase that would provide it runs
+later than the manager phase.
 It does **not** install apt, zypper or dnf — those are the distro's, and one
 that is merely *referenced* is never added implicitly for the same reason: a
 package asking for a manager this machine lacks already errors by name. A

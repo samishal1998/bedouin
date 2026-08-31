@@ -63,6 +63,23 @@ steps are **named in the report**, never silently dropped: a run that quietly
 did less than the plan promised is the thing this tool exists not to do. They
 stay in the next plan, because nothing about the config changed.
 
+### Output
+
+Each step gets a heading, its command output is dimmed beneath it, and the
+plan colours its sigils — green to add, amber to change, red to remove:
+
+```
+:: [7/57] package/ripgrep
+   Setting up ripgrep (14.1.0-1) ...
+:: [8/57] language/rust
+   info: syncing channel updates for stable
+```
+
+Colour is decided once, from whether stdout is a terminal, `NO_COLOR`, and
+`TERM`. A pipe, a CI log and a redirect to a file all get plain text without
+being asked, which is also what makes the output safe to paste into a bug
+report.
+
 ## Reviewing a plan, applying it later
 
 ```sh

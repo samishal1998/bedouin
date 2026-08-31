@@ -112,6 +112,7 @@ wrote them in.
 | `bedouin init` | write a starter config |
 | `bedouin plan` | show what would change (exit 2 = changes pending) |
 | `bedouin apply` | make it so |
+| `bedouin apply --skip jq` | ...without one step that this machine cannot do yet |
 | `bedouin doctor` | report managed content edited by hand (exit 2 = drift) |
 | `bedouin env` | which environment variables the config reads, and whether they are set |
 | `bedouin absorb` | lift those edits back into the config |
@@ -142,6 +143,15 @@ while keeping its history.
 **Saying it once.** `vars` values take arms like anything else, so
 `pm: { macos: brew, debian-like: apt }` written once serves every
 `from: "{{ vars.pm }}"` below it.
+
+**Things no manager packages.** `script:` runs an installer that is not a
+package — tailscale's registers a repository and starts a daemon, which no
+`from:` can express. Bedouin runs it once and, because it cannot undo it,
+never claims to own the result.
+
+**It declares what it needs.** `installer: rustup` or `from: cargo` is enough:
+the manager is bootstrapped whether or not `package_managers:` lists it. What
+a toolchain installs lands on your PATH too, not just the run's.
 
 ## What it promises
 
@@ -176,7 +186,8 @@ departs from the original plan, and why.
 
 ## Status
 
-Everything here works and is tested on Ubuntu, SUSE and macOS: 207 tests, plus
+Everything here works and is tested on Ubuntu, SUSE and macOS: 229 tests, plus
 a real `apply` against real package managers inside containers on every push.
+[CHANGELOG.md](CHANGELOG.md) has what landed when.
 The Tauri companion app is the one thing not built yet — the bootstrap binary
 must never need a webview, so it was always a separate, later concern.
