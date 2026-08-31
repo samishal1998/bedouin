@@ -135,16 +135,38 @@ pub fn bootstrap(m: Manager, facts: &Facts) -> Option<Vec<Cmd>> {
         }
         Manager::Brew => {
             let script = tmp("brew.sh");
-            Some(vec![
-                Cmd::new([
+            let mut cmds = Vec::new();
+            // Homebrew on Linux stops at the first missing prerequisite, and
+            // on a fresh machine they are all missing -- git especially, which
+            // it needs to clone itself with. They are the distro's to provide,
+            // and the package phase that would install them runs AFTER this
+            // one, so brew has to ask for its own. `unzip` is not on
+            // Homebrew's list but casks need it, and `brew install
+            // 1password-cli` on Linux is a cask.
+            if facts.os == Os::Linux && facts.managers.contains(&Manager::Apt) {
+                let mut pre = Cmd::new([
+                    "apt-get",
+                    "install",
+                    "-y",
+                    "build-essential",
+                    "procps",
                     "curl",
-                    "-fsSL",
-                    "https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh",
-                    "-o",
-                    &script,
-                ]),
-                Cmd::new(["bash", &script]),
-            ])
+                    "file",
+                    "git",
+                    "unzip",
+                ]);
+                pre.root = true;
+                cmds.push(pre);
+            }
+            cmds.push(Cmd::new([
+                "curl",
+                "-fsSL",
+                "https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh",
+                "-o",
+                &script,
+            ]));
+            cmds.push(Cmd::new(["bash", &script]));
+            Some(cmds)
         }
         Manager::Mise => {
             let script = tmp("mise.sh");
@@ -336,6 +358,28 @@ mod tests {
             let piped = c.argv.windows(2).any(|w| w[0] == "-c");
             assert!(!piped, "a -c string slipped in: {:?}", c.argv);
         }
+    }
+
+    #[test]
+    fn brew_asks_for_its_own_prerequisites_on_linux() {
+        // The package phase runs after the manager phase, so `git` being in
+        // the config does not help: brew needs it to clone itself, and on a
+        // bare box the install script stops with "You must install Git".
+        let mut linux = Facts::fixture(Os::Linux, Distro::Ubuntu, Arch::X86_64);
+        linux.managers = vec![Manager::Apt];
+        let cmds = bootstrap(Manager::Brew, &linux).expect("brew bootstraps");
+        let first = &cmds[0];
+        assert!(first.argv.contains(&"git".to_string()), "{:?}", first.argv);
+        assert!(first.root, "installing them needs root");
+
+        // macOS brings its own; nothing to install first.
+        let mac = Facts::fixture(Os::Macos, Distro::Macos, Arch::Arm64);
+        let cmds = bootstrap(Manager::Brew, &mac).expect("brew bootstraps");
+        assert!(
+            cmds[0].argv.first().is_some_and(|a| a == "curl"),
+            "{:?}",
+            cmds[0].argv
+        );
     }
 
     #[test]
