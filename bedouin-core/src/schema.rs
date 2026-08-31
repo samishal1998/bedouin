@@ -106,6 +106,22 @@ pub struct RawConfig {
     /// directory with its own history, and templating it would be absurd.
     #[serde(default)]
     pub repos: Vec<RawRepo>,
+    /// Symlinks Bedouin owns. How oh-my-tmux installs, and how a config that
+    /// lives in a subdirectory of a repository gets into place.
+    #[serde(default)]
+    pub links: Vec<RawLink>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawLink {
+    /// What the link points at. Need not exist yet -- a link into a repo a
+    /// later step clones is normal.
+    pub src: Val,
+    /// Where the link itself lives. This is the thing Bedouin creates.
+    pub dest: Val,
+    #[serde(default)]
+    pub only: Option<OneOrMany<String>>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -277,6 +293,13 @@ pub struct Language {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Link {
+    pub src: String,
+    pub dest: String,
+    pub resolved_from: Provenance,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Repo {
     pub url: String,
     pub dest: String,
@@ -304,6 +327,7 @@ pub struct Config {
     pub packages: Vec<Package>,
     pub files: Vec<FileSpec>,
     pub repos: Vec<Repo>,
+    pub links: Vec<Link>,
     /// Items dropped by `only:`, for `plan -v`.
     pub pruned: Vec<String>,
 }
@@ -657,6 +681,25 @@ pub fn resolve(raw: &RawConfig, vocab: &Vocabulary, facts: &Facts) -> Result<Con
     }
 
     let declared = raw.shell.as_ref();
+    let mut links = Vec::new();
+    for l in &raw.links {
+        let mut prov = Provenance::new();
+        let item = format!("link `{}`", tmpl_hint(&l.dest));
+        if !keeps(&l.only, vocab, facts).map_err(|e| e.in_item(&item))? {
+            pruned.push(format!("link/{}", tmpl_hint(&l.dest)));
+            continue;
+        }
+        links.push(Link {
+            src: r
+                .one(&l.src, "src", &mut prov)
+                .map_err(|e| e.in_item(&item))?,
+            dest: r
+                .one(&l.dest, "dest", &mut prov)
+                .map_err(|e| e.in_item(&item))?,
+            resolved_from: prov,
+        });
+    }
+
     let shell = match declared.and_then(|s| s.name.as_ref()) {
         None => facts.shell.name,
         Some(s) => Shell::parse(s).ok_or_else(|| {
@@ -720,6 +763,7 @@ pub fn resolve(raw: &RawConfig, vocab: &Vocabulary, facts: &Facts) -> Result<Con
         packages,
         files,
         repos,
+        links,
         pruned,
     })
 }

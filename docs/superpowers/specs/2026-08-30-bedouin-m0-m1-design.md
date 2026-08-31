@@ -1451,6 +1451,65 @@ against a real oh-my-zsh `.zshrc`, where the loader sits at line 92 of 225.
 error naming what is supported, rather than a half-working fish port. fish's
 own ecosystem (fisher, oh-my-fish) can follow when someone wants it.
 
+## 22. `links:` — symlinks Bedouin owns
+
+Two things asked for at once turn out to be the same thing.
+
+**oh-my-tmux installs by symlinking**: clone `gpakosz/.tmux`, then point
+`~/.tmux.conf` at the copy inside it. That is its documented install, not a
+workaround.
+
+**A config that lives in a subdirectory of a repository** — a neovim config
+inside a dotfiles repo — cannot be a `repos:` entry on its own, because a repo
+clones whole. Clone it somewhere, link the subdirectory into place, and it
+works, keeps its history, and `sync` pulls it like anything else.
+
+```yaml
+repos:
+  - url: https://github.com/gpakosz/.tmux
+    dest: "{{ home }}/.tmux"
+
+links:
+  - src: "{{ home }}/.tmux/.tmux.conf"     # what the link points AT
+    dest: "{{ home }}/.tmux.conf"          # where the link itself lives
+```
+
+`src`/`dest` read the same way as in `files:`: `dest` is the thing Bedouin
+creates.
+
+### It never clobbers
+
+- **`dest` absent** → the link is created.
+- **`dest` is a symlink Bedouin made** → repointed if `src` changed.
+- **`dest` exists and is NOT ours** — a real file, a directory, or someone
+  else's symlink — → **refused**, naming it. §9.1 exists because a first apply
+  once destroyed a `~/.gitconfig`; a link is no different.
+- **Dropped from the config** → the link is removed. Never what it pointed at.
+
+`src` does not have to exist yet — a link into a repo that a later step clones
+is normal, and ordering already puts repos first. A **dangling** link is
+reported by `doctor` rather than refused, because that is a real state worth
+knowing about and not a reason to fail an apply.
+
+`dest` must be under `$HOME`, like everything else Bedouin writes.
+
+## 23. Saying `from:` once
+
+`from: { macos: brew, debian-like: apt, suse-like: zypper }` repeated across
+twenty packages is twenty chances to get one wrong. Two answers already work
+and neither needs code:
+
+1. **A variable holding the mapping.** `vars` values take arms like every other
+   evaluatable leaf, so `pm: { macos: brew, default: apt }` resolves per
+   platform and `from: "{{ vars.pm }}"` reads well. It composes with fallback
+   lists: `from: ["{{ vars.pm }}", cargo]`.
+2. **A YAML anchor.** `from: &pm { … }` then `from: *pm`. Plain YAML; Bedouin
+   never sees the difference.
+
+No `defaults:` block was added. A third mechanism for something two existing
+ones already do would be a worse config language, not a better one -- and the
+variable form has the advantage of being named and showing up in `plan -v`.
+
 ## 15. Departures from the handoff
 
 The handoff is approved; these are the places this spec knowingly differs.

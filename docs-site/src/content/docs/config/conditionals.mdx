@@ -121,6 +121,41 @@ naming the arms available. `only:` means *you decided the item does not exist
 here*. They must not look alike, so they do not.
 </Aside>
 
+## Saying it once
+
+`from: { macos: brew, debian-like: apt, suse-like: zypper }` on twenty packages
+is twenty chances to get one wrong. Two ways out, both of which already work:
+
+**A variable holding the mapping.** Variable values take arms like anything
+else, so this resolves per platform and reads well at the use site:
+
+```yaml
+vars:
+  pm: { macos: brew, debian-like: apt, suse-like: zypper }
+
+packages:
+  - name: jq
+    from: "{{ vars.pm }}"
+  - name: tree
+    from: "{{ vars.pm }}"
+  - name: zellij
+    from: ["{{ vars.pm }}", cargo]      # still works in a fallback list
+```
+
+**A YAML anchor**, if you would rather not involve a variable. This is plain
+YAML and Bedouin never sees the difference:
+
+```yaml
+packages:
+  - name: jq
+    from: &pm { macos: brew, debian-like: apt, suse-like: zypper }
+  - name: tree
+    from: *pm
+```
+
+The variable is usually the better one: it has a name, it shows up in
+`plan -v`, and an anchor has to be declared before its first use.
+
 ## Templates
 
 Values are [minijinja](https://docs.rs/minijinja) templates, rendered after arm

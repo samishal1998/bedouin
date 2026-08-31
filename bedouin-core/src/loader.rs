@@ -366,6 +366,7 @@ pub fn load(entry: &Path, host: &dyn Host) -> Result<Loaded> {
         merged.packages.extend(cfg.packages);
         merged.files.extend(cfg.files);
         merged.repos.extend(cfg.repos);
+        merged.links.extend(cfg.links);
         if cfg.shell.is_some() {
             merged.shell = cfg.shell;
         }
@@ -379,6 +380,7 @@ pub fn load(entry: &Path, host: &dyn Host) -> Result<Loaded> {
         && merged.languages.is_empty()
         && merged.files.is_empty()
         && merged.repos.is_empty()
+        && merged.links.is_empty()
     {
         return Err(ConfigError::new(
             "nothing declared: no packages, languages, or files.\n  \

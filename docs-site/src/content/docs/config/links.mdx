@@ -1,0 +1,56 @@
+---
+title: Links
+description: Symlinks Bedouin owns -- how oh-my-tmux installs, and how a config inside a repository gets into place.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Two things turn out to be the same thing.
+
+**oh-my-tmux installs by symlinking.** Clone `gpakosz/.tmux`, then point
+`~/.tmux.conf` at the copy inside it. That is its documented install.
+
+**A config that lives in a subdirectory of a repository** — a neovim config
+inside a dotfiles repo — cannot be a [repo](/bedouin/config/repos/) on its own,
+because a repo clones whole. Clone it somewhere, link the subdirectory into
+place, and it works, keeps its history, and `sync` pulls it like anything else.
+
+```yaml
+repos:
+  - url: https://github.com/gpakosz/.tmux
+    dest: "{{ home }}/.tmux"
+  - url: https://github.com/you/dotfiles
+    dest: "{{ home }}/.local/share/bedouin/dotfiles"
+
+links:
+  - src: "{{ home }}/.tmux/.tmux.conf"           # what the link points AT
+    dest: "{{ home }}/.tmux.conf"                # where the link lives
+
+  - src: "{{ home }}/.local/share/bedouin/dotfiles/config/nvim"
+    dest: "{{ home }}/.config/nvim"
+```
+
+`src` and `dest` read the same way as in [`files:`](/bedouin/config/files/):
+`dest` is the thing Bedouin creates.
+
+## It never clobbers
+
+| At `dest` | What happens |
+|---|---|
+| nothing | the link is created |
+| a link Bedouin made | repointed if `src` changed |
+| a real file or directory | **refused**, naming it |
+| someone else's symlink | **refused**, naming it |
+| dropped from the config | the link is removed — never what it pointed at |
+
+<Aside type="caution" title="Move it aside yourself">
+Bedouin will not replace something at `dest` that it did not create. `files:`
+takes a backup because it renders a file it owns; a link points at something
+that may be irreplaceable, so the answer is to refuse and say so.
+</Aside>
+
+## Ordering
+
+Links are created **after** repos, because a link into a repository the same
+run clones is the normal case. `src` does not have to exist yet — a dangling
+link is reported by `doctor`, not treated as a reason to fail an apply.

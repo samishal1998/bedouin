@@ -113,6 +113,11 @@ pub enum Payload {
         content: String,
         anchor: String,
     },
+    /// A symlink Bedouin owns.
+    Link {
+        src: PathBuf,
+        dest: PathBuf,
+    },
     /// Clone or fast-forward a git repository.
     Repo {
         url: String,
@@ -674,6 +679,9 @@ pub fn build(
         declared_ids.insert(id);
     }
 
+    // ---- links, after repos: a link into a repo the run clones is normal
+    // ---- (see below; this block is emitted after the repo loop)
+
     // ---- the shell framework, before repos: a repo may clone INTO the
     // framework's own directory (a plugin under ~/.oh-my-zsh/custom), and
     // creating that directory first makes the framework's installer refuse.
@@ -775,6 +783,67 @@ pub fn build(
                 dest,
                 reference: repo.r#ref.clone(),
             },
+        });
+        declared_ids.insert(id);
+    }
+
+    // ---- links: symlinks Bedouin owns. After repos, since a link into a
+    // repository this run clones is the normal case.
+    for link in &cfg.links {
+        let dest = normalize(&link.dest, &facts.home, &facts.home);
+        let src = normalize(&link.src, &facts.home, &facts.home);
+        if !dest.starts_with(&facts.home) {
+            return Err(ConfigError::new(format!(
+                "link `{}` would be created outside your home directory",
+                dest.display()
+            )));
+        }
+        let id = format!("link/{}", dest.display());
+        let current = host
+            .read_link(&dest)
+            .map_err(|e| ConfigError::new(e.to_string()))?;
+        let exists = host
+            .symlink_meta(&dest)
+            .map_err(|e| ConfigError::new(e.to_string()))?
+            .is_some();
+        let ours = state.done(&id).is_some();
+
+        // Anything at `dest` that bedouin did not make is refused, not
+        // replaced. §9.1 exists because a first apply once destroyed a
+        // ~/.gitconfig; a link is no different.
+        if exists && !ours && current.is_none() {
+            return Err(ConfigError::new(format!(
+                "{} already exists and is not a link bedouin made.\n  \
+                 Refusing to replace it -- move it aside if you want bedouin to \
+                 own that path",
+                display_home(&dest, facts)
+            )));
+        }
+        if exists && !ours && current.is_some() {
+            return Err(ConfigError::new(format!(
+                "{} is already a symlink, and not one bedouin made.\n  \
+                 Refusing to repoint it -- remove it if you want bedouin to own it",
+                display_home(&dest, facts)
+            )));
+        }
+
+        let action = match (&current, ours) {
+            (Some(t), _) if *t == src => Action::NoOp,
+            (Some(t), true) => Action::Upgrade {
+                from: t.display().to_string(),
+                to: src.display().to_string(),
+            },
+            _ => Action::Create,
+        };
+        items.push(Item {
+            id: id.clone(),
+            kind: ItemKind::File,
+            name: display_home(&dest, facts),
+            action,
+            detail: format!("-> {}", display_home(&src, facts)),
+            needs_root: false,
+            arms: arms_of(&link.resolved_from),
+            payload: Payload::Link { src, dest },
         });
         declared_ids.insert(id);
     }

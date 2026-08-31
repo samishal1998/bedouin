@@ -41,6 +41,7 @@ export default defineConfig({
             { label: 'Packages & languages', slug: 'config/packages' },
             { label: 'Files, rc blocks & PATH', slug: 'config/files' },
             { label: 'Repos', slug: 'config/repos' },
+            { label: 'Links', slug: 'config/links' },
             { label: 'Aliases & completions', slug: 'config/aliases' },
             { label: 'Facts reference', slug: 'config/facts' },
           ],

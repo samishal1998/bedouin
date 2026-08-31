@@ -138,6 +138,10 @@ pub trait Host {
     /// Metadata *without* following a final symlink -- §9.1 refuses to write
     /// through one, and that needs to be distinguishable from a regular file.
     fn symlink_meta(&self, p: &Path) -> Result<Option<Meta>>;
+    /// Create a symlink at `link` pointing to `target`.
+    fn symlink(&self, target: &Path, link: &Path) -> Result<()>;
+    /// Where a symlink points, or `None` if it is not one.
+    fn read_link(&self, p: &Path) -> Result<Option<PathBuf>>;
     fn env(&self) -> &BTreeMap<String, String>;
 }
 
@@ -373,6 +377,34 @@ impl Host for OsHost {
         }
     }
 
+    fn symlink(&self, target: &Path, link: &Path) -> Result<()> {
+        if let Some(parent) = link.parent() {
+            self.mkdir_p(parent)?;
+        }
+        // Replacing our own link is normal; the caller has already refused to
+        // touch anything that is not ours.
+        let _ = std::fs::remove_file(link);
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(target, link).map_err(|e| io_err(link, e))
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = target;
+            Err(HostError::at(
+                link,
+                "symlinks are not supported on this platform",
+            ))
+        }
+    }
+
+    fn read_link(&self, p: &Path) -> Result<Option<PathBuf>> {
+        match std::fs::read_link(p) {
+            Ok(t) => Ok(Some(t)),
+            Err(_) => Ok(None),
+        }
+    }
+
     fn env(&self) -> &BTreeMap<String, String> {
         &self.env
     }
@@ -501,6 +533,9 @@ impl Host for FakeHost {
 
     fn remove(&self, p: &Path) -> Result<()> {
         self.files.borrow_mut().remove(p);
+        // A symlink is removed by unlinking it, so the fake has to forget it
+        // too -- otherwise removal looks like it did nothing.
+        self.symlinks.borrow_mut().remove(p);
         Ok(())
     }
 
@@ -563,6 +598,17 @@ impl Host for FakeHost {
             }));
         }
         Ok(None)
+    }
+
+    fn symlink(&self, target: &Path, link: &Path) -> Result<()> {
+        self.symlinks
+            .borrow_mut()
+            .insert(link.to_path_buf(), target.to_path_buf());
+        Ok(())
+    }
+
+    fn read_link(&self, p: &Path) -> Result<Option<PathBuf>> {
+        Ok(self.symlinks.borrow().get(p).cloned())
     }
 
     fn env(&self) -> &BTreeMap<String, String> {

@@ -338,6 +338,19 @@ impl Executor<'_> {
                 // clone.
                 for f in &prev.owned_files {
                     let p = Path::new(f);
+                    // A symlink is removed as a link. Following it would delete
+                    // what it points at, which bedouin does not own.
+                    if self
+                        .host
+                        .read_link(p)
+                        .map_err(|e| (e.to_string(), Vec::new()))?
+                        .is_some()
+                    {
+                        self.host
+                            .remove(p)
+                            .map_err(|e| (e.to_string(), Vec::new()))?;
+                        continue;
+                    }
                     let is_dir = self
                         .host
                         .symlink_meta(p)
@@ -521,6 +534,16 @@ impl Executor<'_> {
                     hash: writers::block_digest(content),
                     superseded: u.superseded,
                 }];
+            }
+
+            (_, Payload::Link { src, dest }) => {
+                self.host
+                    .symlink(src, dest)
+                    .map_err(|e| (e.to_string(), Vec::new()))?;
+                // The link is bedouin's; what it points at is not, and removal
+                // must never follow it.
+                rec.owned_files = vec![dest.display().to_string()];
+                rec.method = Some(src.display().to_string());
             }
 
             (_, Payload::Framework { kind, home }) => {

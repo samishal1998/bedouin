@@ -883,3 +883,110 @@ repos:
         repo.action
     );
 }
+
+// ---- links: symlinks bedouin owns (§22) -----------------------------------
+
+const LINKS: &str = r#"
+version: 0
+shell: zsh
+packages: [{ name: jq, from: apt }]
+links:
+  - src: "{{ home }}/.tmux/.tmux.conf"
+    dest: "{{ home }}/.tmux.conf"
+"#;
+
+#[test]
+fn a_link_is_created_and_points_where_it_should() {
+    // How oh-my-tmux installs, and how a config living in a subdirectory of a
+    // repository gets into place.
+    let h = with_config(fresh(), LINKS);
+    apply_on(&h);
+    assert_eq!(
+        h.symlinks.borrow().get(Path::new("/home/t/.tmux.conf")),
+        Some(&std::path::PathBuf::from("/home/t/.tmux/.tmux.conf"))
+    );
+    assert_eq!(plan_on(&h).plan.exit_code(), 0, "and converges");
+}
+
+#[test]
+fn a_link_never_replaces_something_bedouin_did_not_make() {
+    // §9.1 exists because a first apply once destroyed a ~/.gitconfig. A link
+    // is no different.
+    let h = with_config(fresh(), LINKS).with_file("/home/t/.tmux.conf", "# mine, by hand\n");
+    let e = run::plan_for(
+        &h,
+        Some(Path::new("/cfg/bedouin.yaml")),
+        Path::new("/cfg"),
+        Os::Linux,
+        Arch::X86_64,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(e.contains("not a link bedouin made"), "{e}");
+    assert!(e.contains("move it aside"), "says what to do: {e}");
+
+    // Someone else's symlink is refused too, and differently.
+    let h2 = with_config(fresh(), LINKS);
+    h2.symlinks
+        .borrow_mut()
+        .insert("/home/t/.tmux.conf".into(), "/somewhere/else".into());
+    let e = run::plan_for(
+        &h2,
+        Some(Path::new("/cfg/bedouin.yaml")),
+        Path::new("/cfg"),
+        Os::Linux,
+        Arch::X86_64,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(e.contains("already a symlink"), "{e}");
+}
+
+#[test]
+fn removing_a_link_does_not_follow_it() {
+    // The link is bedouin's; what it points at is not.
+    let h = with_config(fresh(), LINKS).with_file("/home/t/.tmux/.tmux.conf", "# upstream\n");
+    apply_on(&h);
+    let h = with_config(
+        h,
+        "version: 0\nshell: zsh\npackages: [{ name: jq, from: apt }]\n",
+    );
+    apply_on(&h);
+    assert!(h
+        .symlinks
+        .borrow()
+        .get(Path::new("/home/t/.tmux.conf"))
+        .is_none());
+    assert_eq!(
+        read(&h, "/home/t/.tmux/.tmux.conf").as_deref(),
+        Some("# upstream\n"),
+        "what it pointed at survives"
+    );
+}
+
+#[test]
+fn repointing_a_link_bedouin_owns_is_an_update() {
+    let h = with_config(fresh(), LINKS);
+    apply_on(&h);
+    let h = with_config(
+        h,
+        &LINKS.replace(".tmux/.tmux.conf", ".tmux/.tmux.conf.local"),
+    );
+    let o = plan_on(&h);
+    let link = o
+        .plan
+        .items
+        .iter()
+        .find(|i| i.id.contains(".tmux.conf"))
+        .unwrap();
+    assert!(
+        matches!(link.action, Action::Upgrade { .. }),
+        "{:?}",
+        link.action
+    );
+    apply_on(&h);
+    assert_eq!(
+        h.symlinks.borrow().get(Path::new("/home/t/.tmux.conf")),
+        Some(&std::path::PathBuf::from("/home/t/.tmux/.tmux.conf.local"))
+    );
+}
