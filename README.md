@@ -47,26 +47,35 @@ Plan: 4 to add, 1 to change, 0 to remove.
 
 ```yaml
 version: 0
-shell: zsh                    # the shell you are configuring -- on a fresh
-                              # box that is usually not the one you are running
+
+shell:
+  name: zsh                   # declared, not detected -- on a fresh box that is
+  framework: oh-my-zsh        # usually not the shell you are running
+  theme: agnoster
+  plugins: [git, docker]
 
 vars:
   editor: nvim
+  pm: { macos: brew, debian-like: apt }   # say it once, use it everywhere
 
 targets:                      # named conditions, for axes no enum can know
   - name: noble
     match: { distro: ubuntu, distro_version: ">=24.04" }
 
 aliases:
-  ll: ls -alh
+  ll: { linux: ls -alF, default: ls -la }  # alias values take arms too
 
 packages:
   - name: fd
-    from: { macos: brew, default: [apt, zypper] }   # a mapping means branches
+    from: "{{ vars.pm }}"
 
   - name: xclip
     from: apt
-    only: linux                                      # membership, not value
+    only: linux                            # membership, not value
+
+  - name: build-essential
+    from: apt
+    only: linux
 
   - name: zellij
     from: cargo
@@ -75,6 +84,14 @@ packages:
     aliases: { z: zellij }
     completions:
       generate: ["zellij", "setup", "--dump-completion", "{{ shell.name }}"]
+
+repos:                        # config that lives in a git repository
+  - url: https://github.com/gpakosz/.tmux
+    dest: "{{ home }}/.tmux"
+
+links:                        # symlinks bedouin owns
+  - src: "{{ home }}/.tmux/.tmux.conf"
+    dest: "{{ home }}/.tmux.conf"
 
 files:
   - src: templates/gitconfig.j2
@@ -96,9 +113,12 @@ wrote them in.
 | `bedouin plan` | show what would change (exit 2 = changes pending) |
 | `bedouin apply` | make it so |
 | `bedouin doctor` | report managed content edited by hand (exit 2 = drift) |
+| `bedouin env` | which environment variables the config reads, and whether they are set |
 | `bedouin absorb` | lift those edits back into the config |
 | `bedouin add cargo:zellij@0.40.1` | add a package, then apply |
 | `bedouin remove zellij` | drop it, then undo it on this machine |
+| `bedouin alias gs='git status'` | set an alias without opening the config |
+| `bedouin completions gh -- gh completion -s zsh` | same, for a completion generator |
 | `bedouin sync` | pull the config repo, then apply what changed |
 | `bedouin reconcile --watch` | keep the machine matching, unattended |
 | `bedouin daemon install` | write the systemd/launchd unit that runs it |
@@ -106,6 +126,22 @@ wrote them in.
 `plan -o plan.json` then `apply -f plan.json` applies exactly the plan you
 reviewed — including the environment it read, so a plan reviewed in one
 terminal cannot mean something else in another.
+
+## Beyond packages
+
+**Your shell, not just your tools.** `framework: oh-my-zsh` installs it if it is
+absent and writes the theme and plugin list into a block *above* the line that
+reads them — appended at the end, as every other block is, it would be a silent
+no-op.
+
+**Config that lives in a repository.** `repos:` clones it; `links:` puts a
+subdirectory of it where the tool expects to find it. That is how oh-my-tmux
+installs, and how a neovim config inside a dotfiles repo gets to `~/.config/nvim`
+while keeping its history.
+
+**Saying it once.** `vars` values take arms like anything else, so
+`pm: { macos: brew, debian-like: apt }` written once serves every
+`from: "{{ vars.pm }}"` below it.
 
 ## What it promises
 
@@ -140,7 +176,7 @@ departs from the original plan, and why.
 
 ## Status
 
-Everything here works and is tested on Ubuntu, SUSE and macOS: 173 tests, plus
+Everything here works and is tested on Ubuntu, SUSE and macOS: 207 tests, plus
 a real `apply` against real package managers inside containers on every push.
 The Tauri companion app is the one thing not built yet — the bootstrap binary
 must never need a webview, so it was always a separate, later concern.
