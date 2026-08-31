@@ -110,7 +110,7 @@ pub fn plan_for(
 
     // A referenced variable that is unset AND unguarded resolves to nothing
     // useful; saying so at plan time beats failing at apply.
-    for r in crate::envfile::referenced(&loaded.raw, &facts.env) {
+    for r in crate::envfile::referenced(&loaded.raw, &facts.env, &loaded.root, host) {
         if !r.set && !r.has_default {
             plan.warnings.push(format!(
                 "`{}` is read by {} but is not set. Set it, give it a \

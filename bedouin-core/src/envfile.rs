@@ -25,6 +25,9 @@ pub struct Referenced {
     /// Whether every reference guards it with `| default(...)`. An unset
     /// variable with no default is a resolve-time failure waiting to happen.
     pub has_default: bool,
+    /// Every read of it is a `match: { env: … }` key, so unset only means the
+    /// target does not match. False as soon as anything else reads it.
+    pub match_key: bool,
 }
 
 /// `KEY=value` lines. Blank lines and `#` comments are skipped; a value may be
@@ -71,15 +74,17 @@ pub fn load(host: &dyn Host, config_root: &Path) -> Result<BTreeMap<String, Stri
 }
 
 /// Every variable the config reads, with where and whether it is set.
-pub fn referenced(raw: &RawConfig, env: &BTreeMap<String, String>) -> Vec<Referenced> {
-    let sites = sites(raw);
-    crate::artifact::referenced_env(raw)
+pub fn referenced(
+    raw: &RawConfig,
+    env: &BTreeMap<String, String>,
+    config_root: &Path,
+    host: &dyn Host,
+) -> Vec<Referenced> {
+    // One walk. Calling `sites` and `referenced_env` separately walked the
+    // config twice and re-read every managed template twice with it.
+    fold(crate::artifact::env_refs(raw, config_root, host))
         .into_iter()
-        .map(|name| {
-            let (site, has_default) = sites
-                .get(&name)
-                .cloned()
-                .unwrap_or_else(|| ("(unknown)".into(), false));
+        .map(|(name, (site, has_default, match_key))| {
             Referenced {
                 // An empty value is the scaffold's own placeholder, not a
                 // setting -- counting it as set would report a config as ready
@@ -88,92 +93,32 @@ pub fn referenced(raw: &RawConfig, env: &BTreeMap<String, String>) -> Vec<Refere
                 name,
                 site,
                 has_default,
+                match_key,
             }
         })
         .collect()
 }
 
-/// Where each variable is read, and whether every read guards it.
-fn sites(raw: &RawConfig) -> BTreeMap<String, (String, bool)> {
-    let mut out: BTreeMap<String, (String, bool)> = BTreeMap::new();
-    let note = &mut |name: &str, site: String, guarded: bool| {
-        out.entry(name.to_string())
-            .and_modify(|(_, g)| *g = *g && guarded)
-            .or_insert((site, guarded));
-    };
-
-    for t in &raw.targets {
-        if let Some(env) = &t.r#match.env {
-            for k in env.keys() {
-                // A `match:` on an unset variable is not a failure; it simply
-                // does not match.
-                note(k, format!("targets.{}", t.name), true);
-            }
-        }
-    }
-
-    let scan = |text: &str, site: &str, note: &mut dyn FnMut(&str, String, bool)| {
-        let mut rest = text;
-        while let Some(i) = rest.find("env.") {
-            let after = &rest[i + 4..];
-            let name: String = after
-                .chars()
-                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
-                .collect();
-            if !name.is_empty() {
-                // `{{ env.X | default('y') }}` cannot fail; a bare one can.
-                let tail: String = after.chars().skip(name.len()).take(40).collect();
-                note(&name, site.to_string(), tail.contains("default"));
-            }
-            rest = &rest[i + 4..];
-        }
-    };
-
-    for (k, v) in &raw.vars {
-        for t in v.payloads() {
-            scan(t.as_str(), &format!("vars.{k}"), note);
-        }
-    }
-    for (k, v) in &raw.aliases {
-        for t in v.payloads() {
-            scan(t.as_str(), &format!("aliases.{k}"), note);
-        }
-    }
-    for p in &raw.packages {
-        let site = format!("packages.{}", p.name);
-        for v in p.version.iter() {
-            for t in v.payloads() {
-                scan(t.as_str(), &site, note);
-            }
-        }
-        for b in &p.rc {
-            for t in b.content.payloads() {
-                scan(t.as_str(), &site, note);
-            }
-            for t in b.file.payloads() {
-                scan(t.as_str(), &site, note);
-            }
-        }
-        if let Some(path) = &p.path {
-            for many in path.payloads() {
-                for t in many.iter() {
-                    scan(t.as_str(), &site, note);
+/// Fold `artifact::env_refs` into one entry per variable.
+///
+/// The same walk the artifact freezes from. This was a second, smaller walk of
+/// its own, and the gap between the two is what reported a frozen variable as
+/// read by `(unknown)`.
+fn fold(reads: Vec<crate::artifact::ConfigRead>) -> BTreeMap<String, (String, bool, bool)> {
+    let mut out: BTreeMap<String, (String, bool, bool)> = BTreeMap::new();
+    for r in reads {
+        out.entry(r.name)
+            .and_modify(|(site, guarded, match_key)| {
+                // Name the read that can actually fail. Keeping the first site
+                // pointed the warning at a guarded read, where the reader
+                // finds a `| default(...)` and no reason for the warning.
+                if *guarded && !r.guarded {
+                    *site = r.site.clone();
                 }
-            }
-        }
-    }
-    for f in &raw.files {
-        let hint = f
-            .dest
-            .payloads()
-            .next()
-            .map(|t| t.as_str().to_string())
-            .unwrap_or_default();
-        for v in [&f.src, &f.dest] {
-            for t in v.payloads() {
-                scan(t.as_str(), &format!("files.{hint}"), note);
-            }
-        }
+                *guarded = *guarded && r.guarded;
+                *match_key = *match_key && r.match_key;
+            })
+            .or_insert((r.site, r.guarded, r.match_key));
     }
     out
 }
@@ -204,6 +149,7 @@ pub fn scaffold(refs: &[Referenced]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::host::FakeHost;
 
     fn raw(y: &str) -> RawConfig {
         serde_yaml_ng::from_str(y).expect("parses")
@@ -239,7 +185,7 @@ packages:
     version: "{{ env.GUARDED | default('latest') }}"
 "#);
         let env = BTreeMap::from([("BEDOUIN_PROFILE".to_string(), "work".to_string())]);
-        let refs = referenced(&r, &env);
+        let refs = referenced(&r, &env, Path::new("/cfg"), &FakeHost::new());
         let by = |n: &str| refs.iter().find(|x| x.name == n).unwrap().clone();
 
         assert!(by("BEDOUIN_PROFILE").set);
@@ -256,11 +202,45 @@ packages:
     }
 
     #[test]
+    fn guardedness_is_the_and_over_every_read() {
+        // A `match:` read cannot fail, but reading the same variable
+        // unguarded elsewhere can -- so the pair is unguarded. Reporting it
+        // as safe would promise a run that then dies on the other read.
+        let r = raw(r#"
+version: 0
+vars:
+  p: "{{ env.BEDOUIN_PROFILE }}"
+targets:
+  - name: work
+    match: { env: { BEDOUIN_PROFILE: work } }
+packages: [{name: jq, from: apt}]
+"#);
+        let env = BTreeMap::new();
+        let refs = referenced(&r, &env, Path::new("/cfg"), &FakeHost::new());
+        let p = refs
+            .iter()
+            .find(|r| r.name == "BEDOUIN_PROFILE")
+            .expect("found");
+        assert!(!p.has_default, "a target read masked an unguarded one");
+
+        // ...and a target match on its own still cannot fail.
+        let only = raw(r#"
+version: 0
+targets:
+  - name: work
+    match: { env: { BEDOUIN_PROFILE: work } }
+packages: [{name: jq, from: apt}]
+"#);
+        let refs = referenced(&only, &env, Path::new("/cfg"), &FakeHost::new());
+        assert!(refs[0].has_default, "a bare target read cannot fail");
+    }
+
+    #[test]
     fn an_empty_value_does_not_count_as_set() {
         let r = raw("version: 0\nvars:\n  v: \"{{ env.E }}\"\npackages: [{name: jq, from: apt}]\n");
         let env = BTreeMap::from([("E".to_string(), String::new())]);
         assert!(
-            !referenced(&r, &env)[0].set,
+            !referenced(&r, &env, Path::new("/cfg"), &FakeHost::new())[0].set,
             "the scaffold's own blank line is not a value"
         );
     }
@@ -275,12 +255,14 @@ packages:
                 site: "vars.a".into(),
                 set: true,
                 has_default: false,
+                match_key: false,
             },
             Referenced {
                 name: "UNSET".into(),
                 site: "vars.b".into(),
                 set: false,
                 has_default: false,
+                match_key: false,
             },
         ];
         let s = scaffold(&refs);
@@ -295,8 +277,14 @@ packages:
         let r =
             raw("version: 0\nvars:\n  v: \"{{ env.TOKEN }}\"\npackages: [{name: jq, from: apt}]\n");
         let env = BTreeMap::from([("TOKEN".to_string(), "hunter2".to_string())]);
-        let rendered = format!("{:?}", referenced(&r, &env));
+        let rendered = format!(
+            "{:?}",
+            referenced(&r, &env, Path::new("/cfg"), &FakeHost::new())
+        );
         assert!(!rendered.contains("hunter2"));
-        assert!(!scaffold(&referenced(&r, &env)).contains("hunter2"));
+        assert!(
+            !scaffold(&referenced(&r, &env, Path::new("/cfg"), &FakeHost::new()))
+                .contains("hunter2")
+        );
     }
 }

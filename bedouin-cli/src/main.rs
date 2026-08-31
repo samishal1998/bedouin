@@ -254,7 +254,7 @@ fn cmd_env(
         }
     };
     use bedouin_core::envfile;
-    let refs = envfile::referenced(&loaded.raw, &facts.env);
+    let refs = envfile::referenced(&loaded.raw, &facts.env, &loaded.root, host);
     if refs.is_empty() {
         println!("This config reads no environment variables.");
         return ExitCode::SUCCESS;
@@ -273,7 +273,11 @@ fn cmd_env(
             // A `match:` on an unset variable is not a failure -- the target
             // simply does not match. Different from a template guarded by
             // `| default(...)`, and worth saying differently.
-            if r.site.starts_with("targets.") {
+            //
+            // From `match_key`, not from the site string: `targets.work.vars.x`
+            // starts with `targets.` too, and is an ordinary template read that
+            // fails like any other.
+            if r.match_key {
                 "   (a target; unset just means it will not match)"
             } else if r.has_default {
                 "   (has a default)"
@@ -291,7 +295,12 @@ fn cmd_env(
     } else {
         println!("{} of {} unset.", unset.len(), refs.len());
         if risky > 0 {
-            println!("{risky} of those have no default and will fail to resolve.");
+            let (s_, v) = if risky == 1 {
+                ("", "has")
+            } else {
+                ("s", "have")
+            };
+            println!("{risky} of those{s_} {v} no default and will fail to resolve.");
         }
     }
 
@@ -540,6 +549,34 @@ fn main() -> ExitCode {
     // resolution -- it runs on the loaded document and the facts alone.
     if let Command::Env { write } = cli.command {
         return cmd_env(&host, cli.config.as_deref(), &cwd, write);
+    }
+
+    // `apply -f` takes facts AND config from the artifact, so like `env` it
+    // must not need the live config to resolve first. Planning here defeated
+    // the frozen environment in precisely the case it exists for: applying a
+    // reviewed plan in a session where the variable is not exported, which
+    // died on `undefined value` before the artifact was ever opened.
+    if let Command::Apply {
+        plan: Some(file), ..
+    } = &cli.command
+    {
+        println!("Applying the plan in {}.\n", file.display());
+        let report = match run::apply_artifact(&host, file, &mut |line| match line {
+            bedouin_core::host::Line::Out(s) => println!("  {s}"),
+            bedouin_core::host::Line::Err(s) => eprintln!("  {s}"),
+        }) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("bedouin: {e}");
+                return ExitCode::FAILURE;
+            }
+        };
+        print!("{}", report.render());
+        return if report.ok() {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::FAILURE
+        };
     }
 
     // Captured before the match moves out of `cli.command`.
@@ -1102,32 +1139,8 @@ fn main() -> ExitCode {
             run_apply(&host, after, cli.verbose)
         }
 
-        Command::Apply {
-            plan: from_file,
-            dry_run,
-            yes,
-        } => {
-            if let Some(file) = from_file {
-                // Facts and config come from the artifact, so the environment
-                // it froze is the environment this run sees.
-                println!("Applying the plan in {}.\n", file.display());
-                let report = match run::apply_artifact(&host, &file, &mut |line| match line {
-                    bedouin_core::host::Line::Out(s) => println!("  {s}"),
-                    bedouin_core::host::Line::Err(s) => eprintln!("  {s}"),
-                }) {
-                    Ok(r) => r,
-                    Err(e) => {
-                        eprintln!("bedouin: {e}");
-                        return ExitCode::FAILURE;
-                    }
-                };
-                print!("{}", report.render());
-                return if report.ok() {
-                    ExitCode::SUCCESS
-                } else {
-                    ExitCode::FAILURE
-                };
-            }
+        // The `plan: Some(..)` case returned above, before the live plan.
+        Command::Apply { dry_run, yes, .. } => {
             if dry_run {
                 print!("{}", outcome.plan.render(cli.verbose));
                 return ExitCode::from(outcome.plan.exit_code() as u8);
@@ -1153,6 +1166,7 @@ fn main() -> ExitCode {
                     &outcome.loaded.raw,
                     &outcome.state,
                     &outcome.loaded.root,
+                    &host,
                 );
                 if let Err(e) = bedouin_core::artifact::write(&a, &host, &to) {
                     eprintln!("bedouin: {e}");
