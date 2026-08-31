@@ -143,10 +143,21 @@ enum Command {
         /// Skip the confirmation prompt.
         #[arg(short = 'y', long)]
         yes: bool,
+        /// Steps not to run, by id (`package/jq`) or name (`jq`), comma
+        /// separated. For the one step a machine cannot do yet -- a package
+        /// from a repository you have not added -- so it does not strand the
+        /// rest of the run.
+        #[arg(long, value_name = "STEP", value_delimiter = ',')]
+        skip: Vec<String>,
     },
 }
 
-fn run_apply(host: &OsHost, outcome: run::Outcome, _verbose: bool) -> ExitCode {
+fn run_apply(
+    host: &OsHost,
+    outcome: run::Outcome,
+    _verbose: bool,
+    skip: &std::collections::BTreeSet<String>,
+) -> ExitCode {
     // Exclusive for the length of the run: two applies sharing one state file
     // is how an item ends up owned by neither.
     let _lock = match bedouin_core::host::StateLock::acquire(&bedouin_core::state::default_path(
@@ -172,10 +183,8 @@ fn run_apply(host: &OsHost, outcome: run::Outcome, _verbose: bool) -> ExitCode {
         &outcome.facts,
         outcome.state,
         host,
-        &mut |line| match line {
-            bedouin_core::host::Line::Out(s) => println!("  {s}"),
-            bedouin_core::host::Line::Err(s) => eprintln!("  {s}"),
-        },
+        skip,
+        &mut print_line,
     ) {
         Ok(r) => r,
         Err(e) => {
@@ -188,6 +197,19 @@ fn run_apply(host: &OsHost, outcome: run::Outcome, _verbose: bool) -> ExitCode {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
+    }
+}
+
+/// How a step's output looks. Command chatter is dimmed and indented so the
+/// headings between steps are what the eye catches; a heading is bold, and
+/// stderr is red.
+fn print_line(line: bedouin_core::host::Line) {
+    use bedouin_core::host::Line;
+    use bedouin_core::style;
+    match line {
+        Line::Section(s) => println!("\n{} {}", style::blue("::"), style::bold(&s)),
+        Line::Out(s) => println!("   {}", style::dim(&s)),
+        Line::Err(s) => eprintln!("   {}", style::red(&s)),
     }
 }
 
@@ -451,7 +473,7 @@ fn edit_then_apply(
         println!("Config edited, nothing applied.");
         return ExitCode::SUCCESS;
     }
-    run_apply(host, after, verbose)
+    run_apply(host, after, verbose, &Default::default())
 }
 
 /// Applying changes a machine, so say so and wait.
@@ -516,6 +538,13 @@ fn git(root: &std::path::Path, args: &[&str]) -> Result<String, String> {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    // Decided once, here: a pipe or a CI log gets plain text, and NO_COLOR is
+    // honoured because output this long ends up in files and bug reports.
+    bedouin_core::style::set_enabled(
+        std::io::IsTerminal::is_terminal(&std::io::stdout())
+            && std::env::var_os("NO_COLOR").is_none()
+            && std::env::var("TERM").map(|t| t != "dumb").unwrap_or(true),
+    );
     let host = OsHost::new();
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
 
@@ -557,14 +586,14 @@ fn main() -> ExitCode {
     // reviewed plan in a session where the variable is not exported, which
     // died on `undefined value` before the artifact was ever opened.
     if let Command::Apply {
-        plan: Some(file), ..
+        plan: Some(file),
+        skip,
+        ..
     } = &cli.command
     {
+        let skip: std::collections::BTreeSet<String> = skip.iter().cloned().collect();
         println!("Applying the plan in {}.\n", file.display());
-        let report = match run::apply_artifact(&host, file, &mut |line| match line {
-            bedouin_core::host::Line::Out(s) => println!("  {s}"),
-            bedouin_core::host::Line::Err(s) => eprintln!("  {s}"),
-        }) {
+        let report = match run::apply_artifact(&host, file, &skip, &mut print_line) {
             Ok(r) => r,
             Err(e) => {
                 eprintln!("bedouin: {e}");
@@ -680,7 +709,7 @@ fn main() -> ExitCode {
                 println!("Pulled, nothing applied.");
                 return ExitCode::SUCCESS;
             }
-            run_apply(&host, after, cli.verbose)
+            run_apply(&host, after, cli.verbose, &Default::default())
         }
 
         Command::Add {
@@ -793,7 +822,7 @@ fn main() -> ExitCode {
                 println!("Config edited, nothing applied.");
                 return ExitCode::SUCCESS;
             }
-            run_apply(&host, after, cli.verbose)
+            run_apply(&host, after, cli.verbose, &Default::default())
         }
 
         Command::Init | Command::Env { .. } => {
@@ -822,7 +851,7 @@ fn main() -> ExitCode {
                 };
                 if o.plan.has_changes() {
                     println!("{} change(s) pending; applying.", o.plan.changes().count());
-                    let code = run_apply(&host, o, cli.verbose);
+                    let code = run_apply(&host, o, cli.verbose, &Default::default());
                     if !watch {
                         return code;
                     }
@@ -1136,11 +1165,14 @@ fn main() -> ExitCode {
                 println!("Config edited, nothing applied.");
                 return ExitCode::SUCCESS;
             }
-            run_apply(&host, after, cli.verbose)
+            run_apply(&host, after, cli.verbose, &Default::default())
         }
 
         // The `plan: Some(..)` case returned above, before the live plan.
-        Command::Apply { dry_run, yes, .. } => {
+        Command::Apply {
+            dry_run, yes, skip, ..
+        } => {
+            let skip: std::collections::BTreeSet<String> = skip.into_iter().collect();
             if dry_run {
                 print!("{}", outcome.plan.render(cli.verbose));
                 return ExitCode::from(outcome.plan.exit_code() as u8);
@@ -1154,7 +1186,7 @@ fn main() -> ExitCode {
                 println!("Nothing applied.");
                 return ExitCode::SUCCESS;
             }
-            run_apply(&host, outcome, cli.verbose)
+            run_apply(&host, outcome, cli.verbose, &skip)
         }
         Command::Plan { out } => {
             print!("{}", outcome.plan.render(cli.verbose));

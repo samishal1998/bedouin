@@ -101,8 +101,16 @@ fn plan_on(h: &FakeHost) -> run::Outcome {
 
 fn apply_on(h: &FakeHost) -> apply::Report {
     let o = plan_on(h);
-    apply::apply(&o.plan, &o.config, &o.facts, o.state, h, &mut |_: Line| {})
-        .unwrap_or_else(|e| panic!("apply failed: {e}"))
+    apply::apply(
+        &o.plan,
+        &o.config,
+        &o.facts,
+        o.state,
+        h,
+        &Default::default(),
+        &mut |_: Line| {},
+    )
+    .unwrap_or_else(|e| panic!("apply failed: {e}"))
 }
 
 fn read(h: &FakeHost, p: &str) -> Option<String> {
@@ -232,7 +240,16 @@ fn a_failed_step_stops_the_run_and_says_what_did_not_happen() {
         FakeRun::fails(100, "E: Unable to locate package jq"),
     );
     let o = plan_on(&h);
-    let report = apply::apply(&o.plan, &o.config, &o.facts, o.state, &h, &mut |_| {}).unwrap();
+    let report = apply::apply(
+        &o.plan,
+        &o.config,
+        &o.facts,
+        o.state,
+        &h,
+        &Default::default(),
+        &mut |_| {},
+    )
+    .unwrap();
 
     assert!(!report.ok());
     let f = report.failure.as_ref().unwrap();
@@ -262,6 +279,7 @@ fn an_interrupted_step_is_recorded_before_it_runs() {
         &plan_on(&h).facts,
         plan_on(&h).state,
         &h,
+        &Default::default(),
         &mut |_| {},
     )
     .unwrap();
@@ -285,9 +303,17 @@ fn a_run_that_cannot_escalate_refuses_to_start() {
         .with_command("sudo -n true", FakeRun::fails(1, "no"))
         .with_command("id -nG", FakeRun::ok("t users"));
     let o = plan_on(&h);
-    let e = apply::apply(&o.plan, &o.config, &o.facts, o.state, &h, &mut |_| {})
-        .unwrap_err()
-        .to_string();
+    let e = apply::apply(
+        &o.plan,
+        &o.config,
+        &o.facts,
+        o.state,
+        &h,
+        &Default::default(),
+        &mut |_| {},
+    )
+    .unwrap_err()
+    .to_string();
     assert!(e.contains("need root"), "{e}");
     assert!(e.contains("package/jq"), "names the steps: {e}");
     // Nothing ran beyond the read-only fact probes.
@@ -332,7 +358,16 @@ fn bedouin_refuses_to_write_through_a_symlink() {
         .borrow_mut()
         .insert("/home/t/.gitconfig".into(), "/etc/passwd".into());
     let o = plan_on(&h);
-    let report = apply::apply(&o.plan, &o.config, &o.facts, o.state, &h, &mut |_| {}).unwrap();
+    let report = apply::apply(
+        &o.plan,
+        &o.config,
+        &o.facts,
+        o.state,
+        &h,
+        &Default::default(),
+        &mut |_| {},
+    )
+    .unwrap();
     let f = report.failure.as_ref().expect("must refuse");
     assert!(f.message.contains("symlink"), "{}", f.message);
 }
@@ -580,7 +615,16 @@ fn a_failed_step_does_not_erase_what_state_knew() {
         FakeRun::fails(100, "no such version"),
     );
     let o = plan_on(&h);
-    apply::apply(&o.plan, &o.config, &o.facts, o.state, &h, &mut |_| {}).unwrap();
+    apply::apply(
+        &o.plan,
+        &o.config,
+        &o.facts,
+        o.state,
+        &h,
+        &Default::default(),
+        &mut |_| {},
+    )
+    .unwrap();
 
     let v: serde_json::Value =
         serde_json::from_str(&read(&h, "/home/t/.local/state/bedouin/state.json").unwrap())
@@ -667,7 +711,16 @@ fn rc_and_path_writes_refuse_a_symlink_too() {
         .borrow_mut()
         .insert("/home/t/.zshrc".into(), "/repo/zshrc".into());
     let o = plan_on(&h);
-    let report = apply::apply(&o.plan, &o.config, &o.facts, o.state, &h, &mut |_| {}).unwrap();
+    let report = apply::apply(
+        &o.plan,
+        &o.config,
+        &o.facts,
+        o.state,
+        &h,
+        &Default::default(),
+        &mut |_| {},
+    )
+    .unwrap();
     let f = report.failure.as_ref().expect("must refuse");
     assert!(f.message.contains("symlink"), "{}", f.message);
 }
@@ -681,7 +734,16 @@ fn a_file_that_is_not_utf8_is_refused_rather_than_mangled() {
         .borrow_mut()
         .insert("/home/t/.zshrc".into(), vec![0xff, 0xfe, b'\n']);
     let o = plan_on(&h);
-    let report = apply::apply(&o.plan, &o.config, &o.facts, o.state, &h, &mut |_| {}).unwrap();
+    let report = apply::apply(
+        &o.plan,
+        &o.config,
+        &o.facts,
+        o.state,
+        &h,
+        &Default::default(),
+        &mut |_| {},
+    )
+    .unwrap();
     let f = report.failure.as_ref().expect("must refuse");
     assert!(f.message.contains("UTF-8"), "{}", f.message);
     assert_eq!(
@@ -989,4 +1051,100 @@ fn repointing_a_link_bedouin_owns_is_an_update() {
         h.symlinks.borrow().get(Path::new("/home/t/.tmux.conf")),
         Some(&std::path::PathBuf::from("/home/t/.tmux/.tmux.conf.local"))
     );
+}
+
+#[test]
+fn skip_holds_a_step_back_without_stranding_the_rest() {
+    // One package from a repository the machine has not set up should not
+    // strand the other fifty steps.
+    let h = fresh();
+    let o = plan_on(&h);
+    let skip: std::collections::BTreeSet<String> = ["jq".to_string()].into_iter().collect();
+    let report = apply::apply(
+        &o.plan,
+        &o.config,
+        &o.facts,
+        o.state,
+        &h,
+        &skip,
+        &mut |_: Line| {},
+    )
+    .expect("apply");
+
+    assert_eq!(report.skipped, ["package/jq"], "{:?}", report.skipped);
+    assert!(report.ok(), "the rest of the run should still succeed");
+    assert!(
+        report.completed.iter().any(|id| id == "language/rust"),
+        "other steps must still run: {:?}",
+        report.completed
+    );
+    assert!(
+        !report.completed.iter().any(|id| id == "package/jq"),
+        "the skipped step must not be reported as completed"
+    );
+    // And it is named, not silently dropped.
+    assert!(report.render().contains("package/jq"));
+}
+
+#[test]
+fn skip_takes_the_full_id_too() {
+    let h = fresh();
+    let o = plan_on(&h);
+    let skip: std::collections::BTreeSet<String> = ["package/jq".to_string()].into_iter().collect();
+    let report = apply::apply(
+        &o.plan,
+        &o.config,
+        &o.facts,
+        o.state,
+        &h,
+        &skip,
+        &mut |_: Line| {},
+    )
+    .expect("apply");
+    assert_eq!(report.skipped, ["package/jq"]);
+}
+
+#[test]
+fn a_language_brings_its_own_installer_without_being_declared() {
+    // The failure this prevents: `installer: rustup` with no
+    // `package_managers:` entry planned the toolchain install and never
+    // planned rustup, so a fresh machine ran `rustup toolchain install`
+    // against a binary nothing had installed.
+    const CFG: &str = r#"
+version: 0
+shell: zsh
+languages:
+  - name: rust
+packages:
+  - name: eza
+    from: cargo
+"#;
+    let h = FakeHost::new()
+        .with_file("/cfg/bedouin.yaml", CFG)
+        .with_env("PATH", "/usr/bin:/bin")
+        .with_env("HOME", "/home/t")
+        .with_command("id -u", FakeRun::ok("1000"));
+    let o = plan_on(&h);
+
+    let ids: Vec<&str> = o.plan.changes().map(|i| i.id.as_str()).collect();
+    assert!(
+        ids.contains(&"manager/rustup"),
+        "rustup must be planned, not assumed: {ids:?}"
+    );
+    // ...and before the toolchain that needs it.
+    let m = ids.iter().position(|i| *i == "manager/rustup").unwrap();
+    let l = ids.iter().position(|i| *i == "language/rust").unwrap();
+    assert!(m < l, "rustup must be installed before it is used: {ids:?}");
+
+    // A language installs with its own tool by default. rustup is how Rust is
+    // meant to arrive, and what `rustup component add` later expects.
+    let rust = o.config.languages.iter().find(|l| l.name == "rust");
+    assert!(rust.is_some(), "rust language resolved");
+    let detail = o
+        .plan
+        .changes()
+        .find(|i| i.id == "language/rust")
+        .map(|i| i.detail.clone())
+        .unwrap();
+    assert!(detail.contains("rustup"), "default installer: {detail}");
 }

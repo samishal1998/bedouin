@@ -60,8 +60,13 @@ was never declared is an error.
 languages:
   - name: rust
     version: "1.80"
-    installer: rustup      # rustup or mise
+    installer: rustup      # optional -- see below
 ```
+
+`installer:` is optional. Left out, a language installs with **its own tool**:
+`rust` uses rustup, which is how Rust is meant to arrive and what
+`rustup component add` and toolchain pinning expect. Anything else uses mise,
+which fetches upstream builds too — the source, just not a first-party script.
 
 A package with `from: cargo` and no `rust` language gets one added implicitly,
 with a warning. The implication is stated, never silent.
@@ -78,10 +83,19 @@ package_managers:
   default: [apt, mise]
 ```
 
+You rarely need this block. **Declaring `installer: rustup` or `from: cargo`
+already declares that you need that manager**, and it gets bootstrapped
+whether or not it is listed here — listing it was once mandatory, and
+forgetting meant a fresh machine ran `rustup toolchain install` against a
+rustup nothing had installed. Use `package_managers:` to name a manager
+nothing references yet, or to pin which one a bare `from:` should resolve to.
+
 Bedouin bootstraps `brew`, `mise`, `rustup` and `cargo` if they are missing.
-It does **not** install apt, zypper or dnf — those are the distro's. A declared
-manager that cannot exist on this OS is dropped from the plan rather than
-attempted.
+It does **not** install apt, zypper or dnf — those are the distro's, and one
+that is merely *referenced* is never added implicitly for the same reason: a
+package asking for a manager this machine lacks already errors by name. A
+declared manager that cannot exist on this OS is dropped from the plan rather
+than attempted.
 
 ## What apply actually does
 

@@ -40,6 +40,9 @@ pub struct Failure {
 #[derive(Debug, Clone, Default)]
 pub struct Report {
     pub completed: Vec<String>,
+    /// Steps `--skip` held back. Named in the report: a run that quietly did
+    /// less than the plan said is the thing this tool exists not to do.
+    pub skipped: Vec<String>,
     pub failure: Option<Failure>,
     /// Steps after the failure. Naming them is the difference between "it
     /// broke" and "here is what did not happen".
@@ -52,28 +55,54 @@ impl Report {
     }
 
     pub fn render(&self) -> String {
+        use crate::style::{bold, dim, green, red, yellow};
         let mut out = String::new();
         match &self.failure {
             None if self.completed.is_empty() => {
                 out.push_str("Nothing to do. The machine already matches the config.\n");
             }
-            None => out.push_str(&format!("Applied {} changes.\n", self.completed.len())),
+            None => out.push_str(&format!(
+                "{} {}\n",
+                green("✓"),
+                bold(&format!("Applied {} changes.", self.completed.len()))
+            )),
             Some(f) => {
-                out.push_str(&format!("\nFailed at {}: {}\n", f.id, f.message));
+                out.push_str(&format!(
+                    "\n{} {}: {}\n",
+                    red("✗"),
+                    bold(&format!("Failed at {}", f.id)),
+                    f.message
+                ));
                 for l in &f.output_tail {
-                    out.push_str(&format!("    {l}\n"));
+                    out.push_str(&format!("    {}\n", dim(l)));
                 }
                 out.push_str(&format!(
                     "\n{} applied before the failure.\n",
                     self.completed.len()
                 ));
                 if !self.not_attempted.is_empty() {
-                    out.push_str("Not attempted:\n");
+                    out.push_str(&format!("{}\n", yellow("Not attempted:")));
                     for id in &self.not_attempted {
                         out.push_str(&format!("  {id}\n"));
                     }
                 }
-                out.push_str("\nFix the cause and re-run: completed items diff as no-ops.\n");
+                out.push_str(&format!(
+                    "\nFix the cause and re-run: completed items diff as no-ops.\n\
+                     Or {} to leave it out and continue.\n",
+                    bold(&format!("--skip {}", f.id))
+                ));
+            }
+        }
+        // Said in both outcomes: a run that silently did less than the plan
+        // promised is exactly what this tool exists not to do.
+        if !self.skipped.is_empty() {
+            out.push_str(&format!(
+                "\n{} {} step(s), not applied:\n",
+                yellow("⊘"),
+                self.skipped.len()
+            ));
+            for id in &self.skipped {
+                out.push_str(&format!("  {id}\n"));
             }
         }
         out
@@ -659,6 +688,8 @@ impl Executor<'_> {
                             captured.push('\n');
                         }
                         Line::Err(s) => stderr_tail.push(s),
+                        // A command cannot emit one; only `apply` does.
+                        Line::Section(_) => {}
                     })
                     .map_err(|e| (e.to_string(), Vec::new()))?;
                 if !status.ok() {
@@ -704,17 +735,33 @@ impl Executor<'_> {
 }
 
 /// Execute a plan.
+/// Whether `--skip` names this step. The full id (`package/jq`) or just the
+/// name (`jq`) -- the id is what a failure prints, the name is what a person
+/// remembers.
+fn skips(skip: &std::collections::BTreeSet<String>, id: &str) -> bool {
+    skip.contains(id) || id.split_once('/').is_some_and(|(_, n)| skip.contains(n))
+}
+
 pub fn apply(
     plan: &Plan,
     cfg: &Config,
     facts: &Facts,
     state: State,
     host: &dyn Host,
+    skip: &std::collections::BTreeSet<String>,
     out: &mut dyn FnMut(Line),
 ) -> Result<Report> {
-    let changes: Vec<&Item> = plan.changes().collect();
+    let all: Vec<&Item> = plan.changes().collect();
+    // A step held back on purpose. One package from a third-party repository
+    // that is not set up yet should not strand the other forty steps.
+    let (skipped, changes): (Vec<&Item>, Vec<&Item>) =
+        all.into_iter().partition(|i| skips(skip, &i.id));
+    let skipped: Vec<String> = skipped.iter().map(|i| i.id.clone()).collect();
     if changes.is_empty() {
-        return Ok(Report::default());
+        return Ok(Report {
+            skipped,
+            ..Default::default()
+        });
     }
 
     // Refuse to start rather than fail partway: a run that dies at step
@@ -773,8 +820,19 @@ pub fn apply(
         out,
     };
 
-    let mut report = Report::default();
+    let mut report = Report {
+        skipped,
+        ..Default::default()
+    };
     for (i, item) in changes.iter().enumerate() {
+        // A heading per step. Running this by eye, the old output was one
+        // undifferentiated wall of package-manager chatter.
+        (ex.out)(Line::Section(format!(
+            "[{}/{}] {}",
+            i + 1,
+            changes.len(),
+            item.id
+        )));
         // Intent first: if the run dies here, the record says so.
         if item.action != Action::Remove {
             // Flip the status on whatever is already recorded. Replacing the

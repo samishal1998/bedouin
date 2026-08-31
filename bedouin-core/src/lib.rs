@@ -15,6 +15,7 @@ pub mod render;
 pub mod run;
 pub mod schema;
 pub mod state;
+pub mod style;
 pub mod target;
 pub mod value;
 pub mod writers;

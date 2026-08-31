@@ -47,6 +47,22 @@ package manager is not something anything can do honestly. Instead:
   reporting where it broke.
 - Re-running resumes, because `plan` re-diffs. There is no separate resume.
 
+### `--skip`
+
+Stopping is right when the failure is a surprise. When it is not — a package
+from an apt repository this machine has not been given yet — halting the other
+fifty steps helps nobody:
+
+```sh
+bedouin apply --skip 1password-cli,caddy
+bedouin apply --skip package/1password-cli   # the full id works too
+```
+
+Takes the id a failure prints (`package/jq`) or just the name (`jq`). Skipped
+steps are **named in the report**, never silently dropped: a run that quietly
+did less than the plan promised is the thing this tool exists not to do. They
+stay in the next plan, because nothing about the config changed.
+
 ## Reviewing a plan, applying it later
 
 ```sh

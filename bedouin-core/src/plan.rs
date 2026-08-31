@@ -186,9 +186,10 @@ impl Plan {
     }
 
     pub fn render(&self, verbose: bool) -> String {
+        use crate::style::{bold, cyan, dim, green, red, yellow};
         let mut out = String::new();
         for w in &self.warnings {
-            out.push_str(&format!("warning: {w}\n"));
+            out.push_str(&format!("{} {w}\n", yellow("warning:")));
         }
         if !self.warnings.is_empty() {
             out.push('\n');
@@ -201,7 +202,8 @@ impl Plan {
             return out;
         }
 
-        out.push_str("Bedouin will make the following changes:\n\n");
+        out.push_str(&bold("Bedouin will make the following changes:"));
+        out.push_str("\n\n");
         let kind_w = 8;
         let name_w = self
             .changes()
@@ -210,13 +212,25 @@ impl Plan {
             .unwrap_or(0)
             .max(10);
         for i in self.changes() {
+            // The sigil carries the meaning, so it carries the colour:
+            // adding is green, changing amber, removing red.
+            let g = i.action.sigil().to_string();
+            let sigil = match i.action {
+                Action::Create => green(&g),
+                Action::Adopt | Action::Upgrade { .. } | Action::Reinstall { .. } => yellow(&g),
+                Action::Remove => red(&g),
+                Action::NoOp => dim(&g),
+            };
+            // Pad BEFORE colouring: the escape codes are bytes too, and
+            // padding the coloured string counts them toward the width, which
+            // knocks every column out by the length of the sequence.
+            let kind = format!("{:<kw$}", kind_label(i.kind), kw = kind_w);
             out.push_str(&format!(
-                "  {} {:<kw$}  {:<nw$}  {}\n",
-                i.action.sigil(),
-                kind_label(i.kind),
+                "  {} {}  {:<nw$}  {}\n",
+                sigil,
+                cyan(&kind),
                 i.name,
-                i.detail,
-                kw = kind_w,
+                dim(&i.detail),
                 nw = name_w,
             ));
             if verbose {
@@ -406,8 +420,69 @@ pub fn build(
     // on the machine, plus those this run will bootstrap.
     let mut available: BTreeSet<Manager> = facts.managers.iter().copied().collect();
 
+    // ---- languages are needed first: what they install WITH is a manager
+    // this run has to have, and the manager loop is right below.
+    let mut languages = cfg.languages.clone();
+    let wants_cargo = cfg
+        .packages
+        .iter()
+        .any(|p| p.from.contains(&Manager::Cargo));
+    if wants_cargo && !languages.iter().any(|l| l.name == "rust") {
+        warnings.push(
+            "a package installs `from: cargo` but no `rust` language is declared; \
+             adding it implicitly"
+                .into(),
+        );
+        languages.push(crate::schema::Language {
+            name: "rust".into(),
+            version: None,
+            installer: Some(Manager::Rustup),
+            resolved_from: Default::default(),
+        });
+    }
+
+    // Declaring `installer: rustup` or `from: cargo` IS declaring you need
+    // that manager. Making the user also list it in `package_managers:` meant
+    // a fresh machine ran `rustup toolchain install` against a rustup nothing
+    // had installed -- which is the one thing a bootstrap tool must not do.
+    //
+    // Only bootstrappable ones are added: apt and zypper come with the distro,
+    // and a package asking for a missing one already errors by name.
+    let mut managers: Vec<Manager> = cfg.package_managers.clone();
+    let want = |m: Manager, into: &mut Vec<Manager>| {
+        if m.is_bootstrappable() && m.runs_on(facts.os) && !into.contains(&m) {
+            into.push(m);
+        }
+    };
+    for l in &languages {
+        let m = l
+            .installer
+            .unwrap_or_else(|| crate::recipe::default_installer(&l.name));
+        // cargo is rustup's own output, so rustup is what gets installed.
+        want(
+            if m == Manager::Cargo {
+                Manager::Rustup
+            } else {
+                m
+            },
+            &mut managers,
+        );
+    }
+    for p in &cfg.packages {
+        for m in &p.from {
+            want(
+                if *m == Manager::Cargo {
+                    Manager::Rustup
+                } else {
+                    *m
+                },
+                &mut managers,
+            );
+        }
+    }
+
     // ---- managers
-    for m in &cfg.package_managers {
+    for m in &managers {
         let id = format!("manager/{m}");
         let present = facts.managers.contains(m) || state.done(&id).is_some();
         available.insert(*m);
@@ -441,25 +516,7 @@ pub fn build(
         declared_ids.insert(id);
     }
 
-    // ---- languages, plus any implied by a `from: cargo` package
-    let mut languages = cfg.languages.clone();
-    let wants_cargo = cfg
-        .packages
-        .iter()
-        .any(|p| p.from.contains(&Manager::Cargo));
-    if wants_cargo && !languages.iter().any(|l| l.name == "rust") {
-        warnings.push(
-            "a package installs `from: cargo` but no `rust` language is declared; \
-             adding it implicitly"
-                .into(),
-        );
-        languages.push(crate::schema::Language {
-            name: "rust".into(),
-            version: None,
-            installer: Some(Manager::Rustup),
-            resolved_from: Default::default(),
-        });
-    }
+    // ---- languages
     for l in &languages {
         let id = format!("language/{}", l.name);
         let bin_dirs = crate::recipe::bin_dirs(&l.name, facts);
@@ -468,7 +525,9 @@ pub fn build(
             && (state.done(&id).is_some()
                 || host.which(probe, &bin_dirs).is_some()
                 || host.which(probe, &system_path(facts)).is_some());
-        let installer = l.installer.unwrap_or(Manager::Mise);
+        let installer = l
+            .installer
+            .unwrap_or_else(|| crate::recipe::default_installer(&l.name));
         if installer == Manager::Cargo || installer == Manager::Rustup {
             available.insert(Manager::Cargo);
         }

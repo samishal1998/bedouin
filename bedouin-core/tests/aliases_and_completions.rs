@@ -43,7 +43,16 @@ fn outcome(h: &FakeHost) -> run::Outcome {
 
 fn apply_on(h: &FakeHost) -> apply::Report {
     let o = outcome(h);
-    apply::apply(&o.plan, &o.config, &o.facts, o.state, h, &mut |_: Line| {}).unwrap()
+    apply::apply(
+        &o.plan,
+        &o.config,
+        &o.facts,
+        o.state,
+        h,
+        &Default::default(),
+        &mut |_: Line| {},
+    )
+    .unwrap()
 }
 
 /// The three arguments every `plan_for` call in this file shares.

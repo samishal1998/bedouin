@@ -62,12 +62,15 @@ impl ExitStatus {
 pub enum Line {
     Out(String),
     Err(String),
+    /// A step boundary. Emitted by `apply`, formatted by the caller -- how a
+    /// heading looks is the CLI's business, and a `FakeHost` run wants none.
+    Section(String),
 }
 
 impl Line {
     pub fn text(&self) -> &str {
         match self {
-            Self::Out(s) | Self::Err(s) => s,
+            Self::Out(s) | Self::Err(s) | Self::Section(s) => s,
         }
     }
 }

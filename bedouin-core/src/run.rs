@@ -63,6 +63,7 @@ pub fn load_only(host: &dyn Host, explicit: Option<&Path>, cwd: &Path) -> Result
 pub fn apply_artifact(
     host: &dyn Host,
     artifact_path: &Path,
+    skip: &std::collections::BTreeSet<String>,
     out: &mut dyn FnMut(crate::host::Line),
 ) -> Result<crate::apply::Report> {
     let a = crate::artifact::read(host, artifact_path)?;
@@ -72,7 +73,7 @@ pub fn apply_artifact(
     crate::artifact::check_still_valid(&a, &live, &state)?;
 
     let plan = plan::build(&a.config, &a.facts, &state, host, &a.config_root)?;
-    crate::apply::apply(&plan, &a.config, &a.facts, state, host, out)
+    crate::apply::apply(&plan, &a.config, &a.facts, state, host, skip, out)
 }
 
 /// As [`plan`], for a stated platform. Lets a test drive a fresh macOS from a

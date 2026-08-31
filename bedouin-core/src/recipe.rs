@@ -211,6 +211,21 @@ pub fn bin_dirs(name: &str, facts: &Facts) -> Vec<PathBuf> {
     }
 }
 
+/// The installer a language brings its own script for.
+///
+/// Preferred over a generic version manager: rustup is how Rust is meant to be
+/// installed, it is what `rustup component add` and toolchain pinning expect,
+/// and it is what a machine that already has Rust almost certainly used. mise
+/// is the fallback for languages that ship no installer of their own -- it
+/// fetches the upstream builds too, so it is still the source, just not a
+/// first-party script.
+pub fn default_installer(language: &str) -> Manager {
+    match language {
+        "rust" => Manager::Rustup,
+        _ => Manager::Mise,
+    }
+}
+
 /// The binary that proves a toolchain is present. Not the language name:
 /// nothing on a machine with Rust is called `rust`.
 pub fn probe_bin(language: &str) -> &str {
