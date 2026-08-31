@@ -341,7 +341,12 @@ pub fn env_refs(
         if let Some(v) = &p.path {
             walk_list!(v, site);
         }
-        walk_list!(&p.from, site);
+        if let Some(f) = &p.from {
+            walk_list!(f, site);
+        }
+        if let Some(sc) = &p.script {
+            walk!(sc, site);
+        }
         if let Some(c) = &p.completions {
             walk_list!(&c.generate, site);
         }

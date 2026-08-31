@@ -397,8 +397,13 @@ fn dropping_items_from_the_config_actually_removes_them() {
 
     // Files bedouin created outright are gone, not merely unlisted.
     assert!(read(&h, "/home/t/.zshrc.d/70-zellij.zsh").is_none());
-    assert!(read(&h, "/home/t/.zshrc.d/00-bedouin-path.zsh").is_none());
     assert!(read(&h, "/home/t/.gitconfig").is_none());
+    // The PATH file stays, and should: the config still declares a rust
+    // toolchain, and ~/.cargo/bin is where that toolchain puts what it
+    // installs. Dropping a package's `path:` does not un-declare rust.
+    let path_file =
+        read(&h, "/home/t/.zshrc.d/00-bedouin-path.zsh").expect("toolchain still declared");
+    assert!(path_file.contains(".cargo/bin"), "{path_file}");
 
     // And the run converges.
     assert_eq!(plan_on(&h).plan.exit_code(), 0);
@@ -1147,4 +1152,76 @@ packages:
         .map(|i| i.detail.clone())
         .unwrap();
     assert!(detail.contains("rustup"), "default installer: {detail}");
+}
+
+#[test]
+fn a_script_package_installs_and_is_never_claimed_as_owned() {
+    // For a thing no manager packages: tailscale's installer registers a
+    // repository and starts a daemon, and neither is a `brew install`.
+    const CFG: &str = r#"
+version: 0
+shell: zsh
+packages:
+  - name: widget
+    script: |
+      echo installing widget
+"#;
+    let h = FakeHost::new()
+        .with_file("/cfg/bedouin.yaml", CFG)
+        .with_env("HOME", "/home/t")
+        .with_env("PATH", "/usr/bin:/bin")
+        .with_command("id -u", FakeRun::ok("1000"))
+        .with_command("sh /tmp/bedouin-install-widget.sh", FakeRun::ok("done"));
+
+    let o = plan_on(&h);
+    let item = o
+        .plan
+        .changes()
+        .find(|i| i.id == "package/widget")
+        .expect("planned");
+    assert_eq!(item.detail, "script");
+
+    let report = apply::apply(
+        &o.plan,
+        &o.config,
+        &o.facts,
+        o.state,
+        &h,
+        &Default::default(),
+        &mut |_: Line| {},
+    )
+    .expect("apply");
+    assert!(report.ok(), "{:?}", report.failure);
+
+    // Bedouin cannot undo a script, so it must not record itself as the owner
+    // -- that is what `remove` reads to decide it may uninstall something.
+    let st = bedouin_core::state::load(&h, Path::new("/home/t/.local/state/bedouin/state.json"))
+        .expect("state");
+    let rec = st.items.get("package/widget").expect("recorded");
+    assert!(rec.method.is_none(), "no method means nothing to undo with");
+}
+
+#[test]
+fn from_and_script_together_is_refused() {
+    const CFG: &str = r#"
+version: 0
+shell: zsh
+packages:
+  - name: widget
+    from: apt
+    script: "echo hi"
+"#;
+    let h = FakeHost::new()
+        .with_file("/cfg/bedouin.yaml", CFG)
+        .with_env("HOME", "/home/t")
+        .with_command("id -u", FakeRun::ok("1000"));
+    let e = run::plan_for(
+        &h,
+        Some(Path::new("/cfg/bedouin.yaml")),
+        Path::new("/cfg"),
+        Os::Linux,
+        Arch::X86_64,
+    )
+    .expect_err("ambiguous");
+    assert!(e.to_string().contains("two ways"), "{e}");
 }

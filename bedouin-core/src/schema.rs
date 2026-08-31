@@ -143,7 +143,16 @@ pub struct RawPackage {
     /// machine is an identity that varies by machine, and uninstall stops
     /// working.
     pub name: String,
-    pub from: ValList,
+    /// Optional only because `script:` is the other way to install. Exactly
+    /// one of the two.
+    #[serde(default)]
+    pub from: Option<ValList>,
+    /// A shell script that installs this, for a thing no manager packages --
+    /// tailscale's installer registers a repository and starts a daemon, and
+    /// neither is a `brew install`. Bedouin cannot uninstall what a script
+    /// installed, so it never claims to own it.
+    #[serde(default)]
+    pub script: Option<Val>,
     #[serde(default)]
     pub version: Option<Val>,
     /// Membership, not value. Arms choose *between* values; they cannot make an
@@ -269,6 +278,8 @@ pub type Provenance = BTreeMap<String, Winner>;
 pub struct Package {
     pub name: String,
     pub from: Vec<Manager>,
+    /// Set instead of `from`. See `RawPackage::script`.
+    pub script: Option<String>,
     pub version: Option<String>,
     pub needs: Vec<String>,
     pub path: Vec<String>,
@@ -557,12 +568,35 @@ pub fn resolve(raw: &RawConfig, vocab: &Vocabulary, facts: &Facts) -> Result<Con
         }
         let item = format!("package `{}`", p.name);
         let mut prov = Provenance::new();
-        let from_names = r
-            .many(&p.from, "from", &mut prov)
-            .map_err(|e| e.in_item(&item))?;
-        let from = r
-            .managers(&from_names, "from")
-            .map_err(|e| e.in_item(&item))?;
+        let script = match &p.script {
+            Some(v) => Some(
+                r.one(v, "script", &mut prov)
+                    .map_err(|e| e.in_item(&item))?,
+            ),
+            None => None,
+        };
+        // Exactly one way in. Both would leave it ambiguous which a re-run
+        // should use; neither leaves nothing to run.
+        if script.is_some() && p.from.is_some() {
+            return Err(ConfigError::new(
+                "`from:` and `script:` are two ways to install the same thing\n  \
+                 Keep whichever one this machine should use",
+            )
+            .in_item(&item));
+        }
+        let from = match (&p.from, &script) {
+            (Some(f), _) => {
+                let names = r.many(f, "from", &mut prov).map_err(|e| e.in_item(&item))?;
+                r.managers(&names, "from").map_err(|e| e.in_item(&item))?
+            }
+            (None, Some(_)) => Vec::new(),
+            (None, None) => {
+                return Err(ConfigError::new(
+                    "no `from:` and no `script:`, so there is nothing to install it with",
+                )
+                .in_item(&item))
+            }
+        };
         // rustup installs toolchains, not packages: `from: rustup` would have
         // run `rustup toolchain install`, ignoring the package name entirely
         // and reporting success.
@@ -619,6 +653,7 @@ pub fn resolve(raw: &RawConfig, vocab: &Vocabulary, facts: &Facts) -> Result<Con
             aliases,
             completions,
             from,
+            script,
             version,
             needs: p.needs.clone(),
             path,

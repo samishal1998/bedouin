@@ -461,6 +461,25 @@ impl Executor<'_> {
                 rec.bin_dirs = bin_dirs.iter().map(|p| p.display().to_string()).collect();
             }
 
+            (_, Payload::ScriptPackage { name, script }) => {
+                // Written to a file and run, rather than `sh -c <string>`:
+                // the same shape the manager bootstraps use, and it keeps the
+                // rule that no step is a shell string bedouin assembled.
+                let path = format!("/tmp/bedouin-install-{name}.sh");
+                self.host
+                    .write(std::path::Path::new(&path), script.as_bytes(), 0o700)
+                    .map_err(|e| (e.to_string(), Vec::new()))?;
+                let mut cmd = Cmd::new(["sh", &path]);
+                cmd.env = step_env(&self.state, self.facts);
+                self.run(&cmd)?;
+                let _ = self.host.remove(std::path::Path::new(&path));
+                // `method` stays None on purpose: it is what `remove` reads to
+                // decide how to uninstall, and there is no way to undo a
+                // script. Dropping this entry from the config forgets it
+                // rather than pretending it was cleaned up.
+                rec.owner = Owner::Preexisting;
+            }
+
             (
                 action,
                 Payload::Package {

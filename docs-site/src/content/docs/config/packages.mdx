@@ -54,6 +54,26 @@ A `needs:` naming a package that `only:` pruned simply drops the edge — the
 prerequisite genuinely does not exist here. A `needs:` naming a package that
 was never declared is an error.
 
+## `script:`
+
+For a thing no manager packages. Tailscale's installer registers an apt
+repository *and* starts a daemon; neither is a `from:`.
+
+```yaml
+packages:
+  - name: tailscale
+    only: linux
+    script: |
+      curl -fsSL https://tailscale.com/install.sh | sh
+```
+
+Use it instead of `from:`, never with it. Presence is the binary being on
+PATH, so the script runs once and not again.
+
+**Bedouin cannot uninstall what a script installed**, so it does not claim to
+own it: dropping the entry forgets it rather than removing it. Everything else
+— `only:`, `needs:`, `rc:`, `aliases:` — works as usual.
+
 ## Languages
 
 ```yaml
@@ -72,8 +92,10 @@ A package with `from: cargo` and no `rust` language gets one added implicitly,
 with a warning. The implication is stated, never silent.
 
 Toolchains record their own bin directories — `rustup` records
-`~/.cargo/bin` — which is what lets the cargo step in the same run find cargo.
-You never configure that.
+`~/.cargo/bin`, mise its shims, Go `~/go/bin` — which is what lets the cargo
+step in the same run find cargo. Those directories also go into the generated
+PATH file, so what a toolchain installs is on **your** PATH too, not just the
+run's. You never configure that.
 
 ## Package managers
 

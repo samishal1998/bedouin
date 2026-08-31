@@ -220,6 +220,10 @@ pub fn bin_dirs(name: &str, facts: &Facts) -> Vec<PathBuf> {
     let home = &facts.home;
     match name {
         "rust" | "rustup" | "cargo" => vec![home.join(".cargo/bin")],
+        // `go install` drops binaries in GOPATH/bin, which is not where the
+        // toolchain itself lives -- so installing go is not enough to make
+        // what go installs runnable.
+        "go" => vec![home.join("go/bin")],
         "mise" => vec![
             home.join(".local/bin"),
             home.join(".local/share/mise/shims"),

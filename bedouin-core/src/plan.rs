@@ -83,6 +83,13 @@ pub enum Payload {
         /// Set for `Reinstall`: the manager the old copy came from.
         previous: Option<Manager>,
     },
+    /// Installed by running a script the config supplies. Bedouin runs it and
+    /// records that it did; it cannot uninstall the result, so it never claims
+    /// to own it.
+    ScriptPackage {
+        name: String,
+        script: String,
+    },
     Dir(PathBuf),
     File {
         src: PathBuf,
@@ -565,6 +572,33 @@ pub fn build(
     for i in topo(cfg)? {
         let p = &cfg.packages[i];
         let id = format!("package/{}", p.name);
+        if let Some(script) = &p.script {
+            // Presence is the binary being there. There is no manager to ask,
+            // and re-running an installer that is already satisfied is the
+            // kind of surprise a plan exists to prevent.
+            let known = state.done(&id);
+            let on_machine = !state.interrupted(&id)
+                && (known.is_some() || host.which(&p.name, &search).is_some());
+            items.push(Item {
+                id: id.clone(),
+                kind: ItemKind::Package,
+                name: p.name.clone(),
+                action: if on_machine {
+                    Action::NoOp
+                } else {
+                    Action::Create
+                },
+                detail: "script".into(),
+                needs_root: false,
+                arms: arms_of(&p.resolved_from),
+                payload: Payload::ScriptPackage {
+                    name: p.name.clone(),
+                    script: script.clone(),
+                },
+            });
+            declared_ids.insert(id);
+            continue;
+        }
         if p.from.is_empty() {
             return Err(ConfigError::new(format!(
                 "package `{}` has an empty `from:`, so there is no manager to \
@@ -1188,6 +1222,27 @@ pub fn build(
         }
 
         let mut path_entries: Vec<(String, String)> = Vec::new();
+        // Everything bedouin installs a toolchain INTO. The run itself already
+        // sees these -- `step_env` builds them -- but the user's shell never
+        // did, so mise would install neovim and go, and the shell would report
+        // neither as present. Installing a thing without making it runnable is
+        // not installing it.
+        for m in &managers {
+            for d in crate::recipe::bin_dirs(m.as_str(), facts) {
+                let key = d.display().to_string();
+                if !path_entries.iter().any(|(k, _)| *k == key) {
+                    path_entries.push((key, m.to_string()));
+                }
+            }
+        }
+        for l in &languages {
+            for d in crate::recipe::bin_dirs(&l.name, facts) {
+                let key = d.display().to_string();
+                if !path_entries.iter().any(|(k, _)| *k == key) {
+                    path_entries.push((key, l.name.clone()));
+                }
+            }
+        }
         for p in &cfg.packages {
             for entry in &p.path {
                 let norm = normalize(entry, &facts.home, &facts.home);
