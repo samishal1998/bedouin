@@ -1225,3 +1225,38 @@ packages:
     .expect_err("ambiguous");
     assert!(e.to_string().contains("two ways"), "{e}");
 }
+
+#[test]
+fn a_state_write_failure_keeps_the_report_it_has_earned() {
+    // A state write that fails is worse than a step that fails: bedouin's
+    // record of what it just did is gone. Returning Err discarded the report
+    // along with it, so the caller could not even say which steps had run --
+    // and a UI that had been streaming progress would blank it.
+    let h = fresh();
+    let o = plan_on(&h);
+    let state_path = "/home/t/.local/state/bedouin/state.json";
+    let h = h.with_unwritable(state_path);
+
+    let report = apply::apply(
+        &o.plan,
+        &o.config,
+        &o.facts,
+        o.state,
+        &h,
+        &Default::default(),
+        &mut |_: Line| {},
+    )
+    .expect("a failed state write must still yield a report, not Err");
+
+    let f = report.failure.as_ref().expect("the failure is reported");
+    assert!(
+        f.message.contains("no space left") || f.message.contains("record"),
+        "the message must name the real cause: {}",
+        f.message
+    );
+    // And it must say what did not run, so re-running is an informed choice.
+    assert!(
+        !report.not_attempted.is_empty(),
+        "steps after the failure must be named"
+    );
+}

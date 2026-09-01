@@ -866,7 +866,22 @@ pub fn apply(
                 .or_insert_with(|| StateItem::new(item.kind, Owner::Bedouin));
             pending.status = Status::Incomplete;
             pending.owner = Owner::Bedouin;
-            ex.flush()?;
+            // A state write that fails is worse than a step that fails:
+            // bedouin's record of what it just did is gone. Returning `Err`
+            // here discarded the report along with it, so the caller could not
+            // even say which steps had run -- and anything streaming progress
+            // would blank what it had already shown. Report it as the failure
+            // and keep the history.
+            if let Err(e) = ex.flush() {
+                report.failure = Some(Failure {
+                    id: item.id.clone(),
+                    message: format!("could not record what this run is doing: {e}"),
+                    output_tail: Vec::new(),
+                });
+                // This one never ran, so it is not attempted either.
+                report.not_attempted = changes[i..].iter().map(|x| x.id.clone()).collect();
+                break;
+            }
         }
 
         match ex.step(item) {
@@ -883,11 +898,25 @@ pub fn apply(
                     }
                     ex.state.items.insert(item.id.clone(), rec);
                 }
-                ex.flush()?;
+                // The step DID succeed, so it is completed whether or not the
+                // record survives -- saying otherwise would send the reader
+                // looking for work that is already done.
                 report.completed.push(item.id.clone());
+                if let Err(e) = ex.flush() {
+                    report.failure = Some(Failure {
+                        id: item.id.clone(),
+                        message: format!("`{}` succeeded but could not be recorded: {e}", item.id),
+                        output_tail: Vec::new(),
+                    });
+                    report.not_attempted = changes[i + 1..].iter().map(|x| x.id.clone()).collect();
+                    break;
+                }
             }
             Err((message, output_tail)) => {
-                ex.flush()?;
+                // Best effort: the step's own failure is the more useful
+                // story, and the intent flush above already recorded that this
+                // item was in progress.
+                let _ = ex.flush();
                 report.failure = Some(Failure {
                     id: item.id.clone(),
                     message,
@@ -920,7 +949,17 @@ pub fn apply(
             ex.state.items.insert(item.id.clone(), rec);
         }
     }
-    ex.flush()?;
+    // The adoption sweep. Everything ran by now, so a failure here costs the
+    // record rather than the work -- but it still has to be said.
+    if let Err(e) = ex.flush() {
+        if report.failure.is_none() {
+            report.failure = Some(Failure {
+                id: "state".into(),
+                message: format!("every step ran, but the record could not be saved: {e}"),
+                output_tail: Vec::new(),
+            });
+        }
+    }
 
     Ok(report)
 }

@@ -426,6 +426,9 @@ pub struct FakeHost {
     pub env: BTreeMap<String, String>,
     /// Every command actually run, in order, for assertions.
     pub ran: std::cell::RefCell<Vec<Cmd>>,
+    /// Paths whose writes fail. The state file failing mid-apply is the one
+    /// I/O error with its own recovery story, and it needs to be reachable.
+    pub unwritable: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -483,6 +486,12 @@ impl FakeHost {
         self
     }
 
+    /// Make writes to `p` fail, as a full disk or a lost mount would.
+    pub fn with_unwritable(mut self, p: impl Into<PathBuf>) -> Self {
+        self.unwritable.push(p.into());
+        self
+    }
+
     pub fn with_env(mut self, k: &str, v: &str) -> Self {
         self.env.insert(k.into(), v.into());
         self
@@ -528,6 +537,12 @@ impl Host for FakeHost {
     }
 
     fn write(&self, p: &Path, bytes: &[u8], _mode: u32) -> Result<()> {
+        if self.unwritable.iter().any(|u| u == p) {
+            return Err(HostError::new(format!(
+                "{}: no space left on device",
+                p.display()
+            )));
+        }
         self.files
             .borrow_mut()
             .insert(p.to_path_buf(), bytes.to_vec());
