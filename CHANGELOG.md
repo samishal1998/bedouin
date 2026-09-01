@@ -3,6 +3,16 @@
 Dates are release dates. Versions before 0.2.0 are omitted: they predate this
 file and nothing depended on them.
 
+## 0.4.1 — 2026-09-01
+
+**A failed state write no longer discards the apply report.** `apply` flushed
+state with `?`, so an I/O error on `state.json` returned `Err` and took the
+report with it — at the one moment that knowledge matters most, since the
+record of what just ran is exactly what was lost. The flush failure is now the
+report's `failure`, with `completed` intact and `not_attempted` naming the
+rest. A step that succeeded stays in `completed` even when recording it
+failed: saying otherwise would send the reader looking for work already done.
+
 ## 0.4.0 — 2026-08-31
 
 **Toolchain bin directories reach your shell.** The generated PATH file was
