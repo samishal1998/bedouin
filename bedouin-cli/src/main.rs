@@ -262,6 +262,33 @@ fn write_config_verified(
     }
 }
 
+/// `bedouin facts`, on the loaded document and the probe alone.
+fn cmd_facts(host: &OsHost, config: Option<&std::path::Path>, cwd: &std::path::Path) -> ExitCode {
+    let (_, facts) = match run::load_only(host, config, cwd) {
+        Ok(x) => x,
+        Err(e) => {
+            eprintln!("bedouin: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    // Names only. The values are the same secrets class the plan artifact
+    // withholds, and this output ends up in bug reports.
+    let mut facts = facts;
+    facts.env = facts
+        .env
+        .keys()
+        .map(|k| (k.clone(), "<set>".to_string()))
+        .collect();
+    match serde_json::to_string_pretty(&facts) {
+        Ok(j) => println!("{j}"),
+        Err(e) => {
+            eprintln!("bedouin: {e}");
+            return ExitCode::FAILURE;
+        }
+    }
+    ExitCode::SUCCESS
+}
+
 fn cmd_env(
     host: &OsHost,
     config: Option<&std::path::Path>,
@@ -580,6 +607,15 @@ fn main() -> ExitCode {
         return cmd_env(&host, cli.config.as_deref(), &cwd, write);
     }
 
+    // `facts` answers "what does bedouin think this machine is", which is a
+    // question about the MACHINE, not the config. Computing it from a full
+    // plan meant a config that would not resolve -- a package with no arm for
+    // this platform, say -- took `facts` down with it, on exactly the
+    // unsupported box where it is the first thing you would reach for.
+    if matches!(cli.command, Command::Facts) {
+        return cmd_facts(&host, cli.config.as_deref(), &cwd);
+    }
+
     // `apply -f` takes facts AND config from the artifact, so like `env` it
     // must not need the live config to resolve first. Planning here defeated
     // the frozen environment in precisely the case it exists for: applying a
@@ -621,24 +657,6 @@ fn main() -> ExitCode {
     };
 
     match cli.command {
-        Command::Facts => {
-            // Names only. The values are the same secrets class the plan
-            // artifact withholds, and this output ends up in bug reports.
-            let mut facts = outcome.facts.clone();
-            facts.env = facts
-                .env
-                .keys()
-                .map(|k| (k.clone(), "<set>".to_string()))
-                .collect();
-            match serde_json::to_string_pretty(&facts) {
-                Ok(j) => println!("{j}"),
-                Err(e) => {
-                    eprintln!("bedouin: {e}");
-                    return ExitCode::FAILURE;
-                }
-            }
-            ExitCode::SUCCESS
-        }
         Command::Sync { yes } => {
             let root = &outcome.loaded.root;
             // A dirty tree means uncommitted local edits; a pull would either
@@ -825,7 +843,10 @@ fn main() -> ExitCode {
             run_apply(&host, after, cli.verbose, &Default::default())
         }
 
-        Command::Init | Command::Env { .. } => {
+        // `init` has no config yet; `env` and `facts` answer questions that
+        // must survive a config which does not resolve. All three return
+        // before the pipeline above.
+        Command::Init | Command::Env { .. } | Command::Facts => {
             unreachable!("handled before the config is resolved")
         }
 

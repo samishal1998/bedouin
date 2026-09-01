@@ -1,0 +1,15 @@
+version: 0
+shell: bash
+
+aliases:
+  ll: ls -alh
+
+packages:
+  - name: jq
+    from: { debian-like: apt, suse-like: zypper, rhel-like: dnf }
+    aliases:
+      j: jq
+
+files:
+  - src: templates/gitconfig.j2
+    dest: ~/.gitconfig

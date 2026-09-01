@@ -3,6 +3,34 @@
 Dates are release dates. Versions before 0.2.0 are omitted: they predate this
 file and nothing depended on them.
 
+## 0.4.2 — 2026-09-01
+
+Found by running the smoke test across twelve distros instead of two. Fedora,
+Rocky, Alma, Debian 12/13 and Ubuntu 22.04 all worked first time; these are
+what did not.
+
+**`Distro::Opensuse` was unreachable on every real openSUSE machine.** No
+shipping openSUSE reports `ID=opensuse` — Tumbleweed is `opensuse-tumbleweed`
+and Leap is `opensuse-leap` — so an exact match on the ID left the variant
+dead, and `only: opensuse` and `match: { distro: opensuse }` were silently
+never true. The family arm kept working via `ID_LIKE`, which is why it hid.
+
+**`bedouin facts` needed the config to resolve.** A config with a package that
+has no arm for this machine took `facts` down with it, on exactly the
+unsupported box where it is the first thing you would reach for. It now runs
+on the loaded document and the probe alone, as `env` already did.
+
+**One value had two spellings.** `str_enum!` derived `Serialize` with
+`rename_all`, which renames the *variant*, so `ArchLinux` went out as
+`arch_linux` while the arm a config writes is `arch`. The JSON is what any UI
+consumes, so the two must agree; serialization now goes through `as_str`,
+making the divergence unrepresentable rather than merely fixed.
+
+**dnf gained tests.** It had install, remove and `needs_root` recipes and no
+test of any kind — unit or container. Fedora is now in the CI smoke matrix,
+and the rhel-like family is covered at the fake-host layer including Fedora's
+missing `ID_LIKE` and the Rocky/Alma derivatives.
+
 ## 0.4.1 — 2026-09-01
 
 **A failed state write no longer discards the apply report.** `apply` flushed

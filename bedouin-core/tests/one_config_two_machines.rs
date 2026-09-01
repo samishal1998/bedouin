@@ -410,3 +410,88 @@ fn an_interrupted_item_re_diffs_as_needing_work() {
         );
     }
 }
+
+/// The rhel-like family. `Manager::Dnf` has install, remove and needs_root
+/// recipes and is reachable through `rhel-like`, but nothing anywhere
+/// exercised it — not a unit test, not a smoke test — so a regression in the
+/// dnf arm would have been invisible at every layer.
+mod rhel_like {
+    use super::*;
+    use bedouin_core::facts::{Distro, DistroLike, Manager};
+
+    fn fedora(os_release: &str) -> FakeHost {
+        FakeHost::new()
+            .with_env("HOME", "/home/t")
+            .with_env("PATH", "/usr/bin:/bin")
+            .with_command("id -u", FakeRun::ok("0"))
+            .with_file("/etc/os-release", os_release)
+            .with_binary("/usr/bin/dnf")
+            .with_file(
+                "/cfg/bedouin.yaml",
+                "version: 0\nshell: bash\npackages:\n  \
+                 - { name: jq, from: { debian-like: apt, suse-like: zypper, rhel-like: dnf } }\n",
+            )
+    }
+
+    fn plan_with(os_release: &str) -> run::Outcome {
+        run::plan_for(
+            &fedora(os_release),
+            Some(Path::new("/cfg/bedouin.yaml")),
+            Path::new("/cfg"),
+            Os::Linux,
+            Arch::X86_64,
+        )
+        .unwrap_or_else(|e| panic!("plan failed: {e}"))
+    }
+
+    #[test]
+    fn fedora_has_no_id_like_and_still_resolves_to_rhel() {
+        // Fedora's /etc/os-release genuinely has no ID_LIKE field, so this
+        // leans entirely on the built-in fallback table. Get it wrong and the
+        // config selects no manager at all.
+        let o = plan_with("ID=fedora\nVERSION_ID=41\n");
+        assert_eq!(o.facts.distro, Distro::Fedora);
+        assert_eq!(o.facts.distro_like, DistroLike::Rhel);
+        let jq = o.config.packages.iter().find(|p| p.name == "jq").unwrap();
+        assert_eq!(jq.from, vec![Manager::Dnf], "rhel-like must pick dnf");
+    }
+
+    #[test]
+    fn a_rhel_derivative_is_carried_by_id_like_alone() {
+        // Rocky and Alma report ID=rocky / ID=almalinux, which bedouin does
+        // not know — but their ID_LIKE names rhel, and that is authoritative.
+        // The distro stays Other; the FAMILY is what picks the manager.
+        for id in ["rocky", "almalinux"] {
+            let o = plan_with(&format!(
+                "ID={id}\nID_LIKE=\"rhel centos fedora\"\nVERSION_ID=9\n"
+            ));
+            assert_eq!(o.facts.distro, Distro::Other, "{id}");
+            assert_eq!(o.facts.distro_like, DistroLike::Rhel, "{id}");
+            let jq = o.config.packages.iter().find(|p| p.name == "jq").unwrap();
+            assert_eq!(jq.from, vec![Manager::Dnf], "{id} must still pick dnf");
+        }
+    }
+
+    #[test]
+    fn the_dnf_commands_are_what_dnf_expects() {
+        use bedouin_core::recipe;
+        let install = recipe::install(Manager::Dnf, "jq", None);
+        assert_eq!(install.argv, ["dnf", "install", "-y", "jq"]);
+        assert!(install.root, "dnf owns /usr, so it needs root");
+
+        // dnf's exact-version spelling is name-version, not name=version.
+        let pinned = recipe::install(Manager::Dnf, "jq", Some("1.7"));
+        assert_eq!(pinned.argv, ["dnf", "install", "-y", "jq-1.7"]);
+
+        assert_eq!(
+            recipe::remove(Manager::Dnf, "jq").argv,
+            ["dnf", "remove", "-y", "jq"]
+        );
+
+        // Unlike apt, zypper and brew, dnf has no refresh step: it fetches
+        // metadata on demand. Asserted so the asymmetry is deliberate rather
+        // than something that quietly grew.
+        assert!(recipe::refresh(Manager::Dnf).is_none());
+        assert!(recipe::refresh(Manager::Apt).is_some());
+    }
+}

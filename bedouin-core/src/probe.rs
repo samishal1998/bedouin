@@ -146,6 +146,17 @@ pub fn facts_for(
             .unwrap_or_default();
         let kv = os_release(&text);
         let id = kv.get("ID").map(String::as_str).unwrap_or("");
+        // No shipping openSUSE reports `ID=opensuse`: Tumbleweed is
+        // `opensuse-tumbleweed` and Leap is `opensuse-leap`. Matching the ID
+        // exactly left `Distro::Opensuse` unreachable on every real openSUSE
+        // machine, so `only: opensuse` and `match: { distro: opensuse }` were
+        // silently never true. The family arm still worked, via ID_LIKE, which
+        // is why this hid for so long.
+        let id = if id.starts_with("opensuse") {
+            "opensuse"
+        } else {
+            id
+        };
         let distro = Distro::parse(id).unwrap_or(Distro::Other);
         // ID_LIKE is authoritative where present; otherwise infer, so the arm
         // lattice and the resolver cannot disagree about what `ubuntu` implies.
@@ -250,6 +261,41 @@ mod tests {
         assert_eq!(kv["ID"], "ubuntu");
         assert_eq!(kv["VERSION_ID"], "24.04");
         assert_eq!(kv["PRETTY"], "a=b");
+    }
+
+    #[test]
+    fn every_real_opensuse_id_reaches_the_opensuse_arm() {
+        // Verified against the actual images: Tumbleweed reports
+        // ID="opensuse-tumbleweed" and Leap ID="opensuse-leap". Neither is the
+        // bare "opensuse" the enum spells, so before this both landed in
+        // `Distro::Other` and `only: opensuse` could never be true on any
+        // openSUSE machine that exists.
+        for (id, like) in [
+            ("opensuse-tumbleweed", "opensuse suse"),
+            ("opensuse-leap", "suse opensuse"),
+            ("opensuse", "suse"),
+        ] {
+            let h = base().with_file(
+                "/etc/os-release",
+                &format!("ID=\"{id}\"\nID_LIKE=\"{like}\"\nVERSION_ID=\"15.6\"\n"),
+            );
+            let f = facts(&h, None).unwrap();
+            assert_eq!(f.distro, Distro::Opensuse, "for ID={id}");
+            assert_eq!(f.distro_like, DistroLike::Suse, "for ID={id}");
+        }
+    }
+
+    #[test]
+    fn a_distro_merely_starting_with_a_known_name_is_not_that_distro() {
+        // The openSUSE rule is a prefix match, so guard the obvious way it
+        // could overreach: `ubuntu-derivative` is not Ubuntu.
+        let h = base().with_file(
+            "/etc/os-release",
+            "ID=ubuntustudio\nID_LIKE=ubuntu debian\n",
+        );
+        let f = facts(&h, None).unwrap();
+        assert_eq!(f.distro, Distro::Other);
+        assert_eq!(f.distro_like, DistroLike::Debian, "the family still lands");
     }
 
     #[test]

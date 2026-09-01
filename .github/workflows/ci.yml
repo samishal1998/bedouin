@@ -36,6 +36,12 @@ jobs:
           - image: opensuse/tumbleweed
             cfg: tests/docker/suse
             script: tests/docker/suse/smoke.sh
+          # dnf had recipes and no test of any kind until a cross-distro run
+          # found it. Fedora also reports no ID_LIKE, so `rhel-like` rests
+          # entirely on the built-in fallback table.
+          - image: fedora:41
+            cfg: tests/docker/fedora
+            script: tests/docker/fedora/smoke.sh
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

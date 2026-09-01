@@ -12,9 +12,31 @@ use std::path::PathBuf;
 
 macro_rules! str_enum {
     ($name:ident { $($variant:ident => $text:literal),+ $(,)? }) => {
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-        #[serde(rename_all = "snake_case")]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
         pub enum $name { $($variant),+ }
+
+        // Serialized through `as_str`, not a derive. `rename_all` renames the
+        // VARIANT, so `ArchLinux` went out as `arch_linux` while the arm the
+        // config writes -- and `parse` reads -- is `arch`. Two spellings of one
+        // value, with the JSON one being what any UI consumes. Going through
+        // `as_str`/`parse` makes the divergence unrepresentable rather than
+        // merely fixed.
+        impl serde::Serialize for $name {
+            fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
+                s.serialize_str(self.as_str())
+            }
+        }
+
+        impl<'de> serde::Deserialize<'de> for $name {
+            fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+                let s = <String as serde::Deserialize>::deserialize(d)?;
+                Self::parse(&s).ok_or_else(|| {
+                    serde::de::Error::custom(format!(
+                        "unknown {}: `{}`", stringify!($name), s
+                    ))
+                })
+            }
+        }
 
         impl $name {
             pub fn as_str(self) -> &'static str {
@@ -206,6 +228,44 @@ pub fn distro_like_of(distro: Distro) -> DistroLike {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn json_and_as_str_are_the_same_spelling() {
+        // `ArchLinux` used to serialize as `arch_linux` while its arm name is
+        // `arch`, so `bedouin facts` and the config disagreed about one value.
+        // Asserted across every variant of every enum so a new one cannot
+        // quietly reintroduce it.
+        macro_rules! same {
+            ($ty:ty, $label:literal) => {
+                for v in <$ty>::ALL {
+                    let json = serde_json::to_string(v).expect("serializes");
+                    assert_eq!(
+                        json.trim_matches('"'),
+                        v.as_str(),
+                        "{} serialises differently from as_str",
+                        $label
+                    );
+                    let back: $ty = serde_json::from_str(&json).expect("round-trips");
+                    assert_eq!(back, *v);
+                }
+            };
+        }
+        same!(Os, "Os");
+        same!(Distro, "Distro");
+        same!(DistroLike, "DistroLike");
+        same!(Arch, "Arch");
+        same!(Shell, "Shell");
+        same!(Privilege, "Privilege");
+        same!(Manager, "Manager");
+    }
+
+    #[test]
+    fn an_unknown_value_names_itself_in_the_error() {
+        let e = serde_json::from_str::<Distro>("\"plan9\"")
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("Distro") && e.contains("plan9"), "{e}");
+    }
 
     #[test]
     fn enums_round_trip_through_their_text() {
