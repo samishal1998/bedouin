@@ -1260,3 +1260,65 @@ fn a_state_write_failure_keeps_the_report_it_has_earned() {
         "steps after the failure must be named"
     );
 }
+
+#[test]
+fn every_step_is_opened_and_closed_exactly_once() {
+    // The contract every UI depends on. Without StepEnd, a step that
+    // succeeded, one that failed and one still running are the same silence.
+    let h = fresh();
+    let o = plan_on(&h);
+    let total = o.plan.changes().count();
+    let mut events = vec![];
+    apply::apply(
+        &o.plan,
+        &o.config,
+        &o.facts,
+        o.state,
+        &h,
+        &Default::default(),
+        &mut |l: Line| match l {
+            Line::Step { index, total, id } => events.push((true, index, total, id)),
+            Line::StepEnd { id, ok } => events.push((false, 0, usize::from(ok), id)),
+            _ => {}
+        },
+    )
+    .expect("apply");
+
+    let starts: Vec<_> = events.iter().filter(|e| e.0).collect();
+    let ends: Vec<_> = events.iter().filter(|e| !e.0).collect();
+    assert_eq!(starts.len(), total, "one Step per change");
+    assert_eq!(ends.len(), total, "one StepEnd per change");
+    // Strictly alternating: a step closes before the next opens.
+    for (i, w) in events.chunks(2).enumerate() {
+        assert!(w[0].0 && !w[1].0, "event {i} is not a Step/StepEnd pair");
+        assert_eq!(w[0].3, w[1].3, "pair {i} names two different steps");
+        assert_eq!(w[0].1, i + 1, "index is 1-based and in order");
+        assert_eq!(w[0].2, total, "total is the change count");
+        assert_eq!(w[1].2, 1, "every step here succeeds");
+    }
+}
+
+#[test]
+fn a_failing_step_closes_with_ok_false() {
+    let h = fresh().with_command("sudo -n apt-get install -y jq", FakeRun::fails(100, "boom"));
+    let o = plan_on(&h);
+    let mut ends = vec![];
+    let report = apply::apply(
+        &o.plan,
+        &o.config,
+        &o.facts,
+        o.state,
+        &h,
+        &Default::default(),
+        &mut |l: Line| {
+            if let Line::StepEnd { id, ok } = l {
+                ends.push((id, ok));
+            }
+        },
+    )
+    .expect("apply returns a report");
+    assert!(report.failure.is_some());
+    let (id, ok) = ends.last().expect("the failing step still closed");
+    assert_eq!(id, "package/jq");
+    assert!(!ok, "a failed step must close with ok=false, not silence");
+}

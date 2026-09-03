@@ -19,6 +19,7 @@ use crate::host::Host;
 use crate::loader::normalize;
 use crate::schema::{Config, ConfigError, Result};
 use crate::state::{ItemKind, State};
+use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
@@ -29,7 +30,8 @@ use std::path::PathBuf;
 /// was already there. Encoding the intent here is what keeps the plan a
 /// faithful prediction -- otherwise the executor re-derives the diff and the
 /// two can disagree.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Action {
     Create,
     /// Something unmanaged already sits at this path. Back it up, then write.
@@ -69,7 +71,8 @@ impl Action {
 ///
 /// The plan is self-contained: the executor reads this and nothing else, so it
 /// cannot reach a different conclusion than the plan the user reviewed.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Payload {
     Manager(Manager),
     Language {
@@ -142,7 +145,8 @@ pub enum Payload {
     None,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub struct Item {
     pub id: String,
     pub kind: ItemKind,
@@ -156,7 +160,7 @@ pub struct Item {
     pub payload: Payload,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Plan {
     pub items: Vec<Item>,
     pub pruned: Vec<String>,
@@ -280,7 +284,7 @@ impl Plan {
     }
 }
 
-fn kind_label(k: ItemKind) -> &'static str {
+pub fn kind_label(k: ItemKind) -> &'static str {
     match k {
         ItemKind::Manager => "manager",
         ItemKind::Dir => "dir",

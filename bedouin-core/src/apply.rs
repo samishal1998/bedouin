@@ -27,17 +27,18 @@ use crate::schema::{Config, ConfigError, Result};
 use crate::state::{self, ItemKind, Owner, State, StateItem, Status};
 use crate::value::Tmpl;
 use crate::writers;
+use serde::Serialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Failure {
     pub id: String,
     pub message: String,
     pub output_tail: Vec<String>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct Report {
     pub completed: Vec<String>,
     /// Steps `--skip` held back. Named in the report: a run that quietly did
@@ -708,7 +709,7 @@ impl Executor<'_> {
                         }
                         Line::Err(s) => stderr_tail.push(s),
                         // A command cannot emit one; only `apply` does.
-                        Line::Section(_) => {}
+                        Line::Step { .. } | Line::StepEnd { .. } => {}
                     })
                     .map_err(|e| (e.to_string(), Vec::new()))?;
                 if !status.ok() {
@@ -846,12 +847,11 @@ pub fn apply(
     for (i, item) in changes.iter().enumerate() {
         // A heading per step. Running this by eye, the old output was one
         // undifferentiated wall of package-manager chatter.
-        (ex.out)(Line::Section(format!(
-            "[{}/{}] {}",
-            i + 1,
-            changes.len(),
-            item.id
-        )));
+        (ex.out)(Line::Step {
+            index: i + 1,
+            total: changes.len(),
+            id: item.id.clone(),
+        });
         // Intent first: if the run dies here, the record says so.
         if item.action != Action::Remove {
             // Flip the status on whatever is already recorded. Replacing the
@@ -902,6 +902,10 @@ pub fn apply(
                 // record survives -- saying otherwise would send the reader
                 // looking for work that is already done.
                 report.completed.push(item.id.clone());
+                (ex.out)(Line::StepEnd {
+                    id: item.id.clone(),
+                    ok: true,
+                });
                 if let Err(e) = ex.flush() {
                     report.failure = Some(Failure {
                         id: item.id.clone(),
@@ -917,6 +921,10 @@ pub fn apply(
                 // story, and the intent flush above already recorded that this
                 // item was in progress.
                 let _ = ex.flush();
+                (ex.out)(Line::StepEnd {
+                    id: item.id.clone(),
+                    ok: false,
+                });
                 report.failure = Some(Failure {
                     id: item.id.clone(),
                     message,

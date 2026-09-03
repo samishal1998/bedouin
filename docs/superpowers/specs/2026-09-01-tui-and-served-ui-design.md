@@ -1,6 +1,7 @@
 # A TUI, and the surface a web UI and Tauri will reuse
 
-Status: design approved, not yet implemented.
+Status: implemented in 0.5.0. Two sections diverged from the design; both are
+corrected below and marked.
 Supersedes nothing. Extends `2026-08-30-bedouin-m0-m1-design.md` §13 (M3).
 
 ## 1. What changed since M0/M1
@@ -67,7 +68,17 @@ is needed avoids committing to a stable wire format before there is a consumer
 to keep stable for. When the web UI lands, the plan JSON gets the same
 treatment `Artifact` has — a version field and a compatibility check.
 
-## 4. `Host: Send`, and deliberately not `Sync`
+## 4. `Host: Send` — NOT DONE, and not needed
+
+*Corrected after implementation.* The reasoning below was right about `Sync`
+and wrong about `Send`: it justified `Send` by "the worker thread the TUI runs
+apply on", and §6 no longer has a worker thread. Nothing in the shipped TUI
+crosses a thread boundary, so the bound was added and then reverted. It is a
+one-line change whenever the web UI needs it.
+
+The `Sync` analysis stands as written and still applies.
+
+## 4a. The original reasoning
 
 An early reading of this work claimed `Send + Sync` was a one-line change. It
 is not. `FakeHost` holds three `RefCell` fields (host.rs:421-428), and
@@ -116,7 +127,25 @@ The emission contract, which is what every future UI depends on: exactly one
 `Step` before each step, exactly one `StepEnd` after it, `ok` false when the
 step failed. A test asserts the pairing and ordering over `FakeHost`.
 
-## 6. The TUI
+## 6. The TUI — SIMPLIFIED
+
+*Corrected after implementation.* Two changes, both smaller than designed.
+
+**Applying suspends the terminal instead of rendering progress.** The design
+had a worker thread streaming `Line` events into a widget, plus a dance of
+leaving and re-entering the alternate screen so sudo could prompt. Leaving the
+alternate screen for the *whole* apply gets sudo right for the same reason,
+and then the run is literally `bedouin apply` — same function, same renderer,
+same colours — so the widget, the thread, the channel and the `Send` bound all
+stopped being needed. Verified end to end in a container: draw, `a`, `y`,
+suspend, real apt install, back to the plan, "No changes."
+
+**One view, not four.** Plan only. Doctor and Env are the same read model with
+different fields; they would not have taught us anything about whether the
+surface is right, which is what a first consumer is for. They are an
+afternoon each if wanted.
+
+## 6a. The original four-view design
 
 `bedouin tui`, behind a cargo feature:
 

@@ -111,6 +111,7 @@ wrote them in.
 |---|---|
 | `bedouin init` | write a starter config |
 | `bedouin plan` | show what would change (exit 2 = changes pending) |
+| `bedouin tui` | the plan on screen, `a` to apply it |
 | `bedouin apply` | make it so |
 | `bedouin apply --skip jq` | ...without one step that this machine cannot do yet |
 | `bedouin doctor` | report managed content edited by hand (exit 2 = drift) |
@@ -186,7 +187,7 @@ departs from the original plan, and why.
 
 ## Status
 
-Everything here works and is tested on Ubuntu, SUSE and macOS: 229 tests, plus
+Everything here works and is tested on Ubuntu, SUSE, Fedora and macOS: 243 tests, plus
 a real `apply` against real package managers inside containers on every push.
 [CHANGELOG.md](CHANGELOG.md) has what landed when.
 The Tauri companion app is the one thing not built yet — the bootstrap binary

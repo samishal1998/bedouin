@@ -16,9 +16,11 @@ use crate::host::Host;
 use crate::schema::{Config, ConfigError, Result};
 use crate::state::{ItemKind, Owner, State};
 use crate::writers;
+use serde::Serialize;
 use std::path::Path;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Drift {
     /// Managed content was changed by hand. The next apply would overwrite it.
     Edited { id: String, file: String },

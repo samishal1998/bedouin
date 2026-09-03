@@ -3,6 +3,28 @@
 Dates are release dates. Versions before 0.2.0 are omitted: they predate this
 file and nothing depended on them.
 
+## 0.5.0 — 2026-09-03
+
+**`bedouin tui`.** The plan on screen, `a` to apply it. Applying drops out of
+the alternate screen and runs the ordinary apply — same output, same colours —
+which is also what lets sudo prompt at all: `sudo -v` inherits stdin, and
+inside a raw-mode screen that prompt is invisible and the run just hangs.
+
+Behind a default-on cargo feature, so `--no-default-features` still builds the
+minimal binary. Costs about 90 KB gzipped (1.99 MB against 1.90).
+
+**`Line::Section` became `Line::Step` and `Line::StepEnd`.** *Breaking for
+library consumers.* The step index used to be baked into a formatted string, so
+a progress display had to parse `[3/47]` back out of it — and nothing at all was
+emitted when a step ended, which made a step that succeeded, one that failed and
+one still running the same silence. There is now exactly one `Step` before each
+step and one `StepEnd` after it, with `ok` false when it failed.
+
+**The plan is serializable.** `Plan`, `Item`, `Action`, `Payload`,
+`apply::{Report, Failure}` and `doctor::{Report, Drift}` derive `Serialize`,
+which is what a UI needs and what `Facts`, `Config`, `State` and `Artifact`
+already had.
+
 ## 0.4.2 — 2026-09-01
 
 Found by running the smoke test across twelve distros instead of two. Fedora,

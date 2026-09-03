@@ -1,5 +1,8 @@
 //! The only thing that runs on a fresh machine.
 
+#[cfg(feature = "tui")]
+mod tui;
+
 use bedouin_core::host::OsHost;
 use bedouin_core::run;
 use clap::{Parser, Subcommand};
@@ -150,6 +153,9 @@ enum Command {
         #[arg(long, value_name = "STEP", value_delimiter = ',')]
         skip: Vec<String>,
     },
+    /// Show the plan on screen, with a key to apply it.
+    #[cfg(feature = "tui")]
+    Tui,
 }
 
 fn run_apply(
@@ -207,7 +213,14 @@ fn print_line(line: bedouin_core::host::Line) {
     use bedouin_core::host::Line;
     use bedouin_core::style;
     match line {
-        Line::Section(s) => println!("\n{} {}", style::blue("::"), style::bold(&s)),
+        Line::Step { index, total, id } => println!(
+            "\n{} {}",
+            style::blue("::"),
+            style::bold(&format!("[{index}/{total}] {id}"))
+        ),
+        // The CLI already shows failure in the report; a tick per step would
+        // double every line for no gain.
+        Line::StepEnd { .. } => {}
         Line::Out(s) => println!("   {}", style::dim(&s)),
         Line::Err(s) => eprintln!("   {}", style::red(&s)),
     }
@@ -616,6 +629,12 @@ fn main() -> ExitCode {
         return cmd_facts(&host, cli.config.as_deref(), &cwd);
     }
 
+    // `tui` plans for itself, and re-plans after each apply.
+    #[cfg(feature = "tui")]
+    if matches!(cli.command, Command::Tui) {
+        return tui::run(&host, cli.config.as_deref(), &cwd, cli.verbose);
+    }
+
     // `apply -f` takes facts AND config from the artifact, so like `env` it
     // must not need the live config to resolve first. Planning here defeated
     // the frozen environment in precisely the case it exists for: applying a
@@ -849,6 +868,8 @@ fn main() -> ExitCode {
         Command::Init | Command::Env { .. } | Command::Facts => {
             unreachable!("handled before the config is resolved")
         }
+        #[cfg(feature = "tui")]
+        Command::Tui => unreachable!("handled above"),
 
         Command::Reconcile { watch, interval } => {
             let mut first = Some(outcome);

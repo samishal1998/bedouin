@@ -5,6 +5,7 @@
 //! nothing installed, a command that exits nonzero, one that times out, and one
 //! that prints garbage, none of which can be arranged by hand repeatedly.
 
+use serde::Serialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -58,19 +59,32 @@ impl ExitStatus {
 /// A line of a running step's output. Streamed rather than captured: a
 /// twenty-minute cargo build that prints nothing is indistinguishable from a
 /// hang.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum Line {
     Out(String),
     Err(String),
-    /// A step boundary. Emitted by `apply`, formatted by the caller -- how a
-    /// heading looks is the CLI's business, and a `FakeHost` run wants none.
-    Section(String),
+    /// A step is starting. Emitted by `apply`, formatted by the caller -- how
+    /// a heading looks is the CLI's business, and a `FakeHost` run wants none.
+    /// Structured rather than a rendered string so a progress bar does not
+    /// have to parse `[3/47]` back out of one.
+    Step {
+        index: usize,
+        total: usize,
+        id: String,
+    },
+    /// A step finished. Without this, a step that succeeded, one that failed
+    /// and one still running are all the same silence to a watching UI.
+    StepEnd {
+        id: String,
+        ok: bool,
+    },
 }
 
 impl Line {
     pub fn text(&self) -> &str {
         match self {
-            Self::Out(s) | Self::Err(s) | Self::Section(s) => s,
+            Self::Out(s) | Self::Err(s) => s,
+            Self::Step { id, .. } | Self::StepEnd { id, .. } => id,
         }
     }
 }
