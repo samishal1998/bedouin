@@ -3,6 +3,14 @@
 Dates are release dates. Versions before 0.2.0 are omitted: they predate this
 file and nothing depended on them.
 
+## 0.12.1 — 2026-09-04
+
+**Plan warnings are a banner again, not footer text.** 0.12.0 moved them into
+the footer at 0.74rem, which is the wrong size and the wrong end of the page
+for "this package was skipped because the machine has no brew". They sit
+directly under the band now: a warning is a reason not to trust the verdict
+above it, and it belongs next to what it undermines.
+
 ## 0.12.0 — 2026-09-04
 
 **The web UI has a face of its own.** Madder is a dye before it is a hex
@@ -26,7 +34,7 @@ the bare warp, because a finished camp is a pattern too, not an empty box.
 It is `aria-hidden` and out of the tab order on purpose: it is a pointer
 shortcut to the list below, which carries the same items in the same order
 with real names, and sixty tab stops in front of the content would be a worse
-page for the people that claims to help.
+page for the people it claims to help.
 
 **Two fixes behind the paint.** `action` in `/api/state` was Rust's `Debug`
 output — `reinstall { from_method: "apt", to_method: "cargo" }` — where the

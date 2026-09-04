@@ -49,6 +49,8 @@ const SECTIONS = [
     <div class="band" id="band" aria-hidden="true"></div>
 
     <div class="wrap">
+      <div id="warnings" role="status"></div>
+
       <nav id="tabs" role="tablist">
         {
           SECTIONS.map((id) => (
@@ -282,10 +284,12 @@ const SECTIONS = [
           `${esc(m.user)}@${esc(m.hostname)} · ${esc(m.distro)} ${esc(m.arch)}` +
           `<br>${esc(snap.config_path)}`;
         $('foot').innerHTML =
-          `This view reads. <code>bedouin apply</code> writes. · bedouin-ui ${esc(snap.version)}` +
-          (snap.plan.warnings.length
-            ? `<div class="warn">${snap.plan.warnings.map(esc).join('<br>')}</div>`
-            : '');
+          `This view reads. <code>bedouin apply</code> writes. · bedouin-ui ${esc(snap.version)}`;
+        // Directly under the verdict: a warning is a reason not to trust the
+        // number above it, and it earns that place rather than the footer.
+        $('warnings').innerHTML = snap.plan.warnings.length
+          ? `<div class="warn">${snap.plan.warnings.map(esc).join('<br>')}</div>`
+          : '';
         renderVerdict();
         renderBand(snap.plan.items);
         render();

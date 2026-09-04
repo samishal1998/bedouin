@@ -484,7 +484,7 @@ dd pre {
 }
 
 .warn {
-  margin-top: 1rem;
+  margin-top: 1.1rem;
   padding: 0.6rem 0.8rem;
   border-left: 2px solid var(--ochre);
   background: color-mix(in srgb, var(--ochre) 11%, transparent);
