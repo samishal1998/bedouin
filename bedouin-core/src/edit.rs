@@ -275,6 +275,65 @@ fn scalar_is(v: &serde_yaml_ng::Value, name: &str) -> bool {
     }
 }
 
+/// The value of `key:` inside one entry, exactly as the file writes it.
+///
+/// The seed for an edit form, and it has to be the raw text rather than the
+/// resolved value. `from: { macos: brew, default: apt }` RESOLVES to `apt` on
+/// Linux; a form seeded from that shows `apt`, and saving it writes `apt` over
+/// the mapping and deletes the macOS arm. The file still parses, the edit's
+/// own checks pass, and the breakage is invisible on the machine that caused
+/// it.
+///
+/// `None` when the entry is inline (`- { … }`) or the value opens a nested
+/// block: neither is a single scalar a one-line form can round-trip, and
+/// guessing would flatten it.
+pub fn raw_field(text: &str, section: Section, name: &str, key: &str) -> Option<String> {
+    let lines: Vec<&str> = text.lines().collect();
+    let id = section.id_field();
+    let start = lines
+        .iter()
+        .position(|l| l.trim_start().starts_with(section.key()))?;
+    let mut entry = None;
+    for (i, l) in lines.iter().enumerate().skip(start + 1) {
+        let t = l.trim_start();
+        // Out of the section entirely.
+        if !l.starts_with(' ') && !t.is_empty() && !t.starts_with('#') {
+            break;
+        }
+        if t.starts_with("- ") || t.starts_with('-') {
+            let needle = format!("{id}: {name}");
+            let is_ours = t.contains(&needle) && {
+                // `jq` must not match `jq-extra`.
+                let after = t.split(&needle).nth(1).unwrap_or("");
+                after.is_empty() || after.starts_with([',', ' ', '}', '\n'])
+            };
+            entry = if is_ours { Some(i) } else { None };
+            // An inline entry holds everything on one line; a form cannot
+            // round-trip it, and the commit says so when you try.
+            if is_ours && t.starts_with("- {") {
+                return None;
+            }
+            if is_ours && t.starts_with(&format!("- {id}:")) {
+                continue;
+            }
+        }
+        let Some(e) = entry else { continue };
+        if i == e {
+            continue;
+        }
+        if let Some(v) = t.strip_prefix(&format!("{key}:")) {
+            let v = v.trim();
+            // A block value (`key:` then indented lines) is not a scalar.
+            return if v.is_empty() {
+                None
+            } else {
+                Some(v.to_string())
+            };
+        }
+    }
+    None
+}
+
 /// How a value has to be written to survive a YAML round trip.
 ///
 /// Left bare when it is an unambiguous plain scalar, quoted otherwise --

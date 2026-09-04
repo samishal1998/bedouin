@@ -229,7 +229,13 @@ impl App {
                     .map(|k| Field {
                         label: (*k).into(),
                         key: Some((*k).to_string()),
-                        current: raw_field(&text, "packages:", &p.name, k).unwrap_or_default(),
+                        current: bedouin_core::edit::raw_field(
+                            &text,
+                            bedouin_core::edit::Section::Packages,
+                            &p.name,
+                            k,
+                        )
+                        .unwrap_or_default(),
                     })
                     .collect(),
                 plan_id: Some(format!("package/{}", p.name)),
@@ -384,7 +390,13 @@ impl App {
                     .map(|k| Field {
                         label: (*k).into(),
                         key: Some((*k).to_string()),
-                        current: raw_field(&text, "languages:", &l.name, k).unwrap_or_default(),
+                        current: bedouin_core::edit::raw_field(
+                            &text,
+                            bedouin_core::edit::Section::Languages,
+                            &l.name,
+                            k,
+                        )
+                        .unwrap_or_default(),
                     })
                     .collect(),
                 plan_id: Some(format!("language/{}", l.name)),
@@ -843,56 +855,6 @@ fn read(host: &dyn Host, p: &Path) -> Result<Option<String>, String> {
 /// Everything `edit::set_field` can set on a package, in the order they read.
 const PKG_KEYS: &[&str] = &["from", "version", "only", "needs", "path", "script"];
 const LANG_KEYS: &[&str] = &["installer", "version", "only"];
-
-/// The value of `key:` inside `name`'s entry, exactly as written.
-///
-/// `None` when the entry is inline (`- { … }`) or the value opens a nested
-/// block: neither is a single scalar a one-line form can round-trip, and
-/// guessing would flatten it.
-fn raw_field(text: &str, section: &str, name: &str, key: &str) -> Option<String> {
-    let lines: Vec<&str> = text.lines().collect();
-    let start = lines
-        .iter()
-        .position(|l| l.trim_start().starts_with(section))?;
-    let mut entry = None;
-    for (i, l) in lines.iter().enumerate().skip(start + 1) {
-        let t = l.trim_start();
-        // Out of the section entirely.
-        if !l.starts_with(' ') && !t.is_empty() && !t.starts_with('#') {
-            break;
-        }
-        if t.starts_with("- ") || t.starts_with('-') {
-            let is_ours = t.contains(&format!("name: {name}")) && {
-                // `jq` must not match `jq-extra`.
-                let after = t.split(&format!("name: {name}")).nth(1).unwrap_or("");
-                after.is_empty() || after.starts_with([',', ' ', '}', '\n'])
-            };
-            entry = if is_ours { Some(i) } else { None };
-            // An inline entry holds everything on one line; a form cannot
-            // round-trip it, and `commit_field` says so when you try.
-            if is_ours && t.starts_with("- {") {
-                return None;
-            }
-            if is_ours && t.starts_with("- name:") {
-                continue;
-            }
-        }
-        let Some(e) = entry else { continue };
-        if i == e {
-            continue;
-        }
-        if let Some(v) = t.strip_prefix(&format!("{key}:")) {
-            let v = v.trim();
-            // A block value (`key:` then indented lines) is not a scalar.
-            return if v.is_empty() {
-                None
-            } else {
-                Some(v.to_string())
-            };
-        }
-    }
-    None
-}
 
 fn payload_details(p: &Payload) -> Vec<(String, String)> {
     use Payload::*;

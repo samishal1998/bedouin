@@ -114,7 +114,7 @@ dependencies = [
 
 [[package]]
 name = "bedouin-cli"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "bedouin-core",
  "clap",
@@ -126,7 +126,7 @@ dependencies = [
 
 [[package]]
 name = "bedouin-core"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "minijinja",
  "serde",
@@ -137,7 +137,7 @@ dependencies = [
 
 [[package]]
 name = "bedouin-ui"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "axum",
  "bedouin-core",

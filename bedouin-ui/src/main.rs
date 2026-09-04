@@ -10,19 +10,25 @@
 //! password to cross an HTTP boundary.
 
 mod api;
+mod mutate;
 
 use axum::extract::State;
 use axum::response::{Html, IntoResponse};
-use axum::routing::get;
+use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 use bedouin_core::host::OsHost;
 use bedouin_core::run;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-struct Ctx {
-    config: Option<PathBuf>,
-    cwd: PathBuf,
+pub struct Ctx {
+    pub config: Option<PathBuf>,
+    pub cwd: PathBuf,
+    /// Whether this server may edit the config: true only on a loopback bind.
+    pub writable: bool,
+    /// One config file, one writer. Taken inside the blocking closure, so the
+    /// guard never crosses an `.await`.
+    pub write: std::sync::Mutex<()>,
 }
 
 #[tokio::main]
@@ -62,14 +68,6 @@ async fn main() -> std::process::ExitCode {
     }
 
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let ctx = Arc::new(Ctx { config, cwd });
-
-    let app = Router::new()
-        .route("/", get(index))
-        .route("/api/state", get(state))
-        .route("/api/plan", get(plan))
-        .route("/api/facts", get(facts))
-        .with_state(ctx);
 
     // Loopback by default: this serves a machine's configuration, and that is
     // not a thing to put on an interface by accident. `--hostname` is how you
@@ -81,13 +79,36 @@ async fn main() -> std::process::ExitCode {
             return std::process::ExitCode::FAILURE;
         }
     };
+
+    // What was bound decides what this server will do, so the router is built
+    // after it. Editing is offered to loopback and to nothing else.
+    let writable = is_loopback(&listener);
+    let ctx = Arc::new(Ctx {
+        config,
+        cwd,
+        writable,
+        write: std::sync::Mutex::new(()),
+    });
+
+    let mut app = Router::new()
+        .route("/", get(index))
+        .route("/api/state", get(state))
+        .route("/api/plan", get(plan))
+        .route("/api/facts", get(facts));
+    if writable {
+        app = app
+            .route("/api/entry", post(mutate::create))
+            .route("/api/entry", patch(mutate::update))
+            .route("/api/entry", axum::routing::delete(mutate::delete));
+    }
+    let app = app.with_state(ctx);
     let bound = listener
         .local_addr()
         .map(|a| a.to_string())
         .unwrap_or_else(|_| format!("{hostname}:{port}"));
 
     println!("bedouin-ui {} — http://{bound}", env!("CARGO_PKG_VERSION"));
-    if !is_loopback(&listener) {
+    if !writable {
         // Said plainly, because it is true and easy to not think about: there
         // is no authentication here. Anyone who can reach this port can read
         // this machine's configuration, its package list, its paths and the
@@ -97,6 +118,10 @@ async fn main() -> std::process::ExitCode {
         println!("  Anyone who can reach {bound} can read this config and this");
         println!("  machine's facts. Bind it to something only you can reach,");
         println!("  or put it behind something that asks who you are.");
+        println!();
+        println!("  Editing is off. It is offered on loopback only, because an");
+        println!("  edit here decides what `bedouin apply` runs. Reach it");
+        println!("  through an ssh tunnel to edit.");
         println!();
     }
     println!("sudo will prompt here, in this terminal, not in the browser.");
@@ -120,8 +145,10 @@ async fn outcome(ctx: Arc<Ctx>) -> Result<run::Outcome, String> {
 
 /// Everything the page draws, in one call. See `api::snapshot`.
 async fn state(State(ctx): State<Arc<Ctx>>) -> impl IntoResponse {
-    let r =
-        tokio::task::spawn_blocking(move || api::snapshot(ctx.config.as_deref(), &ctx.cwd)).await;
+    let r = tokio::task::spawn_blocking(move || {
+        api::snapshot(ctx.config.as_deref(), &ctx.cwd, ctx.writable)
+    })
+    .await;
     match r {
         Ok(Ok(s)) => Json(s).into_response(),
         Ok(Err(e)) => problem(e),

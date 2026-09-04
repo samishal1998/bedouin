@@ -3,6 +3,43 @@
 Dates are release dates. Versions before 0.2.0 are omitted: they predate this
 file and nothing depended on them.
 
+## 0.15.0 — 2026-09-04
+
+**The web UI edits the config.** Add, change and remove entries in any
+section, from the browser. Three things stand in the way of that being a
+mistake, and none is optional.
+
+**Writes exist only on a loopback bind.** `--hostname 0.0.0.0` still serves a
+read-only view — the mutating routes are not registered at all, so they 404
+rather than 403. An edit here decides what `bedouin apply` runs, and offering
+that to a network that never proved who it was is not a thing to do by
+default. Reach it through an ssh tunnel, which presents as loopback anyway.
+
+**A header a form cannot set.** Binding to 127.0.0.1 is not a boundary against
+a browser: any page you visit can POST to it, and a plain `<form>` goes
+cross-origin with no preflight. A drive-by page could add a package with a
+`script:` field and your next apply would run it under sudo. Every write must
+carry `X-Bedouin: 1` — a form cannot set a header, and a `fetch` that sets one
+becomes a preflight this server never answers. Origin is checked too, when the
+browser sends it.
+
+**Forms are seeded from the config's own text.** `/api/state` now ships the
+raw value of every editable key beside the resolved one. This is the whole
+game: `from: { macos: brew, default: apt }` RESOLVES to `apt` on Linux, and a
+form seeded from that would write `apt` over the mapping and delete the macOS
+arm — on a machine where nothing looks wrong afterwards. A key that no
+single-line form can round-trip is left out and shown read-only rather than
+flattened.
+
+Every write goes through `run::write_verified`: back up, write, re-plan, and
+put the original back if the result no longer loads. One lock spans the whole
+read-modify-write, so two tabs cannot read the same text and write over one
+another. The server hands the new snapshot back with the response rather than
+making the page ask again and race the next edit.
+
+The footer stopped claiming "this view reads" — it says which of the two
+things an edit changes, and says so differently when the view is read-only.
+
 ## 0.14.0 — 2026-09-04
 
 **Search.** `/` focuses it. Typing filters every section at once and the tab

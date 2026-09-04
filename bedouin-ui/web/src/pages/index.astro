@@ -84,6 +84,7 @@ const SECTIONS = [
 
     <div class="wrap">
       <div id="warnings" role="status"></div>
+      <div id="note" role="alert"></div>
 
       <nav id="tabs" role="tablist">
         {
@@ -98,6 +99,7 @@ const SECTIONS = [
 
       <main>
         <section class="panel" aria-label="items">
+          <div id="new"></div>
           <ul class="rows" id="rows"></ul>
         </section>
         <section class="panel aside" aria-label="details">
@@ -134,10 +136,22 @@ const SECTIONS = [
         env: ['This config reads no environment variables.', ''],
       };
 
+      // What a new entry needs, in the order it will be written. The first
+      // is the section's identifying field.
+      const NEW = {
+        packages: ['name', 'from', 'version'],
+        languages: ['name', 'installer', 'version'],
+        files: ['src', 'dest', 'mode'],
+        repos: ['url', 'dest'],
+        links: ['src', 'dest'],
+        aliases: ['name', 'value'],
+      };
+
       let snap = null;
       let section = 'plan';
       let selected = 0;
       let query = '';
+      let writable = false;
 
       const $ = (id) => document.getElementById(id);
       const esc = (s) =>
@@ -190,6 +204,13 @@ const SECTIONS = [
 
       // A row's kind is a manager name for a package (apt, cargo) and an item
       // kind for a plan row (dir, rc, path). Both map onto one mark.
+      // Spelled out, because stripping an `s` gets "aliase" and stripping
+      // `e?s` gets "packag".
+      const ONE = {
+        packages: 'package', files: 'file', repos: 'repo', links: 'link',
+        aliases: 'alias', languages: 'language',
+      };
+
       const MARK = {
         package: 'package', file: 'file', repo: 'repo', link: 'link',
         alias: 'alias', language: 'language', manager: 'manager',
@@ -201,7 +222,7 @@ const SECTIONS = [
         if (s === 'env') return 'env';
         if (MARK[r.kind]) return MARK[r.kind];
         // A package's kind is the manager that installs it.
-        return MARK[s === 'plan' ? r.kind : s.replace(/e?s$/, '')] || 'package';
+        return MARK[s === 'plan' ? r.kind : ONE[s]] || 'package';
       }
 
       const icon = (id, cls = '') =>
@@ -258,6 +279,7 @@ const SECTIONS = [
           t.classList.toggle('faded', !!query && !shown.has(items[i].id));
         }
 
+        renderNew();
         const rows = rowsIn(section);
         const ul = $('rows');
         if (!rows.length) {
@@ -287,6 +309,56 @@ const SECTIONS = [
         renderDetails(rows[selected]);
       }
 
+      /// The add affordance, and the form it opens. Only for sections that are
+      /// a list of things you can declare -- plan, doctor and env describe the
+      /// machine, and there is nothing to add to them.
+      function renderNew(open = false) {
+        const el = $('new');
+        if (!writable || !NEW[section]) {
+          el.innerHTML = '';
+          return;
+        }
+        if (!open) {
+          el.innerHTML =
+            `<button class="add-row" id="opennew">${icon('add')}` +
+            `<span>add a ${ONE[section]}</span></button>`;
+          $('opennew').onclick = () => renderNew(true);
+          return;
+        }
+        el.innerHTML =
+          `<form class="newform" id="newform">${
+            NEW[section]
+              .map(
+                (k) =>
+                  `<label><span>${esc(k)}</span>` +
+                  `<input name="${esc(k)}" spellcheck="false" autocomplete="off" /></label>`
+              )
+              .join('')
+          }<div class="newact">` +
+          `<button class="act-btn" type="submit" title="Add">${icon('save')}</button>` +
+          `<button class="act-btn" type="button" id="newno" title="Cancel">${
+            icon('cancel')
+          }</button></div></form>`;
+        $('newform').querySelector('input').focus();
+        $('newno').onclick = () => renderNew(false);
+        $('newform').onsubmit = (e) => {
+          e.preventDefault();
+          const fields = NEW[section]
+            .map((k) => [k, new FormData(e.target).get(k).trim()])
+            .filter(([, v]) => v);
+          if (section === 'aliases') {
+            const named = Object.fromEntries(fields);
+            return send('PATCH', {
+              section: 'aliases',
+              name: named.name || '',
+              key: 'value',
+              value: named.value || '',
+            });
+          }
+          send('POST', { section, fields });
+        };
+      }
+
       function renderDetails(r) {
         if (!r) return;
         const fields = [...(r.fields || [])];
@@ -294,19 +366,102 @@ const SECTIONS = [
         if (r.needs_root) fields.push(['needs root', 'yes']);
         for (const [k, v] of r.arms || []) fields.push([`arm · ${k}`, v]);
 
+        // What this row's own section allows. A plan or doctor row describes
+        // the machine, not the config, so there is nothing here to edit.
+        const raw = new Map((r.raw || []).map(([k, v]) => [k, v]));
+        const canWrite = writable && !!r.section;
+
+        const body = fields
+          .map(([k, v]) => {
+            const editable = canWrite && raw.has(k);
+            const val = String(v).includes('\n')
+              ? `<pre>${esc(v)}</pre>`
+              : esc(v);
+            return `<dt>${esc(k)}</dt><dd${
+              editable ? ` class="can-edit" data-key="${esc(k)}"` : ''
+            }>${val}${editable ? icon('edit', 'act') : ''}</dd>`;
+          })
+          .join('');
+
         $('details').className = '';
         $('details').innerHTML =
           `<div class="head"><span class="sigil ${dye(r.sigil)}">${
             esc(r.sigil.trim() || '·')
           }</span>${icon(markFor(r, section), 'big')}<span class="name">${
             esc(r.name)
-          }</span></div><dl>${
-            fields
-              .map(([k, v]) => `<dt>${esc(k)}</dt><dd>${
-                String(v).includes('\n') ? `<pre>${esc(v)}</pre>` : esc(v)
-              }</dd>`)
-              .join('')
-          }</dl>`;
+          }</span>${
+            canWrite
+              ? `<button class="act-btn danger" id="del" title="Remove ${
+                  esc(r.name)
+                } from the config">${icon('delete')}</button>`
+              : ''
+          }</div><dl>${body}</dl>`;
+
+        if (!canWrite) return;
+        $('del').onclick = () => remove(r);
+        for (const dd of $('details').querySelectorAll('dd.can-edit'))
+          dd.onclick = () => openField(r, dd.dataset.key, raw.get(dd.dataset.key));
+      }
+
+      /// An inline editor seeded with the config's own text -- never the
+      /// resolved value, or saving `{ macos: brew, default: apt }` would write
+      /// `apt` and delete the macOS arm.
+      function openField(r, key, rawValue) {
+        const dd = $('details').querySelector(`dd[data-key="${CSS.escape(key)}"]`);
+        dd.classList.add('editing');
+        dd.innerHTML =
+          `<input class="fld" value="${esc(rawValue)}" spellcheck="false" />` +
+          `<button class="act-btn" data-go="1" title="Save">${icon('save')}</button>` +
+          `<button class="act-btn" data-no="1" title="Cancel">${icon('cancel')}</button>`;
+        const input = dd.querySelector('.fld');
+        input.focus();
+        input.select();
+        const save = () =>
+          send('PATCH', {
+            section: r.section,
+            name: r.name,
+            key: r.section === 'aliases' ? 'value' : key,
+            value: input.value,
+          });
+        dd.querySelector('[data-go]').onclick = save;
+        dd.querySelector('[data-no]').onclick = () => render();
+        input.onkeydown = (e) => {
+          if (e.key === 'Enter') save();
+          if (e.key === 'Escape') render();
+          e.stopPropagation();
+        };
+      }
+
+      function remove(r) {
+        if (!confirm(`Remove ${r.name} from the config?`)) return;
+        send('DELETE', { section: r.section, name: r.name });
+      }
+
+      /// Every write goes through here, so the header that defeats a drive-by
+      /// POST cannot be forgotten at one call site.
+      async function send(method, body) {
+        note('');
+        try {
+          const res = await fetch('/api/entry', {
+            method,
+            headers: { 'content-type': 'application/json', 'X-Bedouin': '1' },
+            body: JSON.stringify(body),
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || res.statusText);
+          // The server hands back the whole snapshot, so the page never has to
+          // ask again and race the next edit.
+          snap = data;
+          renderVerdict();
+          renderBand(snap.plan.items);
+          render();
+        } catch (e) {
+          note(e.message || String(e));
+        }
+      }
+
+      function note(msg) {
+        $('note').innerHTML = msg ? `<div class="warn">${esc(msg)}</div>` : '';
       }
 
       function show(s, i = 0) {
@@ -393,12 +548,16 @@ const SECTIONS = [
           $('details').textContent = 'Nothing to show.';
           return;
         }
+        writable = !!snap.writable;
         const m = snap.machine;
         $('machine').innerHTML =
           `${esc(m.user)}@${esc(m.hostname)} · ${esc(m.distro)} ${esc(m.arch)}` +
           `<br>${esc(snap.config_path)}`;
         $('foot').innerHTML =
-          `This view reads. <code>bedouin apply</code> writes. · bedouin-ui ${esc(snap.version)}`;
+          (writable
+            ? `Edits here change the config. <code>bedouin apply</code> changes the machine.`
+            : `Read-only: not bound to loopback. <code>bedouin apply</code> changes the machine.`) +
+          ` · bedouin-ui ${esc(snap.version)}`;
         // Directly under the verdict: a warning is a reason not to trust the
         // number above it, and it earns that place rather than the footer.
         $('warnings').innerHTML = snap.plan.warnings.length

@@ -605,3 +605,139 @@ footer code {
   font-family: var(--mono);
   color: var(--wool);
 }
+
+/* ---- editing ------------------------------------------------------------ */
+
+.act-btn {
+  appearance: none;
+  border: 0;
+  background: none;
+  padding: 0.15rem;
+  margin: 0;
+  color: var(--dim);
+  cursor: pointer;
+  line-height: 0;
+  border-radius: 3px;
+}
+
+.act-btn:hover {
+  color: var(--wool);
+  background: color-mix(in srgb, var(--madder) 14%, transparent);
+}
+
+.act-btn.danger:hover {
+  color: var(--madder);
+}
+
+.head .act-btn {
+  margin-left: auto;
+}
+
+/* The pencil stays out of the way until the row is under the pointer: every
+   field carrying a visible button turns the pane into a toolbar. */
+dd.can-edit {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  cursor: text;
+}
+
+dd.can-edit .ico.act {
+  opacity: 0;
+  color: var(--dim);
+}
+
+dd.can-edit:hover .ico.act {
+  opacity: 1;
+}
+
+dd.editing {
+  gap: 0.25rem;
+}
+
+.fld {
+  flex: 1;
+  min-width: 0;
+  background: var(--ground);
+  border: 1px solid var(--madder);
+  border-radius: 3px;
+  padding: 0.2rem 0.4rem;
+  font: 0.82rem/1.4 var(--mono);
+  color: var(--wool);
+}
+
+.fld:focus {
+  outline: none;
+}
+
+.add-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  appearance: none;
+  border: 0;
+  border-bottom: 1px solid var(--warp);
+  background: none;
+  padding: 0.55rem 0.9rem;
+  color: var(--dim);
+  font: 0.8rem/1.4 var(--sans);
+  cursor: pointer;
+  text-align: left;
+}
+
+.add-row:hover {
+  color: var(--wool);
+  background: color-mix(in srgb, var(--madder) 6%, transparent);
+}
+
+.newform {
+  display: grid;
+  gap: 0.5rem 0.7rem;
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+  align-items: end;
+  padding: 0.85rem 0.9rem;
+  border-bottom: 1px solid var(--warp);
+  background: color-mix(in srgb, var(--madder) 5%, transparent);
+}
+
+.newform label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
+.newform label span {
+  font-size: 0.64rem;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+.newform input {
+  min-width: 0;
+  background: var(--ground);
+  border: 1px solid var(--warp);
+  border-radius: 3px;
+  padding: 0.25rem 0.45rem;
+  font: 0.82rem/1.4 var(--mono);
+  color: var(--wool);
+}
+
+.newform input:focus {
+  outline: none;
+  border-color: var(--madder);
+}
+
+.newact {
+  display: flex;
+  gap: 0.3rem;
+  align-items: center;
+}
+
+#note .warn {
+  border-left-color: var(--madder);
+  background: color-mix(in srgb, var(--madder) 12%, transparent);
+  margin: 0.75rem 0 0;
+}
