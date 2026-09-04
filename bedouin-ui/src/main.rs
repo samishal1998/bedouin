@@ -191,10 +191,11 @@ mod tests {
 
     #[tokio::test]
     async fn loopback_is_decided_by_the_socket_not_the_spelling() {
-        // `localhost` resolves to ::1, `127.0.0.2` is loopback too, and
-        // neither is spelled `127.0.0.1`. Matching the string would warn on
-        // one and stay silent on the other.
-        for h in ["127.0.0.1", "localhost", "127.0.0.2"] {
+        // `localhost` resolves to ::1, which is loopback and is not spelled
+        // `127.0.0.1`. Matching the string would warn on it. (`127.0.0.2`
+        // would make the same point, but macOS does not alias 127/8 on lo0,
+        // so binding it there fails and the test would be about the OS.)
+        for h in ["127.0.0.1", "localhost"] {
             assert!(is_loopback(&bound(h).await), "{h} is loopback");
         }
     }
