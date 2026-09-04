@@ -108,10 +108,14 @@ fn key(app: &mut App, host: &dyn bedouin_core::host::Host) -> Result<Step, Strin
             match k.code {
                 KeyCode::Esc => app.mode = Mode::Browse,
                 KeyCode::Enter => {
-                    let (field, value) = (form.field.clone(), form.value.clone());
+                    let (field, value) = (form.field().clone(), form.value.clone());
                     app.mode = Mode::Browse;
                     app.commit_field(host, &field, &value)?;
                 }
+                // Between fields. Arrows and tab, not j/k: those are letters
+                // you are trying to type into the value.
+                KeyCode::Down | KeyCode::Tab => form.move_by(1),
+                KeyCode::Up | KeyCode::BackTab => form.move_by(-1),
                 KeyCode::Backspace => {
                     form.value.pop();
                 }
@@ -352,25 +356,82 @@ links:
     }
 
     #[test]
-    fn a_form_opens_on_an_editable_field_and_not_otherwise() {
+    fn a_form_offers_every_field_not_just_one() {
         let mut a = app();
         a.go(Section::Packages);
         a.select(0);
         a.open_form();
-        match &a.mode {
-            Mode::Form(f) => assert_eq!(f.value, "1.7", "seeded with the current value"),
-            _ => panic!("a package version should be editable"),
-        }
-        assert!(screen(&mut a).contains("version"), "the form is drawn");
+        let Mode::Form(f) = &a.mode else {
+            panic!("a package should be editable")
+        };
+        let labels: Vec<&str> = f.fields.iter().map(|x| x.label.as_str()).collect();
+        assert_eq!(
+            labels,
+            ["from", "version", "only", "needs", "path", "script"],
+            "every key edit.rs can set is offered"
+        );
+        // Seeded from what is WRITTEN, not from the resolved value.
+        assert_eq!(f.value, "apt", "opens on the first field with its value");
 
+        // And every field is reachable.
+        let Mode::Form(f) = &mut a.mode else {
+            unreachable!()
+        };
+        f.move_by(1);
+        assert_eq!(f.field().label, "version");
+        assert_eq!(f.value, "\"1.7\"", "reseeded from the config text");
+        f.move_by(-1);
+        assert_eq!(f.field().label, "from", "and it wraps back");
+
+        assert!(screen(&mut a).contains("script"), "all of them are drawn");
+    }
+
+    #[test]
+    fn a_conditional_value_is_offered_as_written_not_as_resolved() {
+        // The hazard this design exists to avoid. `from: { macos: brew,
+        // default: apt }` RESOLVES to `apt` on Linux; seeding the form from
+        // the resolved value and committing would silently delete the macOS
+        // arm. The form seeds from the config text instead.
+        const COND: &str = "version: 0\nshell: bash\npackages:\n  \
+                            - name: jq\n    from: { macos: brew, default: apt }\n";
+        let h = host().with_file("/cfg/bedouin.yaml", COND);
+        let mut a =
+            App::load(&h, Some(Path::new("/cfg/bedouin.yaml")), Path::new("/cfg")).expect("load");
+        a.go(Section::Packages);
+        a.select(0);
+        a.open_form();
+        let Mode::Form(f) = &a.mode else {
+            panic!("no form")
+        };
+        assert_eq!(
+            f.value, "{ macos: brew, default: apt }",
+            "the condition is what you edit, not the arm this machine won"
+        );
+
+        // Committing it back unchanged leaves the config alone.
+        let field = f.field().clone();
+        let value = f.value.clone();
         a.mode = Mode::Browse;
+        a.commit_field(&h, &field, &value).expect("commit");
+        let after = String::from_utf8(
+            bedouin_core::host::Host::read(&h, Path::new("/cfg/bedouin.yaml"))
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(
+            after.contains("{ macos: brew, default: apt }"),
+            "the macOS arm survives:\n{after}"
+        );
+    }
+
+    #[test]
+    fn a_row_with_no_editable_field_opens_nothing() {
+        let mut a = app();
         a.go(Section::Repos);
         a.select(0);
         a.open_form();
-        assert!(
-            matches!(a.mode, Mode::Browse),
-            "a repo has no form field, so nothing opens"
-        );
+        assert!(matches!(a.mode, Mode::Browse), "nothing opens");
         assert!(a.note.is_some(), "and it says why");
     }
 
@@ -407,7 +468,7 @@ links:
         let Mode::Form(f) = &a.mode else {
             panic!("no form")
         };
-        let field = f.field.clone();
+        let field = f.field().clone();
         a.mode = Mode::Browse;
         a.commit_field(&h, &field, "1.8").expect("commit");
 
@@ -450,7 +511,7 @@ links:
         let Mode::Form(f) = &a.mode else {
             panic!("no form")
         };
-        let field = f.field.clone();
+        let field = f.field().clone();
         a.mode = Mode::Browse;
 
         let err = a.commit_field(&h, &field, "1.8").expect_err("must refuse");

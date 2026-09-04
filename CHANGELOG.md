@@ -3,6 +3,25 @@
 Dates are release dates. Versions before 0.2.0 are omitted: they predate this
 file and nothing depended on them.
 
+## 0.8.0 — 2026-09-04
+
+**The form edits every field, not just `version`.** A package offers `from`,
+`version`, `only`, `needs`, `path` and `script`; a language offers
+`installer`, `version` and `only` — every key `edit::set_field` can write.
+`↑`/`↓` moves between them, `enter` commits the one you are on.
+
+**And it edits what is written, not what was resolved.** This is the reason
+the change is not simply "add more fields". `from: { macos: brew, default: apt }`
+*resolves* to `apt` on Linux, so a form seeded from the resolved value would
+have committed `from: apt` and silently deleted the macOS arm — quietly
+breaking the other machine the config exists to serve. Fields are seeded from
+the config text, so the condition is what you edit and what survives. There is
+a test that commits a conditional back unchanged and asserts the macOS arm is
+still there.
+
+An entry written inline (`- { name: jq, from: apt }`) still cannot be
+round-tripped by a one-line form, and still says so and points at `e`.
+
 ## 0.7.0 — 2026-09-04
 
 **The TUI wears the mark's colours.** Madder — `#A82A24`, and the lift at

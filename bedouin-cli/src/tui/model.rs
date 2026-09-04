@@ -77,8 +77,26 @@ pub struct Field {
 
 pub struct Form {
     pub title: String,
-    pub field: Field,
+    /// Every field this item can be edited through, not just the first.
+    pub fields: Vec<Field>,
+    pub idx: usize,
+    /// The edit buffer for the field at `idx`.
     pub value: String,
+}
+
+impl Form {
+    pub fn field(&self) -> &Field {
+        &self.fields[self.idx]
+    }
+
+    /// Moving between fields abandons the buffer for the one being left --
+    /// committing is `enter`, and a half-typed value silently carried into
+    /// the next field would be worse than losing it.
+    pub fn move_by(&mut self, d: isize) {
+        let n = self.fields.len() as isize;
+        self.idx = (((self.idx as isize + d) % n + n) % n) as usize;
+        self.value = self.fields[self.idx].current.clone();
+    }
 }
 
 pub enum Mode {
@@ -114,6 +132,10 @@ pub struct App {
     pub warnings: Vec<String>,
 
     outcome: run::Outcome,
+    /// The config as written. Forms seed from this, never from the resolved
+    /// value: `from: { macos: brew, default: apt }` resolves to `apt` on this
+    /// machine, and writing that back would flatten the condition away.
+    text: String,
 }
 
 impl App {
@@ -135,6 +157,7 @@ impl App {
             state: std::array::from_fn(|_| ListState::default()),
             warnings: vec![],
             outcome,
+            text: String::new(),
         };
         app.rebuild(host);
         Ok(app)
@@ -152,7 +175,12 @@ impl App {
     }
 
     fn rebuild(&mut self, host: &dyn Host) {
+        self.text = read(host, &self.outcome.loaded.entry)
+            .ok()
+            .flatten()
+            .unwrap_or_default();
         let o = &self.outcome;
+        let text = self.text.clone();
         self.warnings = o.plan.warnings.clone();
 
         self.plan_rows = o
@@ -197,11 +225,14 @@ impl App {
                     .unwrap_or_else(|| "script".into()),
                 name: p.name.clone(),
                 detail: p.version.clone().unwrap_or_else(|| "latest".into()),
-                fields: vec![Field {
-                    label: "version".into(),
-                    key: Some("version".into()),
-                    current: p.version.clone().unwrap_or_default(),
-                }],
+                fields: PKG_KEYS
+                    .iter()
+                    .map(|k| Field {
+                        label: (*k).into(),
+                        key: Some((*k).to_string()),
+                        current: raw_field(&text, "packages:", &p.name, k).unwrap_or_default(),
+                    })
+                    .collect(),
                 plan_id: Some(format!("package/{}", p.name)),
                 details: {
                     let mut d = vec![(
@@ -349,11 +380,14 @@ impl App {
                     .unwrap_or_else(|| "default".into()),
                 name: l.name.clone(),
                 detail: l.version.clone().unwrap_or_else(|| "latest".into()),
-                fields: vec![Field {
-                    label: "version".into(),
-                    key: Some("version".into()),
-                    current: l.version.clone().unwrap_or_default(),
-                }],
+                fields: LANG_KEYS
+                    .iter()
+                    .map(|k| Field {
+                        label: (*k).into(),
+                        key: Some((*k).to_string()),
+                        current: raw_field(&text, "languages:", &l.name, k).unwrap_or_default(),
+                    })
+                    .collect(),
                 plan_id: Some(format!("language/{}", l.name)),
                 details: vec![
                     (
@@ -517,14 +551,15 @@ impl App {
 
     pub fn open_form(&mut self) {
         let Some(row) = self.selected() else { return };
-        let Some(field) = row.fields.first().cloned() else {
+        if row.fields.is_empty() {
             self.note = Some("no editable field here — `e` opens the config".into());
             return;
-        };
+        }
         self.mode = Mode::Form(Form {
-            title: format!("{} · {}", row.name, field.label),
-            value: field.current.clone(),
-            field,
+            title: row.name.clone(),
+            value: row.fields[0].current.clone(),
+            fields: row.fields.clone(),
+            idx: 0,
         });
     }
 
@@ -713,6 +748,60 @@ fn read(host: &dyn Host, p: &Path) -> Result<Option<String>, String> {
             })?))
         }
     }
+}
+
+/// Everything `edit::set_field` can set on a package, in the order they read.
+const PKG_KEYS: &[&str] = &["from", "version", "only", "needs", "path", "script"];
+const LANG_KEYS: &[&str] = &["installer", "version", "only"];
+
+/// The value of `key:` inside `name`'s entry, exactly as written.
+///
+/// `None` when the entry is inline (`- { … }`) or the value opens a nested
+/// block: neither is a single scalar a one-line form can round-trip, and
+/// guessing would flatten it.
+fn raw_field(text: &str, section: &str, name: &str, key: &str) -> Option<String> {
+    let lines: Vec<&str> = text.lines().collect();
+    let start = lines
+        .iter()
+        .position(|l| l.trim_start().starts_with(section))?;
+    let mut entry = None;
+    for (i, l) in lines.iter().enumerate().skip(start + 1) {
+        let t = l.trim_start();
+        // Out of the section entirely.
+        if !l.starts_with(' ') && !t.is_empty() && !t.starts_with('#') {
+            break;
+        }
+        if t.starts_with("- ") || t.starts_with('-') {
+            let is_ours = t.contains(&format!("name: {name}")) && {
+                // `jq` must not match `jq-extra`.
+                let after = t.split(&format!("name: {name}")).nth(1).unwrap_or("");
+                after.is_empty() || after.starts_with([',', ' ', '}', '\n'])
+            };
+            entry = if is_ours { Some(i) } else { None };
+            // An inline entry holds everything on one line; a form cannot
+            // round-trip it, and `commit_field` says so when you try.
+            if is_ours && t.starts_with("- {") {
+                return None;
+            }
+            if is_ours && t.starts_with("- name:") {
+                continue;
+            }
+        }
+        let Some(e) = entry else { continue };
+        if i == e {
+            continue;
+        }
+        if let Some(v) = t.strip_prefix(&format!("{key}:")) {
+            let v = v.trim();
+            // A block value (`key:` then indented lines) is not a scalar.
+            return if v.is_empty() {
+                None
+            } else {
+                Some(v.to_string())
+            };
+        }
+    }
+    None
 }
 
 fn action_label(a: &bedouin_core::plan::Action) -> String {

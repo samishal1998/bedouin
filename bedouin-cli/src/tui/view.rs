@@ -187,7 +187,10 @@ fn empty_note(s: Section) -> String {
 fn footer(app: &App, f: &mut Frame, area: Rect) {
     let (text, style) = match &app.mode {
         Mode::Confirm => ("apply these changes?  y / n".to_string(), theme::accent()),
-        Mode::Form(_) => ("enter commit   esc cancel".to_string(), theme::label()),
+        Mode::Form(_) => (
+            "↑/↓ field   enter commit   esc cancel".to_string(),
+            theme::label(),
+        ),
         Mode::Diff(_) => (
             "j/k scroll   any other key closes".to_string(),
             theme::quiet(),
@@ -251,22 +254,50 @@ fn diff_pane(app: &App, f: &mut Frame) {
 
 fn form_pane(app: &App, f: &mut Frame) {
     let Mode::Form(form) = &app.mode else { return };
-    let area = centred(f.area(), 60, 20);
+    let area = centred(f.area(), 68, 60);
     f.render_widget(Clear, area);
-    let body = vec![
-        Line::from(""),
-        Line::from(vec![
-            Span::styled(format!("{}: ", form.field.label), theme::label()),
+
+    let pad = form.fields.iter().map(|x| x.label.len()).max().unwrap_or(8);
+
+    let mut body = vec![Line::from("")];
+    for (i, field) in form.fields.iter().enumerate() {
+        let active = i == form.idx;
+        let shown = if active { &form.value } else { &field.current };
+        let mut spans = vec![
             Span::styled(
-                if form.value.is_empty() {
-                    "(empty)".to_string()
-                } else {
-                    form.value.clone()
-                },
-                theme::body().add_modifier(Modifier::BOLD),
+                if active { "› " } else { "  " },
+                Style::new().fg(theme::MADDER_LIFT),
             ),
-            Span::styled("▏", theme::accent()),
-        ]),
-    ];
-    f.render_widget(Paragraph::new(body).block(framed(&form.title)), area);
+            Span::styled(
+                format!("{:<pad$}  ", field.label),
+                if active {
+                    theme::accent()
+                } else {
+                    theme::label()
+                },
+            ),
+            Span::styled(
+                if shown.is_empty() {
+                    "(unset)".to_string()
+                } else {
+                    shown.clone()
+                },
+                if active {
+                    theme::body().add_modifier(Modifier::BOLD)
+                } else {
+                    theme::quiet()
+                },
+            ),
+        ];
+        if active {
+            spans.push(Span::styled("▏", theme::accent()));
+        }
+        body.push(Line::from(spans));
+    }
+    f.render_widget(
+        Paragraph::new(body)
+            .block(framed(&form.title))
+            .wrap(Wrap { trim: false }),
+        area,
+    );
 }
