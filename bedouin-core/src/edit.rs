@@ -862,8 +862,60 @@ fn verify_only_change(
             "could not cleanly make that edit. Refusing to guess -- make it by hand",
         ));
     }
-    let _ = before_text;
+
+    // And nothing else moved. `landed` only proves the change arrived; it says
+    // nothing about what else the text surgery hit on the way. Every edit that
+    // comes through here sets exactly one value, so the documents are allowed
+    // to differ in exactly one place.
+    let before: serde_yaml_ng::Value = serde_yaml_ng::from_str(before_text)
+        .map_err(|e| ConfigError::new(format!("this config does not parse: {e}")))?;
+    if differences(&before, &after) != 1 {
+        return Err(ConfigError::new(
+            "could not cleanly make that edit: it would change more than the one \
+             value it was meant to.\n  Refusing to write it. Make the change by hand",
+        ));
+    }
     Ok(())
+}
+
+/// How many places two documents differ, counted to a maximum of two.
+///
+/// Two is all any caller needs: one is the edit, more than one is a refusal.
+/// Stopping there also keeps a whole-file rewrite from being counted leaf by
+/// leaf.
+fn differences(a: &serde_yaml_ng::Value, b: &serde_yaml_ng::Value) -> usize {
+    use serde_yaml_ng::Value as V;
+    match (a, b) {
+        (V::Mapping(x), V::Mapping(y)) => {
+            let mut n = 0;
+            for (k, v) in x {
+                match y.get(k) {
+                    Some(w) => n += differences(v, w),
+                    None => n += 1, // a key this edit dropped
+                }
+                if n > 1 {
+                    return n;
+                }
+            }
+            // Keys the edit introduced.
+            n += y.iter().filter(|(k, _)| x.get(k).is_none()).count();
+            n.min(2)
+        }
+        (V::Sequence(x), V::Sequence(y)) if x.len() == y.len() => {
+            let mut n = 0;
+            for (v, w) in x.iter().zip(y) {
+                n += differences(v, w);
+                if n > 1 {
+                    return n;
+                }
+            }
+            n
+        }
+        // A list that changed length is not something any edit through here
+        // does, so it is more than one change by definition.
+        (V::Sequence(_), V::Sequence(_)) => 2,
+        _ => usize::from(a != b),
+    }
 }
 
 fn still_present(doc: &serde_yaml_ng::Value, section: Section, name: &str) -> bool {
@@ -897,6 +949,60 @@ files:
   - src: templates/starship.j2
     dest: "~/.config/starship.toml"
 "#;
+
+    #[test]
+    fn one_change_is_one_change_and_two_is_a_refusal() {
+        // The guard `verify_only_change` leans on. It used to end with
+        // `let _ = before_text;` -- the "nothing else moved" half of its own
+        // doc comment was never implemented, so a set_field whose surgery hit
+        // a second place would have been written out.
+        let doc = |y: &str| serde_yaml_ng::from_str::<serde_yaml_ng::Value>(y).unwrap();
+        let base = doc("a: 1\nb: 2\nps:\n  - name: jq\n    from: apt\n");
+
+        assert_eq!(differences(&base, &base), 0);
+        assert_eq!(
+            differences(
+                &base,
+                &doc("a: 1\nb: 3\nps:\n  - name: jq\n    from: apt\n")
+            ),
+            1,
+            "one scalar"
+        );
+        assert_eq!(
+            differences(
+                &base,
+                &doc("a: 1\nb: 2\nps:\n  - name: jq\n    from: cargo\n")
+            ),
+            1,
+            "one value inside a list entry"
+        );
+        assert_eq!(
+            differences(
+                &base,
+                &doc("a: 1\nb: 2\nc: 3\nps:\n  - name: jq\n    from: apt\n")
+            ),
+            1,
+            "one added key"
+        );
+        assert_eq!(
+            differences(
+                &base,
+                &doc("a: 9\nb: 9\nps:\n  - name: jq\n    from: apt\n")
+            ),
+            2,
+            "two scalars must not pass for one"
+        );
+        assert_eq!(
+            differences(&base, &doc("a: 1\nps:\n  - name: jq\n    from: apt\n")),
+            1,
+            "one dropped key"
+        );
+        assert_eq!(
+            differences(&base, &doc("a: 1\nb: 2\nps: []\n")),
+            2,
+            "a list that changed length is never one edit"
+        );
+    }
 
     #[test]
     fn an_alias_can_be_taken_back_out_again() {
