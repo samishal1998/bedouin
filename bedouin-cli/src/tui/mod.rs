@@ -9,6 +9,7 @@
 
 mod diff;
 mod model;
+mod theme;
 mod view;
 
 use bedouin_core::host::OsHost;
@@ -455,6 +456,45 @@ links:
         let err = a.commit_field(&h, &field, "1.8").expect_err("must refuse");
         assert!(err.contains("press e"), "points at the editor: {err}");
         assert!(!err.contains("indicator"), "not a raw yaml error: {err}");
+    }
+
+    #[test]
+    fn the_aside_opens_out_the_selected_item() {
+        let mut a = app();
+        a.go(Section::Packages);
+        a.select(0);
+        let out = screen(&mut a);
+        assert!(out.contains("details"), "the pane is titled:\n{out}");
+        // Fields the list has no room for, which is the point of the pane.
+        assert!(out.contains("from"), "shows where it comes from:\n{out}");
+        assert!(out.contains("apt"), "and the value:\n{out}");
+    }
+
+    #[test]
+    fn the_aside_follows_the_cursor() {
+        let mut a = app();
+        a.go(Section::Aliases);
+        a.select(0);
+        let first = screen(&mut a);
+        assert!(first.contains("expands to"), "alias detail:\n{first}");
+        assert!(first.contains("ls -alh"), "the alias value:\n{first}");
+    }
+
+    #[test]
+    fn a_narrow_terminal_drops_the_aside_rather_than_crushing_it() {
+        let mut a = app();
+        a.go(Section::Packages);
+        let mut t = Terminal::new(TestBackend::new(70, 20)).expect("backend");
+        t.draw(|f| view::draw(&mut a, f)).expect("draw");
+        let out: String = t
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(!out.contains("details"), "no aside at 70 cols:\n{out}");
+        assert!(out.contains("jq"), "but the list is still there:\n{out}");
     }
 
     #[test]

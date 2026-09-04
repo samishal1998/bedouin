@@ -62,6 +62,9 @@ pub struct Row {
     pub fields: Vec<Field>,
     /// The plan item this row corresponds to, if any — what `d` diffs.
     pub plan_id: Option<String>,
+    /// Label/value pairs for the aside pane. Built here so the view stays a
+    /// pure function of this and never reaches back into the config.
+    pub details: Vec<(String, String)>,
 }
 
 #[derive(Clone)]
@@ -162,6 +165,22 @@ impl App {
                 detail: i.detail.clone(),
                 fields: vec![],
                 plan_id: Some(i.id.clone()),
+                details: {
+                    let mut d = vec![
+                        ("id".into(), i.id.clone()),
+                        ("kind".into(), kind_label(i.kind).to_string()),
+                        ("action".into(), action_label(&i.action)),
+                        ("detail".into(), i.detail.clone()),
+                    ];
+                    if i.needs_root {
+                        d.push(("needs root".into(), "yes".into()));
+                    }
+                    for (field, arm) in &i.arms {
+                        d.push((format!("arm · {field}"), arm.clone()));
+                    }
+                    d.extend(payload_details(&i.payload));
+                    d
+                },
             })
             .collect();
 
@@ -184,6 +203,43 @@ impl App {
                     current: p.version.clone().unwrap_or_default(),
                 }],
                 plan_id: Some(format!("package/{}", p.name)),
+                details: {
+                    let mut d = vec![(
+                        "from".into(),
+                        if p.from.is_empty() {
+                            "script".into()
+                        } else {
+                            p.from
+                                .iter()
+                                .map(|m| m.to_string())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        },
+                    )];
+                    d.push((
+                        "version".into(),
+                        p.version.clone().unwrap_or_else(|| "latest".into()),
+                    ));
+                    if let Some(sc) = &p.script {
+                        d.push(("script".into(), sc.trim().to_string()));
+                    }
+                    if !p.needs.is_empty() {
+                        d.push(("needs".into(), p.needs.join(", ")));
+                    }
+                    if !p.path.is_empty() {
+                        d.push(("path".into(), p.path.join(", ")));
+                    }
+                    for (k, v) in &p.aliases {
+                        d.push((format!("alias · {k}"), v.clone()));
+                    }
+                    if let Some(c) = &p.completions {
+                        d.push(("completions".into(), c.join(" ")));
+                    }
+                    for b in &p.rc {
+                        d.push((format!("rc · {}", b.file), b.content.trim().to_string()));
+                    }
+                    d
+                },
             })
             .collect();
 
@@ -206,6 +262,14 @@ impl App {
                         if dest.display().to_string().ends_with(f.dest.trim_start_matches('~')))
                     })
                     .map(|i| i.id.clone()),
+                details: vec![
+                    ("src".into(), f.src.clone()),
+                    ("dest".into(), f.dest.clone()),
+                    (
+                        "mode".into(),
+                        f.mode.clone().unwrap_or_else(|| "0644".into()),
+                    ),
+                ],
             })
             .collect();
 
@@ -220,6 +284,16 @@ impl App {
                 detail: r.url.clone(),
                 fields: vec![],
                 plan_id: None,
+                details: {
+                    let mut d = vec![
+                        ("url".into(), r.url.clone()),
+                        ("dest".into(), r.dest.clone()),
+                    ];
+                    if let Some(rf) = &r.r#ref {
+                        d.push(("ref".into(), rf.clone()));
+                    }
+                    d
+                },
             })
             .collect();
 
@@ -234,6 +308,10 @@ impl App {
                 detail: format!("-> {}", l.src),
                 fields: vec![],
                 plan_id: None,
+                details: vec![
+                    ("points at".into(), l.src.clone()),
+                    ("link".into(), l.dest.clone()),
+                ],
             })
             .collect();
 
@@ -252,6 +330,10 @@ impl App {
                     current: v.clone(),
                 }],
                 plan_id: None,
+                details: vec![
+                    ("alias".into(), k.clone()),
+                    ("expands to".into(), v.clone()),
+                ],
             })
             .collect();
 
@@ -273,6 +355,18 @@ impl App {
                     current: l.version.clone().unwrap_or_default(),
                 }],
                 plan_id: Some(format!("language/{}", l.name)),
+                details: vec![
+                    (
+                        "installer".into(),
+                        l.installer
+                            .map(|m| m.to_string())
+                            .unwrap_or_else(|| "its own (default)".into()),
+                    ),
+                    (
+                        "version".into(),
+                        l.version.clone().unwrap_or_else(|| "latest".into()),
+                    ),
+                ],
             })
             .collect();
 
@@ -287,6 +381,7 @@ impl App {
                     detail: d.to_string().trim().replace('\n', " "),
                     fields: vec![],
                     plan_id: Some(d.id().to_string()),
+                    details: drift_details(d),
                 })
                 .collect(),
             Err(e) => vec![Row {
@@ -296,28 +391,46 @@ impl App {
                 detail: e.to_string(),
                 fields: vec![],
                 plan_id: None,
+                details: vec![],
             }],
         };
 
         self.env_rows = envfile::referenced(&o.loaded.raw, &o.facts.env, &o.loaded.root, host)
             .into_iter()
-            .map(|r| Row {
-                sigil: if r.set { ' ' } else { '?' },
-                kind: if r.set { "set".into() } else { "unset".into() },
-                name: r.name,
-                detail: format!(
-                    "{}{}",
-                    r.site,
-                    if r.match_key {
-                        "   (a target)"
-                    } else if r.has_default {
-                        "   (has a default)"
-                    } else {
-                        ""
-                    }
-                ),
-                fields: vec![],
-                plan_id: None,
+            .map(|r| {
+                let consequence = if r.match_key {
+                    "the target simply does not match"
+                } else if r.has_default {
+                    "falls back to its `| default(…)`"
+                } else {
+                    "resolve fails — there is nothing to fall back to"
+                };
+                Row {
+                    sigil: if r.set { ' ' } else { '?' },
+                    kind: if r.set { "set".into() } else { "unset".into() },
+                    detail: format!(
+                        "{}{}",
+                        r.site,
+                        if r.match_key {
+                            "   (a target)"
+                        } else if r.has_default {
+                            "   (has a default)"
+                        } else {
+                            ""
+                        }
+                    ),
+                    fields: vec![],
+                    plan_id: None,
+                    details: vec![
+                        ("read at".into(), r.site.clone()),
+                        (
+                            "state".into(),
+                            if r.set { "set" } else { "not set" }.to_string(),
+                        ),
+                        ("if unset".into(), consequence.to_string()),
+                    ],
+                    name: r.name,
+                }
             })
             .collect();
 
@@ -599,6 +712,117 @@ fn read(host: &dyn Host, p: &Path) -> Result<Option<String>, String> {
                 format!("{}: not valid UTF-8", p.display())
             })?))
         }
+    }
+}
+
+fn action_label(a: &bedouin_core::plan::Action) -> String {
+    use bedouin_core::plan::Action::*;
+    match a {
+        Create => "create".into(),
+        Adopt => "adopt (backs up what is there)".into(),
+        Upgrade { from, to } => format!("upgrade {from} -> {to}"),
+        Reinstall {
+            from_method,
+            to_method,
+        } => {
+            format!("reinstall via {from_method} -> {to_method}")
+        }
+        Remove => "remove".into(),
+        NoOp => "already matches".into(),
+    }
+}
+
+fn payload_details(p: &Payload) -> Vec<(String, String)> {
+    use Payload::*;
+    match p {
+        Manager(m) => vec![("manager".into(), m.to_string())],
+        Language {
+            installer, version, ..
+        } => vec![
+            ("installer".into(), installer.to_string()),
+            (
+                "version".into(),
+                version.clone().unwrap_or_else(|| "latest".into()),
+            ),
+        ],
+        Package {
+            manager, version, ..
+        } => vec![
+            ("manager".into(), manager.to_string()),
+            (
+                "version".into(),
+                version.clone().unwrap_or_else(|| "latest".into()),
+            ),
+        ],
+        ScriptPackage { script, .. } => vec![("script".into(), script.trim().to_string())],
+        Dir(d) => vec![("directory".into(), d.display().to_string())],
+        File { src, dest, mode } => vec![
+            ("src".into(), src.display().to_string()),
+            ("dest".into(), dest.display().to_string()),
+            ("mode".into(), format!("{mode:o}")),
+        ],
+        RcBlock {
+            file,
+            marker,
+            content,
+        } => vec![
+            ("file".into(), file.display().to_string()),
+            ("block".into(), marker.clone()),
+            ("content".into(), content.trim().to_string()),
+        ],
+        Completions { argv, dest } => vec![
+            ("generator".into(), argv.join(" ")),
+            ("writes".into(), dest.display().to_string()),
+        ],
+        Repo { url, dest, .. } => vec![
+            ("url".into(), url.clone()),
+            ("dest".into(), dest.display().to_string()),
+        ],
+        Link { src, dest } => vec![
+            ("points at".into(), src.display().to_string()),
+            ("link".into(), dest.display().to_string()),
+        ],
+        _ => vec![],
+    }
+}
+
+fn drift_details(d: &doctor::Drift) -> Vec<(String, String)> {
+    use doctor::Drift::*;
+    match d {
+        Edited { file, .. } => vec![
+            ("what".into(), "managed content was changed by hand".into()),
+            ("file".into(), file.clone()),
+            ("apply would".into(), "overwrite it".into()),
+        ],
+        Missing { file, .. } => vec![
+            ("what".into(), "bedouin wrote it and it is gone".into()),
+            ("file".into(), file.clone()),
+            ("apply would".into(), "put it back".into()),
+        ],
+        Resolved {
+            field, was, now, ..
+        } => vec![
+            ("what".into(), "the config resolves differently now".into()),
+            ("field".into(), field.clone()),
+            ("was".into(), was.clone()),
+            ("now".into(), now.clone()),
+        ],
+        Unterminated { file, why, .. } => vec![
+            (
+                "what".into(),
+                "a block bedouin owns was never closed".into(),
+            ),
+            ("file".into(), file.clone()),
+            ("why".into(), why.clone()),
+            ("apply would".into(), "refuse to touch this file".into()),
+        ],
+        Incomplete { .. } => vec![
+            (
+                "what".into(),
+                "a step recorded intent and never finished".into(),
+            ),
+            ("apply would".into(), "redo it".into()),
+        ],
     }
 }
 

@@ -2,19 +2,33 @@
 
 use super::diff;
 use super::model::{App, Mode, Section};
+use super::theme;
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Tabs, Wrap};
+
+/// Below this the aside would leave neither half readable, so the list takes
+/// the whole width and `d` is how you see detail.
+const ASIDE_MIN_COLS: u16 = 90;
 
 pub fn draw(app: &mut App, f: &mut Frame) {
     let rows = Layout::vertical([
         Constraint::Length(1), // tabs
-        Constraint::Min(3),    // list
+        Constraint::Min(3),    // body
         Constraint::Length(1), // footer
     ])
     .split(f.area());
 
     tabs(app, f, rows[0]);
-    list(app, f, rows[1]);
+
+    if rows[1].width >= ASIDE_MIN_COLS {
+        let cols = Layout::horizontal([Constraint::Percentage(58), Constraint::Percentage(42)])
+            .split(rows[1]);
+        list(app, f, cols[0]);
+        aside(app, f, cols[1]);
+    } else {
+        list(app, f, rows[1]);
+    }
+
     footer(app, f, rows[2]);
 
     // Modals last, over the top.
@@ -29,7 +43,7 @@ fn tabs(app: &App, f: &mut Frame, area: Rect) {
     let titles: Vec<Line> = Section::ALL
         .iter()
         .map(|s| {
-            let n = count(app, *s);
+            let n = app.len_of(*s);
             Line::from(if n > 0 {
                 format!("{} {}", s.title(), n)
             } else {
@@ -41,24 +55,27 @@ fn tabs(app: &App, f: &mut Frame, area: Rect) {
     f.render_widget(
         Tabs::new(titles)
             .select(selected)
-            .divider("·")
-            .highlight_style(Style::new().bold().fg(Color::Cyan)),
+            .divider(Span::styled("·", theme::quiet()))
+            .style(theme::quiet())
+            .highlight_style(theme::accent()),
         area,
     );
 }
 
-fn count(app: &App, s: Section) -> usize {
-    app.len_of(s)
+fn framed(title: &str) -> Block<'static> {
+    Block::default()
+        .borders(Borders::ALL)
+        .border_style(theme::quiet())
+        .title(Span::styled(format!(" {title} "), theme::accent()))
 }
 
 fn list(app: &mut App, f: &mut Frame, area: Rect) {
     let section = app.section;
-    let empty = empty_note(app, section);
     if app.rows().is_empty() {
         f.render_widget(
-            Paragraph::new(empty)
-                .style(Style::new().fg(Color::DarkGray))
-                .block(Block::default().borders(Borders::ALL).title(title(section)))
+            Paragraph::new(empty_note(section))
+                .style(theme::quiet())
+                .block(framed(section.title()))
                 .wrap(Wrap { trim: true }),
             area,
         );
@@ -74,83 +91,120 @@ fn list(app: &mut App, f: &mut Frame, area: Rect) {
             ListItem::new(Line::from(vec![
                 Span::styled(
                     format!("{} ", r.sigil),
-                    Style::new().fg(sigil_colour(r.sigil)),
+                    Style::new().fg(theme::sigil(r.sigil)),
                 ),
-                Span::styled(
-                    format!("{:<kindw$}  ", r.kind),
-                    Style::new().fg(Color::Cyan),
-                ),
-                Span::raw(format!("{:<width$}  ", r.name)),
-                Span::styled(r.detail.clone(), Style::new().fg(Color::DarkGray)),
+                Span::styled(format!("{:<kindw$}  ", r.kind), theme::label()),
+                Span::styled(format!("{:<width$}  ", r.name), theme::body()),
+                Span::styled(r.detail.clone(), theme::quiet()),
             ]))
         })
         .collect();
 
-    let block = Block::default().borders(Borders::ALL).title(title(section));
+    let block = framed(section.title());
     let state = app.list_state();
     f.render_stateful_widget(
         List::new(items)
             .block(block)
-            .highlight_style(Style::new().reversed()),
+            .highlight_style(theme::selected()),
         area,
         state,
     );
 }
 
-fn title(s: Section) -> String {
-    format!(" {} ", s.title())
+/// The selected item, opened out. Everything here is already on the row; the
+/// view never reaches back into the config for it.
+fn aside(app: &App, f: &mut Frame, area: Rect) {
+    let Some(row) = app.selected() else {
+        f.render_widget(
+            Paragraph::new("nothing selected")
+                .style(theme::quiet())
+                .block(framed("details")),
+            area,
+        );
+        return;
+    };
+
+    let mut lines = vec![Line::from(vec![
+        Span::styled(
+            format!("{} ", row.sigil),
+            Style::new().fg(theme::sigil(row.sigil)),
+        ),
+        Span::styled(row.name.clone(), theme::accent()),
+    ])];
+
+    if row.details.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::styled(row.detail.clone(), theme::quiet()));
+    }
+
+    let pad = row
+        .details
+        .iter()
+        .map(|(k, _)| k.len())
+        .max()
+        .unwrap_or(0)
+        .min(14);
+
+    for (k, v) in &row.details {
+        lines.push(Line::from(""));
+        // A value with newlines is content, not a field: give it its own
+        // lines rather than crushing it onto one.
+        if v.contains('\n') {
+            lines.push(Line::styled(format!("{k}:"), theme::label()));
+            for l in v.lines() {
+                lines.push(Line::styled(format!("  {l}"), theme::body()));
+            }
+        } else {
+            lines.push(Line::from(vec![
+                Span::styled(format!("{k:<pad$}  "), theme::label()),
+                Span::styled(v.clone(), theme::body()),
+            ]));
+        }
+    }
+
+    if !row.fields.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::styled("enter to edit", theme::quiet()));
+    }
+
+    f.render_widget(
+        Paragraph::new(lines)
+            .block(framed("details"))
+            .wrap(Wrap { trim: false }),
+        area,
+    );
 }
 
-fn empty_note(app: &App, s: Section) -> String {
+fn empty_note(s: Section) -> String {
     match s {
         Section::Plan => "No changes. The machine matches the config.".into(),
         Section::Doctor => "No drift. Everything managed matches what bedouin wrote.".into(),
         Section::Env => "This config reads no environment variables.".into(),
-        _ => {
-            let _ = app;
-            format!("Nothing declared under `{}:`.", s.title())
-        }
-    }
-}
-
-fn sigil_colour(c: char) -> Color {
-    match c {
-        '+' => Color::Green,
-        '-' => Color::Red,
-        '~' => Color::Yellow,
-        '!' | 'x' => Color::Red,
-        '?' => Color::Yellow,
-        _ => Color::DarkGray,
+        _ => format!("Nothing declared under `{}:`.", s.title()),
     }
 }
 
 fn footer(app: &App, f: &mut Frame, area: Rect) {
     let (text, style) = match &app.mode {
-        Mode::Confirm => (
-            "apply these changes?  y / n".to_string(),
-            Style::new().fg(Color::Yellow).bold(),
-        ),
-        Mode::Form(_) => (
-            "enter commit   esc cancel".to_string(),
-            Style::new().fg(Color::Yellow),
-        ),
+        Mode::Confirm => ("apply these changes?  y / n".to_string(), theme::accent()),
+        Mode::Form(_) => ("enter commit   esc cancel".to_string(), theme::label()),
         Mode::Diff(_) => (
             "j/k scroll   any other key closes".to_string(),
-            Style::new().fg(Color::DarkGray),
+            theme::quiet(),
         ),
         Mode::Browse => {
             if let Some(n) = &app.note {
-                (n.clone(), Style::new().fg(Color::Yellow))
+                (n.clone(), theme::label())
             } else if !app.warnings.is_empty() {
                 (
                     format!("{} warning(s) — see `bedouin plan`", app.warnings.len()),
-                    Style::new().fg(Color::Yellow),
+                    theme::label(),
                 )
             } else {
                 (
                     "tab section   j/k move   enter edit   e $EDITOR   d diff   a apply   q quit"
                         .to_string(),
-                    Style::new().fg(Color::DarkGray),
+                    theme::quiet(),
                 )
             }
         }
@@ -186,20 +240,13 @@ fn diff_pane(app: &App, f: &mut Frame) {
         .iter()
         .skip(v.scroll)
         .map(|r| match r {
-            diff::Row::Same(s) => Line::styled(format!("  {s}"), Style::new().fg(Color::DarkGray)),
-            diff::Row::Removed(s) => Line::styled(format!("- {s}"), Style::new().fg(Color::Red)),
-            diff::Row::Added(s) => Line::styled(format!("+ {s}"), Style::new().fg(Color::Green)),
+            diff::Row::Same(s) => Line::styled(format!("  {s}"), theme::quiet()),
+            diff::Row::Removed(s) => Line::styled(format!("- {s}"), theme::removed()),
+            diff::Row::Added(s) => Line::styled(format!("+ {s}"), theme::added()),
         })
         .collect();
 
-    f.render_widget(
-        Paragraph::new(lines).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(format!(" {} ", v.title)),
-        ),
-        area,
-    );
+    f.render_widget(Paragraph::new(lines).block(framed(&v.title)), area);
 }
 
 fn form_pane(app: &App, f: &mut Frame) {
@@ -209,27 +256,17 @@ fn form_pane(app: &App, f: &mut Frame) {
     let body = vec![
         Line::from(""),
         Line::from(vec![
-            Span::styled(
-                format!("{}: ", form.field.label),
-                Style::new().fg(Color::Cyan),
-            ),
+            Span::styled(format!("{}: ", form.field.label), theme::label()),
             Span::styled(
                 if form.value.is_empty() {
                     "(empty)".to_string()
                 } else {
                     form.value.clone()
                 },
-                Style::new().bold(),
+                theme::body().add_modifier(Modifier::BOLD),
             ),
-            Span::styled("▏", Style::new().fg(Color::Yellow)),
+            Span::styled("▏", theme::accent()),
         ]),
     ];
-    f.render_widget(
-        Paragraph::new(body).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(format!(" {} ", form.title)),
-        ),
-        area,
-    );
+    f.render_widget(Paragraph::new(body).block(framed(&form.title)), area);
 }

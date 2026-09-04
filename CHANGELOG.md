@@ -3,6 +3,27 @@
 Dates are release dates. Versions before 0.2.0 are omitted: they predate this
 file and nothing depended on them.
 
+## 0.7.0 — 2026-09-04
+
+**The TUI wears the mark's colours.** Madder — `#A82A24`, and the lift at
+`#D4443C` — taken from `assets/icon/bedouin-mark-*.svg` and the names the
+docs site already uses. Selection is sand on madder, the pairing the logo
+itself uses. Set as RGB rather than one of the sixteen ANSI slots, because
+those are whatever the reader's theme says they are, and a brand colour that
+becomes someone's "bright red" is not a brand colour.
+
+Additions stay green. That convention is older and louder than any brand, and
+a palette where "will install" and "will remove" are the same hue is a palette
+that lies. Everything else — changes, removals, drift, the chrome — sits in
+the madder family.
+
+**A details pane beside the list.** The selected item opened out: for a
+package its managers, version, `needs`, `path`, aliases, completions and the
+full text of each `rc:` block; for a plan step its id, action, matched arms
+and payload; for drift what changed and what apply would do about it; for an
+environment variable what happens if it stays unset. Below 90 columns the pane
+is dropped rather than crushed, and the list takes the full width.
+
 ## 0.6.0 — 2026-09-04
 
 **The TUI navigates the whole config, not just the plan.** Nine sections —
