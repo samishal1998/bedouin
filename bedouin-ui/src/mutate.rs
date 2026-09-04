@@ -202,14 +202,26 @@ pub async fn update(
         return r;
     }
     blocking(ctx, move |ctx| {
+        // Cleared, not set to nothing. `version:` with an empty value is
+        // null, and null is a value -- an absent `version:` means "latest",
+        // a null one is a config saying something nobody meant.
+        let cleared = body.value.trim().is_empty();
         if body.section == "aliases" {
             return apply_edit(ctx, move |text| {
-                edit::set_alias(text, None, &body.name, &body.value)
+                if cleared {
+                    edit::remove_alias(text, None, &body.name)
+                } else {
+                    edit::set_alias(text, None, &body.name, &body.value)
+                }
             });
         }
         let section = section_of(&body.section)?;
         apply_edit(ctx, move |text| {
-            edit::set_field(text, section, &body.name, &body.key, &body.value)
+            if cleared {
+                edit::unset_field(text, section, &body.name, &body.key)
+            } else {
+                edit::set_field(text, section, &body.name, &body.key, &body.value)
+            }
         })
     })
     .await

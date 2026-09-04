@@ -725,6 +725,49 @@ pub fn remove_alias(text: &str, package: Option<&str>, alias: &str) -> Result<St
     Ok(out)
 }
 
+/// Take a `key:` back out of one entry.
+///
+/// Not the same as setting it empty. `version:` with nothing after it is
+/// null, and null is a value -- an absent `version:` means "latest", while a
+/// present-but-null one is a config saying something it does not mean. A form
+/// that clears a field wants this, not `set_field(.., "")`.
+pub fn unset_field(text: &str, section: Section, name: &str, key: &str) -> Result<String> {
+    let lines: Vec<&str> = text.lines().collect();
+    let (from, to) = locate_entry(&lines, section, name)?;
+    let want = format!("{key}:");
+
+    let at = (from..to)
+        .find(|i| {
+            let t = lines[*i].trim_start();
+            t == want || t.starts_with(&format!("{key}: ")) || t.starts_with(&format!("{key}:\t"))
+        })
+        .ok_or_else(|| ConfigError::new(format!("`{name}` has no `{key}:` to remove",)))?;
+
+    // A value that opens a nested block takes its block with it.
+    let indent = indent_of(lines[at]);
+    let mut end = at + 1;
+    while end < to && (lines[end].trim().is_empty() || indent_of(lines[end]) > indent) {
+        end += 1;
+    }
+    while end > at + 1 && lines[end - 1].trim().is_empty() {
+        end -= 1;
+    }
+
+    let mut kept: Vec<&str> = Vec::with_capacity(lines.len());
+    kept.extend_from_slice(&lines[..at]);
+    kept.extend_from_slice(&lines[end..]);
+    let nl = newline_of(text);
+    let mut out = kept.join(nl);
+    if text.ends_with('\n') {
+        out.push_str(nl);
+    }
+
+    verify_only_change(text, &out, |doc| {
+        entry_of(doc, section, name).is_some_and(|e| e.get(key).is_none())
+    })?;
+    Ok(out)
+}
+
 /// Add an alias, globally or scoped to a package.
 pub fn set_alias(text: &str, package: Option<&str>, alias: &str, value: &str) -> Result<String> {
     let lines: Vec<&str> = text.lines().collect();
@@ -1066,6 +1109,35 @@ files:
             2,
             "a list that changed length is never one edit"
         );
+    }
+
+    #[test]
+    fn clearing_a_field_removes_it_rather_than_nulling_it() {
+        // `version:` with nothing after it parses as null, and null is a
+        // value. An absent version means "latest"; a null one is a config
+        // saying something nobody typed.
+        let cfg = "version: 0\nshell: bash\npackages:\n  - name: jq          # a comment worth keeping\n    from: apt\n    version: \"1.7\"\n";
+        let out = unset_field(cfg, Section::Packages, "jq", "version").unwrap();
+        let doc: serde_yaml_ng::Value = serde_yaml_ng::from_str(&out).unwrap();
+        let jq = doc["packages"]
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .find(|e| e["name"].as_str() == Some("jq"))
+            .unwrap();
+        assert!(jq.get("version").is_none(), "still there:\n{out}");
+        assert_eq!(
+            jq["from"].as_str(),
+            Some("apt"),
+            "it took a sibling with it"
+        );
+        assert!(
+            out.contains("# a comment worth keeping"),
+            "the comment was collateral"
+        );
+
+        let e = unset_field(cfg, Section::Packages, "jq", "nosuch").unwrap_err();
+        assert!(e.to_string().contains("no `nosuch:`"), "{e}");
     }
 
     #[test]

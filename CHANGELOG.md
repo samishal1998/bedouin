@@ -3,6 +3,14 @@
 Dates are release dates. Versions before 0.2.0 are omitted: they predate this
 file and nothing depended on them.
 
+## 0.15.1 — 2026-09-04
+
+**Clearing a field in the browser wrote a null instead of removing it.**
+`version:` with nothing after it parses as null, and null is a value — an
+absent `version:` means "latest", a null one is a config saying something
+nobody typed. `edit::unset_field` takes the key back out, and an emptied alias
+is removed rather than set to nothing.
+
 ## 0.15.0 — 2026-09-04
 
 **The web UI edits the config.** Add, change and remove entries in any
