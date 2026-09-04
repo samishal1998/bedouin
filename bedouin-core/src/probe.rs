@@ -222,6 +222,13 @@ pub fn facts_for(
         .or_else(|| capture(host, &["hostname", "-s"], &search))
         .unwrap_or_default();
 
+    // From the environment when it is there, so a FakeHost run can name a
+    // binary it knows how to answer for. Otherwise the running one.
+    let exe = env
+        .get("BEDOUIN_EXE")
+        .cloned()
+        .unwrap_or_else(crate::facts::self_exe);
+
     Ok(Facts {
         os,
         distro,
@@ -240,6 +247,9 @@ pub fn facts_for(
         privilege: privilege(host, &search),
         env,
         managers: managers(host, &search),
+        // From the environment when it is there, so a FakeHost run can name a
+        // binary it knows how to answer for. Otherwise the running one.
+        exe,
     })
 }
 

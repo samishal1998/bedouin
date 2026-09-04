@@ -22,6 +22,15 @@ fn machine(config: &str) -> FakeHost {
         .with_env("USER", "t")
         .with_env("SHELL", "/bin/zsh")
         .with_env("PATH", "/usr/bin:/bin")
+        // Every plan installs bedouin's own completion now, so a fake
+        // machine has to be able to answer for it. Both shells, because
+        // fixtures here use either.
+        .with_env("BEDOUIN_EXE", "bedouin")
+        .with_command(
+            "bedouin completion-script zsh",
+            FakeRun::ok("#compdef bedouin"),
+        )
+        .with_command("bedouin completion-script bash", FakeRun::ok("# bedouin"))
         .with_binary("/usr/bin/apt-get")
         .with_command("id -u", FakeRun::ok("1000"))
         .with_command("sudo -n true", FakeRun::ok(""))
@@ -237,7 +246,16 @@ fn a_long_needs_chain_does_not_overflow_the_stack() {
         cfg.push_str("}\n");
     }
     let o = plan(&cfg).expect("a deep chain plans rather than crashing");
-    assert_eq!(o.plan.items.len(), N);
+    // Count the packages, not every item: every plan also carries bedouin's
+    // own completion, and this test is about stack depth on a long chain.
+    assert_eq!(
+        o.plan
+            .items
+            .iter()
+            .filter(|i| i.id.starts_with("package/"))
+            .count(),
+        N
+    );
     // And the order is still correct: every dependency precedes its dependent.
     let first = o.plan.items.iter().position(|i| i.name == "p0").unwrap();
     let last = o

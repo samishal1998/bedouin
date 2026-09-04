@@ -58,6 +58,15 @@ fn fresh() -> FakeHost {
         .with_env("USER", "t")
         .with_env("SHELL", "/bin/bash")
         .with_env("PATH", "/usr/bin:/bin")
+        // Every plan installs bedouin's own completion now, so a fake
+        // machine has to be able to answer for it. Both shells, because
+        // fixtures here use either.
+        .with_env("BEDOUIN_EXE", "bedouin")
+        .with_command(
+            "bedouin completion-script zsh",
+            FakeRun::ok("#compdef bedouin"),
+        )
+        .with_command("bedouin completion-script bash", FakeRun::ok("# bedouin"))
         .with_binary("/usr/bin/apt-get")
         .with_command("id -u", FakeRun::ok("1000"))
         .with_command("sudo -n true", FakeRun::ok(""))
@@ -445,9 +454,23 @@ fn removing_a_block_leaves_the_rest_of_the_users_rc_file_alone() {
     let h = without_shell_files(h);
     apply_on(&h);
     let rc = read(&h, "/home/t/.zshrc").unwrap();
+    // The user's own lines are untouched, byte for byte, and nothing of
+    // theirs was reordered or reindented.
+    assert!(
+        rc.starts_with("export EDITOR=vi\nalias ll='ls -l'\n"),
+        "the user's content survives first and intact:\n{rc}"
+    );
+    // What remains is bedouin's own loader, and only that: it still installs
+    // its own completion, and a completion in a directory nothing puts on
+    // fpath is inert. One marked block, not a scattering.
     assert_eq!(
-        rc, "export EDITOR=vi\nalias ll='ls -l'\n",
-        "restored exactly"
+        rc.matches("# >>> bedouin:").count(),
+        1,
+        "exactly one bedouin block remains:\n{rc}"
+    );
+    assert!(
+        rc.contains("bedouin: source"),
+        "and it is the drop-in loader:\n{rc}"
     );
 }
 
@@ -1171,6 +1194,11 @@ packages:
         .with_env("HOME", "/home/t")
         .with_env("PATH", "/usr/bin:/bin")
         .with_command("id -u", FakeRun::ok("1000"))
+        .with_env("BEDOUIN_EXE", "bedouin")
+        .with_command(
+            "bedouin completion-script zsh",
+            FakeRun::ok("#compdef bedouin"),
+        )
         .with_command("sh /tmp/bedouin-install-widget.sh", FakeRun::ok("done"));
 
     let o = plan_on(&h);

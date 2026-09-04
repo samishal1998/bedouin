@@ -156,6 +156,13 @@ enum Command {
     /// Show the plan on screen, with a key to apply it.
     #[cfg(feature = "tui")]
     Tui,
+    /// Print bedouin's own completion script. Hidden: the plan runs it for
+    /// you, and `bedouin completions` is the one that takes a package.
+    #[command(hide = true)]
+    CompletionScript {
+        /// bash, zsh or fish.
+        shell: String,
+    },
 }
 
 fn run_apply(
@@ -629,6 +636,23 @@ fn main() -> ExitCode {
         return cmd_facts(&host, cli.config.as_deref(), &cwd);
     }
 
+    // Emits a script and exits; it needs no config, and the plan step that
+    // runs it must work before anything is resolved.
+    if let Command::CompletionScript { shell } = &cli.command {
+        use clap::CommandFactory;
+        let Some(gen) = (match shell.as_str() {
+            "bash" => Some(clap_complete::Shell::Bash),
+            "zsh" => Some(clap_complete::Shell::Zsh),
+            "fish" => Some(clap_complete::Shell::Fish),
+            _ => None,
+        }) else {
+            eprintln!("bedouin: no completion for `{shell}`\n  known: bash, zsh, fish");
+            return ExitCode::FAILURE;
+        };
+        clap_complete::generate(gen, &mut Cli::command(), "bedouin", &mut std::io::stdout());
+        return ExitCode::SUCCESS;
+    }
+
     // `tui` plans for itself, and re-plans after each apply.
     #[cfg(feature = "tui")]
     if matches!(cli.command, Command::Tui) {
@@ -870,6 +894,7 @@ fn main() -> ExitCode {
         }
         #[cfg(feature = "tui")]
         Command::Tui => unreachable!("handled above"),
+        Command::CompletionScript { .. } => unreachable!("handled above"),
 
         Command::Reconcile { watch, interval } => {
             let mut first = Some(outcome);

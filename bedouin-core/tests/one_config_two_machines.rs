@@ -82,6 +82,15 @@ fn machine(os: Os) -> FakeHost {
         .with_env("HOSTNAME", "khaymah")
         .with_env("SHELL", "/bin/bash") // a fresh box, still on bash
         .with_env("PATH", "/usr/bin:/bin")
+        // Every plan installs bedouin's own completion now, so a fake
+        // machine has to be able to answer for it. Both shells, because
+        // fixtures here use either.
+        .with_env("BEDOUIN_EXE", "bedouin")
+        .with_command(
+            "bedouin completion-script zsh",
+            FakeRun::ok("#compdef bedouin"),
+        )
+        .with_command("bedouin completion-script bash", FakeRun::ok("# bedouin"))
         .with_command("id -u", FakeRun::ok("1000"))
         .with_command("sudo -n true", FakeRun::ok(""));
     if os == Os::Linux {

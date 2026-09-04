@@ -183,6 +183,19 @@ pub struct Facts {
     /// an artifact; see `plan`. This map is the live environment.
     pub env: BTreeMap<String, String>,
     pub managers: Vec<Manager>,
+    /// The bedouin that is running, for the one step that re-invokes it: its
+    /// own completion script. `default` so an artifact written before this
+    /// field existed still loads.
+    #[serde(default = "self_exe")]
+    pub exe: String,
+}
+
+/// Falls back to the bare name, which works whenever bedouin is on PATH --
+/// and if it is not, the step fails loudly rather than writing a broken file.
+pub fn self_exe() -> String {
+    std::env::current_exe()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| "bedouin".into())
 }
 
 impl Facts {
@@ -208,6 +221,7 @@ impl Facts {
             privilege: Privilege::Passwordless,
             env: BTreeMap::new(),
             managers: Vec::new(),
+            exe: "bedouin".into(),
         }
     }
 }

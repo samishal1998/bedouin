@@ -60,10 +60,11 @@ dependencies = [
 
 [[package]]
 name = "bedouin-cli"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "bedouin-core",
  "clap",
+ "clap_complete",
  "crossterm",
  "ratatui",
  "serde_json",
@@ -71,7 +72,7 @@ dependencies = [
 
 [[package]]
 name = "bedouin-core"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "minijinja",
  "serde",
@@ -127,6 +128,15 @@ dependencies = [
  "anstyle",
  "clap_lex",
  "strsim",
+]
+
+[[package]]
+name = "clap_complete"
+version = "4.6.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3be2ad0423bdbbb0e25bc89add796f3559706d4a95e1bc98e4d9662a957b6a19"
+dependencies = [
+ "clap",
 ]
 
 [[package]]
