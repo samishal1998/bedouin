@@ -741,3 +741,14 @@ dd.editing {
   background: color-mix(in srgb, var(--madder) 12%, transparent);
   margin: 0.75rem 0 0;
 }
+
+.elsewhere {
+  padding: 0.7rem 0.95rem 0;
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+
+.elsewhere code {
+  font-family: var(--mono);
+  color: var(--wool);
+}

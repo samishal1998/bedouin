@@ -275,6 +275,17 @@ fn scalar_is(v: &serde_yaml_ng::Value, name: &str) -> bool {
     }
 }
 
+/// Whether this text declares that entry at all.
+///
+/// `includes:` means the config a plan is built from is the merge of several
+/// files, while every edit here rewrites one. An entry that came from an
+/// included file is not editable through this text -- the edits refuse it
+/// safely, but a UI wants to know before offering the button.
+pub fn has_entry(text: &str, section: Section, name: &str) -> bool {
+    let lines: Vec<&str> = text.lines().collect();
+    locate_entry(&lines, section, name).is_ok()
+}
+
 /// The value of `key:` inside one entry, exactly as the file writes it.
 ///
 /// The seed for an edit form, and it has to be the raw text rather than the
@@ -1109,6 +1120,20 @@ files:
             2,
             "a list that changed length is never one edit"
         );
+    }
+
+    #[test]
+    fn an_entry_from_an_included_file_is_not_in_this_text() {
+        // `includes:` merges several files into one config while every edit
+        // here rewrites one. The edits already refuse what they cannot find;
+        // this is so a UI can stop offering the button first.
+        assert!(has_entry(CFG, Section::Packages, "jq"));
+        assert!(
+            has_entry(CFG, Section::Packages, "fd"),
+            "the flow form counts"
+        );
+        assert!(!has_entry(CFG, Section::Packages, "ripgrep"));
+        assert!(!has_entry(CFG, Section::Languages, "jq"), "wrong section");
     }
 
     #[test]

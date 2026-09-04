@@ -369,7 +369,11 @@ const SECTIONS = [
         // What this row's own section allows. A plan or doctor row describes
         // the machine, not the config, so there is nothing here to edit.
         const raw = new Map((r.raw || []).map(([k, v]) => [k, v]));
-        const canWrite = writable && !!r.section;
+        // `here` is false for an entry that came from an `includes:` file.
+        // The edits refuse those safely, but offering the button and then
+        // saying "no package named X in this config" about a package plainly
+        // in the config is a worse answer than not offering it.
+        const canWrite = writable && !!r.section && r.here !== false;
 
         const body = fields
           .map(([k, v]) => {
@@ -383,6 +387,12 @@ const SECTIONS = [
           })
           .join('');
 
+        const elsewhere =
+          writable && !!r.section && r.here === false
+            ? `<p class="hint elsewhere">Declared in a file this page does not ` +
+              `write — an <code>includes:</code> one. Edit it there.</p>`
+            : '';
+
         $('details').className = '';
         $('details').innerHTML =
           `<div class="head"><span class="sigil ${dye(r.sigil)}">${
@@ -395,7 +405,7 @@ const SECTIONS = [
                   esc(r.name)
                 } from the config">${icon('delete')}</button>`
               : ''
-          }</div><dl>${body}</dl>`;
+          }</div>${elsewhere}<dl>${body}</dl>`;
 
         if (!canWrite) return;
         $('del').onclick = () => remove(r);

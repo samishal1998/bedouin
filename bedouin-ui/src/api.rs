@@ -77,6 +77,14 @@ pub struct ItemView {
     pub raw: Vec<[String; 2]>,
     /// Which section this belongs to, and so which endpoint edits it.
     pub section: String,
+    /// Whether this entry is in the file the edits write.
+    ///
+    /// `includes:` merges several files into one config, and every edit
+    /// rewrites the entry file alone. An entry that came from an include is
+    /// shown, and shown as not editable here -- the alternative is a delete
+    /// button that answers "no package named `ripgrep` in this config" about
+    /// a package plainly in the config.
+    pub here: bool,
 }
 
 #[derive(Serialize, Default)]
@@ -133,6 +141,7 @@ pub fn snapshot(config: Option<&Path>, cwd: &Path, writable: bool) -> Result<Sna
             fields: vec![],
             raw: vec![],
             section: String::new(),
+            here: false,
         })
         .collect();
 
@@ -209,6 +218,7 @@ pub fn snapshot(config: Option<&Path>, cwd: &Path, writable: bool) -> Result<Sna
             arms: vec![],
             fields,
             raw: raw_for(&text, Section::Packages, &p.name, PACKAGE_KEYS),
+            here: edit::has_entry(&text, Section::Packages, &p.name),
             section: "packages".into(),
         });
     }
@@ -231,6 +241,7 @@ pub fn snapshot(config: Option<&Path>, cwd: &Path, writable: bool) -> Result<Sna
                 ],
             ],
             raw: raw_for(&text, Section::Files, &x.dest, FILE_KEYS),
+            here: edit::has_entry(&text, Section::Files, &x.dest),
             section: "files".into(),
         });
     }
@@ -249,6 +260,7 @@ pub fn snapshot(config: Option<&Path>, cwd: &Path, writable: bool) -> Result<Sna
                 ["dest".into(), x.dest.clone()],
             ],
             raw: raw_for(&text, Section::Repos, &x.dest, REPO_KEYS),
+            here: edit::has_entry(&text, Section::Repos, &x.dest),
             section: "repos".into(),
         });
     }
@@ -267,6 +279,7 @@ pub fn snapshot(config: Option<&Path>, cwd: &Path, writable: bool) -> Result<Sna
                 ["link".into(), x.dest.clone()],
             ],
             raw: raw_for(&text, Section::Links, &x.dest, LINK_KEYS),
+            here: edit::has_entry(&text, Section::Links, &x.dest),
             section: "links".into(),
         });
     }
@@ -283,6 +296,7 @@ pub fn snapshot(config: Option<&Path>, cwd: &Path, writable: bool) -> Result<Sna
             fields: vec![["expands to".into(), v.clone()]],
             raw: vec![["value".into(), v.clone()]],
             section: "aliases".into(),
+            here: text.contains(&format!("{k}:")),
         });
     }
     for l in &o.config.languages {
@@ -311,6 +325,7 @@ pub fn snapshot(config: Option<&Path>, cwd: &Path, writable: bool) -> Result<Sna
                 ],
             ],
             raw: raw_for(&text, Section::Languages, &l.name, LANGUAGE_KEYS),
+            here: edit::has_entry(&text, Section::Languages, &l.name),
             section: "languages".into(),
         });
     }
@@ -454,7 +469,9 @@ mod tests {
         }
 
         let row = &v["config"]["packages"][0];
-        for key in ["id", "kind", "name", "detail", "sigil", "fields"] {
+        for key in [
+            "id", "kind", "name", "detail", "sigil", "fields", "raw", "here",
+        ] {
             assert!(row.get(key).is_some(), "a row lost `{key}`: {row}");
         }
         assert_eq!(row["name"], "jq");

@@ -3,6 +3,16 @@
 Dates are release dates. Versions before 0.2.0 are omitted: they predate this
 file and nothing depended on them.
 
+## 0.15.2 — 2026-09-04
+
+**An entry from an `includes:` file says so, instead of offering a button that
+cannot work.** A config is the merge of the entry file and everything it
+includes, while every edit rewrites the entry file alone. The edits already
+refused an entry they could not find — nothing was ever corrupted — but the
+refusal read "no package named `ripgrep` in this config" about a package
+plainly in the config. Those rows now show where they are declared, with no
+delete button and no editable fields.
+
 ## 0.15.1 — 2026-09-04
 
 **Clearing a field in the browser wrote a null instead of removing it.**
