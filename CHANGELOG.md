@@ -3,6 +3,28 @@
 Dates are release dates. Versions before 0.2.0 are omitted: they predate this
 file and nothing depended on them.
 
+## 0.6.0 — 2026-09-04
+
+**The TUI navigates the whole config, not just the plan.** Nine sections —
+plan, packages, files, repos, links, aliases, languages, doctor, env — with
+`tab` between them and a cursor kept per section, so moving away and back
+returns you where you were.
+
+**Editing, two ways.** `enter` opens a form on the fields the text surgery in
+`edit.rs` can safely change; `e` opens `$EDITOR` at the item's line and
+re-plans on return. Both exist because neither is sufficient: a form cannot
+represent a conditional value like `from: { macos: brew, default: apt }`, and
+it cannot edit an entry written inline as `- { name: jq, from: apt }` — the
+majority spelling in a real config. It now says so and points at `e` rather
+than surfacing a YAML parse error.
+
+**`d` diffs three different things**, depending on what is selected: what
+apply would write against what is on disk (a rendered template, or the block
+inside an rc file), drift for a doctor row, and — after a form edit — the
+before and after of the config itself.
+
+Costs about 110 KB gzipped over the previous TUI: 2.10 MB against 1.99.
+
 ## 0.5.1 — 2026-09-04
 
 **bedouin installs its own shell completion.** Nobody should have to declare

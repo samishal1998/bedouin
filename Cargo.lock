@@ -60,7 +60,7 @@ dependencies = [
 
 [[package]]
 name = "bedouin-cli"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "bedouin-core",
  "clap",
@@ -72,7 +72,7 @@ dependencies = [
 
 [[package]]
 name = "bedouin-core"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "minijinja",
  "serde",
