@@ -64,7 +64,15 @@ fn short(host: &dyn Host, p: &Path) -> String {
 /// command that still answers on a box that cannot reach GitHub.
 pub fn version(host: &OsHost) -> ExitCode {
     let pieces = installed(host);
-    let w = pieces.iter().map(|p| p.name.len()).max().unwrap_or(7);
+    // The sidecar's name counts toward the column whether it is installed or
+    // not: the line below prints it either way, and a heading that only lines
+    // up on some machines is worse than no alignment at all.
+    let w = pieces
+        .iter()
+        .map(|p| p.name.len())
+        .chain([sidecar::NAME.len()])
+        .max()
+        .unwrap_or(10);
     for p in &pieces {
         println!(
             "  {:w$}  {:8}  {}",
