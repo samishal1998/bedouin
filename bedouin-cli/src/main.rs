@@ -1,5 +1,7 @@
 //! The only thing that runs on a fresh machine.
 
+mod release;
+mod selfcmd;
 mod sidecar;
 #[cfg(feature = "tui")]
 mod tui;
@@ -34,6 +36,23 @@ enum DaemonAction {
     },
     /// Remove the unit file.
     Uninstall,
+}
+
+#[derive(Subcommand, Clone)]
+enum SelfAction {
+    /// Check for a newer release, then install it. Exits 2 under `--check`
+    /// when there is one.
+    Upgrade {
+        /// Report what is out of date and stop. Exit 2 means an update is
+        /// available, the same way `plan` means changes are pending.
+        #[arg(long)]
+        check: bool,
+        /// Install it without asking.
+        #[arg(short = 'y', long)]
+        yes: bool,
+    },
+    /// What is installed on this machine. Needs no network.
+    Version,
 }
 
 #[derive(Subcommand)]
@@ -170,6 +189,14 @@ enum Command {
         /// Fetch `bedouin-ui` without asking, if it is missing.
         #[arg(short = 'y', long)]
         yes: bool,
+    },
+    /// This binary and the pieces released with it. Not `bedouin upgrade`:
+    /// that would read as upgrading the packages bedouin manages, which it
+    /// deliberately does not do.
+    #[command(name = "self")]
+    Selfy {
+        #[command(subcommand)]
+        action: SelfAction,
     },
     /// Print bedouin's own completion script. Hidden: the plan runs it for
     /// you, and `bedouin completions` is the one that takes a package.
@@ -679,6 +706,16 @@ fn main() -> ExitCode {
         return sidecar::run(&host, cli.config.as_deref(), hostname, port, yes);
     }
 
+    // `self` is about the binary, not the machine's configuration. Resolving
+    // a config first would make `self upgrade` fail on exactly the box whose
+    // broken config you are upgrading to fix.
+    if let Command::Selfy { ref action } = cli.command {
+        return match *action {
+            SelfAction::Upgrade { check, yes } => selfcmd::upgrade(&host, check, yes),
+            SelfAction::Version => selfcmd::version(&host),
+        };
+    }
+
     // `tui` plans for itself, and re-plans after each apply.
     #[cfg(feature = "tui")]
     if matches!(cli.command, Command::Tui) {
@@ -916,6 +953,7 @@ fn main() -> ExitCode {
         // must survive a config which does not resolve. All three return
         // before the pipeline above.
         Command::Ui { .. } => unreachable!("handed over above"),
+        Command::Selfy { .. } => unreachable!("handled before the config is resolved"),
         Command::Init | Command::Env { .. } | Command::Facts => {
             unreachable!("handled before the config is resolved")
         }

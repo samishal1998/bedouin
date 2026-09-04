@@ -125,6 +125,8 @@ wrote them in.
 | `bedouin sync` | pull the config repo, then apply what changed |
 | `bedouin reconcile --watch` | keep the machine matching, unattended |
 | `bedouin daemon install` | write the systemd/launchd unit that runs it |
+| `bedouin self upgrade` | check for a newer bedouin, and the sidecar, then install it |
+| `bedouin self version` | what is installed here — works with no network |
 
 `plan -o plan.json` then `apply -f plan.json` applies exactly the plan you
 reviewed — including the environment it read, so a plan reviewed in one

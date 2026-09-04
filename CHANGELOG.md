@@ -3,6 +3,48 @@
 Dates are release dates. Versions before 0.2.0 are omitted: they predate this
 file and nothing depended on them.
 
+## 0.13.0 — 2026-09-04
+
+**`bedouin self upgrade`.** It checks for a newer release, shows what is out
+of date, asks, and replaces the binaries in place. `--check` reports and exits
+2 — the same "there is work pending" that `plan` and `doctor` use, so a timer
+or a CI step can gate on it. `-y` skips the prompt. `bedouin self version`
+says what is installed and needs no network at all.
+
+**Not `bedouin upgrade`.** bedouin's entire subject is installing and
+upgrading packages, so a bare `upgrade` would read as "bring my machine's
+software up to date" — which is a thing bedouin deliberately does not do
+(§7.2: `latest` means install if absent, never upgrade). The `self` namespace
+is the difference between the tool and its subject.
+
+**It upgrades the sidecar too, but only if you have one.** `bedouin ui` pins
+`bedouin-ui` to an exact matching version, so upgrading bedouin and leaving a
+stale sidecar behind just means the next `bedouin ui` re-downloads. Anyone who
+has never run `bedouin ui` gets no web server pushed onto their machine by an
+upgrade; it is still fetched on first use.
+
+**How it finds the newest version.** `/releases/latest` redirects to
+`/releases/tag/vX.Y.Z`, so the tag is in the URL curl lands on: one request,
+no token, no JSON, and no 60-per-hour GitHub API rate limit shared with
+everyone else behind the same NAT. A redirect that is not a release tag — a
+sign-in wall, a moved repository — reads as no version rather than as one.
+
+**Replacing a running binary.** Staged in a directory beside the target, then
+renamed over it. The rename is atomic and within one filesystem, so it cannot
+leave half a binary at the path, and creating that staging directory fails
+immediately when the install directory needs root — which is a better error
+than downloading nine megabytes first. It never silently escalates; it prints
+the `sudo` command and stops.
+
+Versions compare as numbers. As text `0.9.0` sorts above `0.12.1`, which would
+have told everyone on 0.9.0 they were current and quietly stranded them there.
+
+One download path, not two: `bedouin ui`'s fetch and this one are the same
+code in `release.rs`, so the SHA256 verification cannot drift between them.
+
+Upgrading *to* 0.13.0 still needs `install.sh` — 0.12.1 has no `self` command
+to run. After that, `bedouin self upgrade` is the way.
+
 ## 0.12.1 — 2026-09-04
 
 **Plan warnings are a banner again, not footer text.** 0.12.0 moved them into
