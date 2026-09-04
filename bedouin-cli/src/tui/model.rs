@@ -76,6 +76,9 @@ pub struct Field {
 }
 
 pub struct Form {
+    /// A new entry rather than an edit of the selected one. `enter` on the
+    /// last field creates it; the fields are the ones `add` needs.
+    pub creating: bool,
     pub title: String,
     /// Every field this item can be edited through, not just the first.
     pub fields: Vec<Field>,
@@ -85,10 +88,6 @@ pub struct Form {
 }
 
 impl Form {
-    pub fn field(&self) -> &Field {
-        &self.fields[self.idx]
-    }
-
     /// Moving between fields abandons the buffer for the one being left --
     /// committing is `enter`, and a half-typed value silently carried into
     /// the next field would be worse than losing it.
@@ -556,11 +555,102 @@ impl App {
             return;
         }
         self.mode = Mode::Form(Form {
+            creating: false,
             title: row.name.clone(),
             value: row.fields[0].current.clone(),
             fields: row.fields.clone(),
             idx: 0,
         });
+    }
+
+    /// `n`. Only where there is a way to add: `edit::add_package` for
+    /// packages, and `set_alias` which creates the alias if it is absent.
+    /// Everywhere else `e` is the answer, and it says so.
+    pub fn open_new(&mut self) {
+        let fields = match self.section {
+            Section::Packages => vec![("name", ""), ("from", "apt"), ("version", "")],
+            Section::Aliases => vec![("name", ""), ("value", "")],
+            s => {
+                self.note = Some(format!(
+                    "bedouin cannot add a `{}` entry for you — press e",
+                    s.title()
+                ));
+                return;
+            }
+        };
+        let fields: Vec<Field> = fields
+            .into_iter()
+            .map(|(label, seed)| Field {
+                label: label.into(),
+                key: Some(label.into()),
+                current: seed.into(),
+            })
+            .collect();
+        self.mode = Mode::Form(Form {
+            creating: true,
+            title: format!("new {}", self.section.title().trim_end_matches('s')),
+            value: fields[0].current.clone(),
+            fields,
+            idx: 0,
+        });
+    }
+
+    /// Create the entry the form describes. Separate from `commit_field`
+    /// because adding takes every field at once, where editing takes one.
+    pub fn commit_new(
+        &mut self,
+        host: &dyn Host,
+        fields: &[Field],
+        idx: usize,
+        value: &str,
+    ) -> Result<(), String> {
+        let get = |label: &str| -> String {
+            fields
+                .iter()
+                .enumerate()
+                .find(|(_, f)| f.label == label)
+                .map(|(i, f)| {
+                    if i == idx {
+                        value.to_string()
+                    } else {
+                        f.current.clone()
+                    }
+                })
+                .unwrap_or_default()
+        };
+        let name = get("name");
+        if name.trim().is_empty() {
+            return Err("a name is required".into());
+        }
+
+        let path = self.outcome.loaded.entry.clone();
+        let before = read(host, &path)?.ok_or_else(|| format!("{}: gone", path.display()))?;
+
+        let after = match self.section {
+            Section::Packages => {
+                let from = get("from");
+                if from.trim().is_empty() {
+                    return Err("`from` is required — which manager installs it?".into());
+                }
+                let v = get("version");
+                let version = (!v.trim().is_empty()).then_some(v);
+                bedouin_core::edit::add_package(&before, &name, &from, version.as_deref())
+                    .map_err(|e| e.to_string())?
+            }
+            Section::Aliases => bedouin_core::edit::set_alias(&before, None, &name, &get("value"))
+                .map_err(|e| e.to_string())?,
+            _ => return Err("nothing here can be added".into()),
+        };
+
+        host.write(&path, after.as_bytes(), 0o600)
+            .map_err(|e| e.to_string())?;
+        self.mode = Mode::Diff(DiffView {
+            title: format!("{} — added `{name}`", path.display()),
+            rows: diff::lines(&before, &after, 2),
+            scroll: 0,
+        });
+        self.note = Some(format!("added `{name}` — press r to re-plan"));
+        Ok(())
     }
 
     /// Write the field, show what changed in the config, and re-plan.

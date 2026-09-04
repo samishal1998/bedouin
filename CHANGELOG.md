@@ -3,6 +3,21 @@
 Dates are release dates. Versions before 0.2.0 are omitted: they predate this
 file and nothing depended on them.
 
+## 0.9.0 — 2026-09-04
+
+**`n` adds an entry.** Packages take a name, a manager and an optional
+version; aliases take a name and a value. Both go through the same text
+surgery as an edit, and both show the diff of what was written. Sections with
+no way to add — files, repos, links, languages — say so and point at `e`
+rather than offering a form that cannot deliver.
+
+**The mark, in characters.** The tent from
+`assets/icon/bedouin-mark-mono.svg` renders as ASCII: it fills the empty
+states, and it goes up a row at a time while the first plan is computed. That
+wait is real — planning probes the machine, resolves the config and reads
+files — and it used to be spent on a blank terminal, because the plan ran
+before the screen existed. Terminal first now, then plan.
+
 ## 0.8.0 — 2026-09-04
 
 **The form edits every field, not just `version`.** A package offers `from`,

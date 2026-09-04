@@ -1,5 +1,6 @@
 //! Drawing. A pure function of `App`; it changes nothing.
 
+use super::art;
 use super::diff;
 use super::model::{App, Mode, Section};
 use super::theme;
@@ -73,10 +74,7 @@ fn list(app: &mut App, f: &mut Frame, area: Rect) {
     let section = app.section;
     if app.rows().is_empty() {
         f.render_widget(
-            Paragraph::new(empty_note(section))
-                .style(theme::quiet())
-                .block(framed(section.title()))
-                .wrap(Wrap { trim: true }),
+            empty_pane(section, area).block(framed(section.title())),
             area,
         );
         return;
@@ -175,6 +173,50 @@ fn aside(app: &App, f: &mut Frame, area: Rect) {
     );
 }
 
+/// The tent going up while the first plan is computed.
+pub fn splash(f: &mut Frame, frame: usize) {
+    let rows = art::raising(frame);
+    let h = art::FRAMES as u16 + 2;
+    let w = art::TENT[0].chars().count() as u16;
+    let area = f.area();
+    if area.height < h || area.width < w {
+        return;
+    }
+    // Anchored so the base stays put and the peaks rise into place.
+    let top = area.height / 2 - h / 2 + (art::FRAMES - rows.len()) as u16;
+    let rect = Rect {
+        x: area.width / 2 - w / 2,
+        y: top,
+        width: w,
+        height: rows.len() as u16 + 2,
+    };
+    let mut lines: Vec<Line> = rows
+        .iter()
+        .map(|l| Line::styled(*l, Style::new().fg(theme::MADDER_LIFT)))
+        .collect();
+    if rows.len() == art::FRAMES {
+        lines.push(Line::from(""));
+        lines.push(Line::styled(
+            format!("{:^w$}", "bedouin", w = w as usize),
+            theme::quiet(),
+        ));
+    }
+    f.render_widget(Paragraph::new(lines), rect);
+}
+
+/// The empty state gets the mark: there is room, and nothing else to say.
+fn empty_pane(s: Section, area: Rect) -> Paragraph<'static> {
+    let mut lines: Vec<Line> = Vec::new();
+    if area.height >= 14 && area.width >= 34 {
+        for l in art::TENT {
+            lines.push(Line::styled(*l, theme::quiet()));
+        }
+        lines.push(Line::from(""));
+    }
+    lines.push(Line::styled(empty_note(s), theme::quiet()));
+    Paragraph::new(lines).alignment(Alignment::Center)
+}
+
 fn empty_note(s: Section) -> String {
     match s {
         Section::Plan => "No changes. The machine matches the config.".into(),
@@ -205,7 +247,7 @@ fn footer(app: &App, f: &mut Frame, area: Rect) {
                 )
             } else {
                 (
-                    "tab section   j/k move   enter edit   e $EDITOR   d diff   a apply   q quit"
+                    "tab section   j/k move   enter edit   n new   e $EDITOR   d diff   a apply   q quit"
                         .to_string(),
                     theme::quiet(),
                 )

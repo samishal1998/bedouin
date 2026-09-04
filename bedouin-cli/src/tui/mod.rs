@@ -7,6 +7,7 @@
 //! `bedouin apply` — same function, same renderer, same colours. `$EDITOR`
 //! is suspended the same way and for the same reason.
 
+mod art;
 mod diff;
 mod model;
 mod theme;
@@ -35,18 +36,28 @@ enum Step {
 }
 
 pub fn run(host: &OsHost, config: Option<&Path>, cwd: &Path, verbose: bool) -> ExitCode {
-    let mut app = match App::load(host, config, cwd) {
-        Ok(a) => a,
-        Err(e) => {
-            eprintln!("bedouin: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
-
+    // Terminal first, then plan. Planning probes the machine and reads the
+    // config, which is the one genuinely slow moment here -- doing it before
+    // the screen exists spends that time on a blank terminal.
     let mut term = match enter() {
         Ok(t) => t,
         Err(e) => {
             eprintln!("bedouin: could not start the terminal UI: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    for frame in 1..=art::FRAMES {
+        if term.draw(|f| view::splash(f, frame)).is_err() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(45));
+    }
+
+    let mut app = match App::load(host, config, cwd) {
+        Ok(a) => a,
+        Err(e) => {
+            let _ = leave(&mut term);
+            eprintln!("bedouin: {e}");
             return ExitCode::FAILURE;
         }
     };
@@ -108,9 +119,18 @@ fn key(app: &mut App, host: &dyn bedouin_core::host::Host) -> Result<Step, Strin
             match k.code {
                 KeyCode::Esc => app.mode = Mode::Browse,
                 KeyCode::Enter => {
-                    let (field, value) = (form.field().clone(), form.value.clone());
+                    let (creating, fields, idx, value) = (
+                        form.creating,
+                        form.fields.clone(),
+                        form.idx,
+                        form.value.clone(),
+                    );
                     app.mode = Mode::Browse;
-                    app.commit_field(host, &field, &value)?;
+                    if creating {
+                        app.commit_new(host, &fields, idx, &value)?;
+                    } else {
+                        app.commit_field(host, &fields[idx], &value)?;
+                    }
                 }
                 // Between fields. Arrows and tab, not j/k: those are letters
                 // you are trying to type into the value.
@@ -176,6 +196,10 @@ fn key(app: &mut App, host: &dyn bedouin_core::host::Host) -> Result<Step, Strin
             }
             KeyCode::Enter => {
                 app.open_form();
+                Ok(Step::Stay)
+            }
+            KeyCode::Char('n') => {
+                app.open_new();
                 Ok(Step::Stay)
             }
             KeyCode::Char('e') => Ok(Step::Edit),
@@ -378,10 +402,10 @@ links:
             unreachable!()
         };
         f.move_by(1);
-        assert_eq!(f.field().label, "version");
+        assert_eq!(f.fields[f.idx].label, "version");
         assert_eq!(f.value, "\"1.7\"", "reseeded from the config text");
         f.move_by(-1);
-        assert_eq!(f.field().label, "from", "and it wraps back");
+        assert_eq!(f.fields[f.idx].label, "from", "and it wraps back");
 
         assert!(screen(&mut a).contains("script"), "all of them are drawn");
     }
@@ -409,7 +433,7 @@ links:
         );
 
         // Committing it back unchanged leaves the config alone.
-        let field = f.field().clone();
+        let field = f.fields[f.idx].clone();
         let value = f.value.clone();
         a.mode = Mode::Browse;
         a.commit_field(&h, &field, &value).expect("commit");
@@ -423,6 +447,74 @@ links:
             after.contains("{ macos: brew, default: apt }"),
             "the macOS arm survives:\n{after}"
         );
+    }
+
+    #[test]
+    fn a_package_can_be_added_and_lands_in_the_config() {
+        let h = host();
+        let mut a =
+            App::load(&h, Some(Path::new("/cfg/bedouin.yaml")), Path::new("/cfg")).expect("load");
+        a.go(Section::Packages);
+        a.open_new();
+        let Mode::Form(f) = &a.mode else {
+            panic!("no form")
+        };
+        assert!(f.creating, "this form creates rather than edits");
+        let mut fields = f.fields.clone();
+        assert_eq!(
+            fields.iter().map(|x| x.label.as_str()).collect::<Vec<_>>(),
+            ["name", "from", "version"]
+        );
+        fields[0].current = "ripgrep".into();
+        fields[1].current = "apt".into();
+        a.mode = Mode::Browse;
+        a.commit_new(&h, &fields, 2, "").expect("create");
+
+        let after = String::from_utf8(
+            bedouin_core::host::Host::read(&h, Path::new("/cfg/bedouin.yaml"))
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(
+            after.contains("ripgrep"),
+            "the package is written:\n{after}"
+        );
+        // And what changed is shown, as with any other edit.
+        assert!(matches!(a.mode, Mode::Diff(_)), "the addition is diffed");
+    }
+
+    #[test]
+    fn adding_needs_a_name_and_a_manager() {
+        let h = host();
+        let mut a =
+            App::load(&h, Some(Path::new("/cfg/bedouin.yaml")), Path::new("/cfg")).expect("load");
+        a.go(Section::Packages);
+        a.open_new();
+        let Mode::Form(f) = &a.mode else {
+            panic!("no form")
+        };
+        let fields = f.fields.clone();
+        a.mode = Mode::Browse;
+
+        let e = a.commit_new(&h, &fields, 0, "  ").expect_err("no name");
+        assert!(e.contains("name is required"), "{e}");
+
+        let mut named = fields.clone();
+        named[0].current = "x".into();
+        named[1].current = String::new();
+        let e = a.commit_new(&h, &named, 2, "").expect_err("no manager");
+        assert!(e.contains("`from` is required"), "{e}");
+    }
+
+    #[test]
+    fn a_section_with_no_way_to_add_says_so() {
+        let mut a = app();
+        a.go(Section::Repos);
+        a.open_new();
+        assert!(matches!(a.mode, Mode::Browse), "no form opens");
+        let n = a.note.clone().unwrap_or_default();
+        assert!(n.contains("press e"), "and it points at the editor: {n}");
     }
 
     #[test]
@@ -468,7 +560,7 @@ links:
         let Mode::Form(f) = &a.mode else {
             panic!("no form")
         };
-        let field = f.field().clone();
+        let field = f.fields[f.idx].clone();
         a.mode = Mode::Browse;
         a.commit_field(&h, &field, "1.8").expect("commit");
 
@@ -511,7 +603,7 @@ links:
         let Mode::Form(f) = &a.mode else {
             panic!("no form")
         };
-        let field = f.field().clone();
+        let field = f.fields[f.idx].clone();
         a.mode = Mode::Browse;
 
         let err = a.commit_field(&h, &field, "1.8").expect_err("must refuse");
