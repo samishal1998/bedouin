@@ -1,5 +1,6 @@
 //! The only thing that runs on a fresh machine.
 
+mod sidecar;
 #[cfg(feature = "tui")]
 mod tui;
 
@@ -156,6 +157,15 @@ enum Command {
     /// Show the plan on screen, with a key to apply it.
     #[cfg(feature = "tui")]
     Tui,
+    /// Serve the web UI. Runs `bedouin-ui`, fetching it once if it is absent:
+    /// the HTTP stack and the built assets live there, not in this binary.
+    Ui {
+        #[arg(short, long, default_value_t = 7777)]
+        port: u16,
+        /// Fetch `bedouin-ui` without asking, if it is missing.
+        #[arg(short = 'y', long)]
+        yes: bool,
+    },
     /// Print bedouin's own completion script. Hidden: the plan runs it for
     /// you, and `bedouin completions` is the one that takes a package.
     #[command(hide = true)]
@@ -653,6 +663,12 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
+    // Hands over to another binary; it needs no config resolved here, and
+    // the config path is passed straight through.
+    if let Command::Ui { port, yes } = cli.command {
+        return sidecar::run(&host, cli.config.as_deref(), port, yes);
+    }
+
     // `tui` plans for itself, and re-plans after each apply.
     #[cfg(feature = "tui")]
     if matches!(cli.command, Command::Tui) {
@@ -889,6 +905,7 @@ fn main() -> ExitCode {
         // `init` has no config yet; `env` and `facts` answer questions that
         // must survive a config which does not resolve. All three return
         // before the pipeline above.
+        Command::Ui { .. } => unreachable!("handed over above"),
         Command::Init | Command::Env { .. } | Command::Facts => {
             unreachable!("handled before the config is resolved")
         }

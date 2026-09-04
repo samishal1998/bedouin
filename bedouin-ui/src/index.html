@@ -1,0 +1,30 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>bedouin</title>
+<style>
+  :root { --madder:#A82A24; --lift:#D4443C; --sand:#F2EFE9; --ink:#17161A; --dim:#8B857D; }
+  body { margin:0; background:var(--sand); color:var(--ink);
+         font:14px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace; }
+  main { max-width:62rem; margin:0 auto; padding:3rem 1.5rem; }
+  h1 { font-size:1.4rem; margin:0 0 .25rem; color:var(--madder); letter-spacing:.02em; }
+  p  { color:var(--dim); margin:.25rem 0 2rem; }
+  pre { background:#fff; border:1px solid #e0dcd6; border-radius:6px;
+        padding:1rem; overflow:auto; }
+  a  { color:var(--lift); }
+  @media (prefers-color-scheme: dark) {
+    :root { --sand:#17161A; --ink:#F2EFE9; }
+    pre { background:#1e1d22; border-color:#2c2a31; }
+  }
+</style>
+<main>
+  <h1>bedouin</h1>
+  <p>The web UI is served, the interface is not built yet. These are live.</p>
+  <pre id="out">loading…</pre>
+</main>
+<script>
+  fetch('/api/plan').then(r => r.json()).then(d => {
+    const rows = (d.items || []).map(i => `${i.action === 'no_op' ? ' ' : '+'} ${i.id}`);
+    document.getElementById('out').textContent =
+      rows.length ? rows.join('\n') : 'No changes. The machine matches the config.';
+  }).catch(e => { document.getElementById('out').textContent = String(e); });
+</script>

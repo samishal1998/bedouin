@@ -1,0 +1,17 @@
+[package]
+name = "bedouin-ui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# Deliberately NOT a dependency of bedouin-cli. This crate carries the HTTP
+# stack and the built assets; the bootstrap binary carries neither, and the
+# only thing that connects them is `bedouin ui` finding this on disk and
+# exec'ing it.
+[dependencies]
+bedouin-core = { workspace = true }
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "macros", "net", "signal"] }
+serde_json = { workspace = true }
+serde = { workspace = true }

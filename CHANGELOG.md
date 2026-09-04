@@ -3,6 +3,29 @@
 Dates are release dates. Versions before 0.2.0 are omitted: they predate this
 file and nothing depended on them.
 
+## 0.10.0 — 2026-09-04
+
+**`bedouin ui` serves a web UI, from a separate binary.** The HTTP stack and
+the built assets live in `bedouin-ui`, which is released beside `bedouin` and
+never inside it. The bootstrap binary grew by **52 KB** — the logic to look
+for the sidecar, fetch it, verify it and hand over. It costs that little
+because the download is `curl` through the `Host`, exactly as brew, mise and
+rustup are bootstrapped: no new dependency reaches the static musl binary.
+
+Missing, it says what it will fetch, from where and into where, and asks.
+Present, it `exec`s — replacing the process rather than spawning one, which is
+what lets the server own the terminal you started it from. That is the answer
+to the privilege problem the TUI dodged: **sudo prompts in your terminal**, and
+no password crosses HTTP.
+
+The sidecar's version must match; a plan rendered by a different core is a
+plan for a different program. The tarball is checked against the release's
+`SHA256SUMS` before anything is executed, and a release without published sums
+is one this refuses to install.
+
+Serving now: `/api/plan` and `/api/facts`, both real. The interface itself is
+next.
+
 ## 0.9.0 — 2026-09-04
 
 **`n` adds an entry.** Packages take a name, a manager and an optional

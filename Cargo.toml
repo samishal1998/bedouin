@@ -1,9 +1,14 @@
 [workspace]
 resolver = "2"
-members = ["bedouin-core", "bedouin-cli"]
+members = ["bedouin-core", "bedouin-cli", "bedouin-ui"]
+# The bootstrap binary is `bedouin` alone. `bedouin-ui` is built and released
+# beside it, never into it: it carries an HTTP stack and the built web assets,
+# and the whole point of the sidecar is that neither reaches the static musl
+# binary that has to run on a bare machine.
+default-members = ["bedouin-core", "bedouin-cli"]
 
 [workspace.package]
-version = "0.9.0"
+version = "0.10.0"
 edition = "2021"
 rust-version = "1.80"
 license = "MIT OR Apache-2.0"
