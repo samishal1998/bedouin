@@ -9,6 +9,8 @@
 //! you launched it from, so sudo prompts *there* rather than needing a
 //! password to cross an HTTP boundary.
 
+mod api;
+
 use axum::extract::State;
 use axum::response::{Html, IntoResponse};
 use axum::routing::get;
@@ -56,6 +58,7 @@ async fn main() -> std::process::ExitCode {
 
     let app = Router::new()
         .route("/", get(index))
+        .route("/api/state", get(state))
         .route("/api/plan", get(plan))
         .route("/api/facts", get(facts))
         .with_state(ctx);
@@ -88,6 +91,17 @@ async fn outcome(ctx: Arc<Ctx>) -> Result<run::Outcome, String> {
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// Everything the page draws, in one call. See `api::snapshot`.
+async fn state(State(ctx): State<Arc<Ctx>>) -> impl IntoResponse {
+    let r =
+        tokio::task::spawn_blocking(move || api::snapshot(ctx.config.as_deref(), &ctx.cwd)).await;
+    match r {
+        Ok(Ok(s)) => Json(s).into_response(),
+        Ok(Err(e)) => problem(e),
+        Err(e) => problem(e.to_string()),
+    }
 }
 
 async fn plan(State(ctx): State<Arc<Ctx>>) -> impl IntoResponse {
@@ -123,8 +137,10 @@ fn problem(e: String) -> axum::response::Response {
         .into_response()
 }
 
-/// Placeholder until the Astro build is wired in. Deliberately says so rather
-/// than pretending to be the finished thing.
+/// The Astro build, inlined into one file and embedded here. Served from
+/// memory rather than from disk beside the binary: this binary is fetched
+/// into a directory of its own, so anything it expected to find next to
+/// itself would not be there.
 async fn index() -> Html<&'static str> {
-    Html(include_str!("index.html"))
+    Html(include_str!("../web/dist/index.html"))
 }

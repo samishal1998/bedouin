@@ -49,6 +49,15 @@ jobs:
 
       - run: cargo build --release --target ${{ matrix.target }}
 
+      # The page is embedded with include_str!, so it has to exist before
+      # cargo runs. Without this the sidecar ships build.rs's placeholder --
+      # which is why a test asserts the real page is what got embedded.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci && npm run build
+        working-directory: bedouin-ui/web
+
       # The sidecar is not a default member -- the bootstrap binary must not
       # carry an HTTP stack -- so it is built by name, and shipped beside.
       - run: cargo build --release --target ${{ matrix.target }} -p bedouin-ui

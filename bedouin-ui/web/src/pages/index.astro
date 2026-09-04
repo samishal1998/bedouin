@@ -1,0 +1,228 @@
+---
+import '../styles/bedouin.css';
+
+// The page is static. Everything below fills in from /api/state, because the
+// machine is what changes, not the markup.
+const SECTIONS = [
+  ['plan', 'plan'],
+  ['packages', 'packages'],
+  ['files', 'files'],
+  ['repos', 'repos'],
+  ['links', 'links'],
+  ['aliases', 'aliases'],
+  ['languages', 'languages'],
+  ['doctor', 'doctor'],
+  ['env', 'env'],
+];
+---
+
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>bedouin</title>
+    <link rel="icon" href="data:," />
+  </head>
+  <body>
+    <header>
+      <div class="bar">
+        <svg class="mark" viewBox="0 0 64 64" aria-hidden="true">
+          <path
+            fill="currentColor"
+            fill-rule="evenodd"
+            d="M 3 50 Q 12 46 22 12 Q 32 34 42 12 Q 52 46 61 50 Z M 26 50 L 26 37 Q 32 32 38 37 L 38 50 Z"
+          />
+        </svg>
+        <span class="wordmark">bedouin</span>
+        <div class="where mono" id="where">connecting…</div>
+      </div>
+      <nav id="tabs" role="tablist">
+        {
+          SECTIONS.map(([id, label]) => (
+            <button role="tab" data-section={id} aria-selected={id === 'plan'}>
+              {label}
+              <span class="n" data-count={id}></span>
+            </button>
+          ))
+        }
+      </nav>
+    </header>
+
+    <div id="warnings"></div>
+
+    <main>
+      <section class="panel" aria-label="items">
+        <ul class="rows" id="rows"></ul>
+      </section>
+      <section class="panel aside" aria-label="details">
+        <div id="details" class="hint">Select something.</div>
+      </section>
+    </main>
+
+    <footer id="foot"></footer>
+
+    <script>
+      const TENT = [
+        '        /\\          /\\        ',
+        '       /  \\        /  \\       ',
+        '      /    \\      /    \\      ',
+        '     /      \\    /      \\     ',
+        '    /        \\__/        \\    ',
+        '   /                      \\   ',
+        '  /         ______         \\  ',
+        ' /_________/      \\_________\\ ',
+      ].join('\n');
+
+      const EMPTY = {
+        plan: 'No changes. The machine matches the config.',
+        doctor: 'No drift. Everything managed matches what bedouin wrote.',
+        env: 'This config reads no environment variables.',
+      };
+
+      let snap = null;
+      let section = 'plan';
+      let selected = 0;
+
+      const $ = (id) => document.getElementById(id);
+      const esc = (s) =>
+        String(s).replace(/[&<>"']/g, (c) => ({
+          '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+        })[c]);
+
+      function rowsFor(s) {
+        if (!snap) return [];
+        if (s === 'plan') return snap.plan.items;
+        if (s === 'doctor')
+          return snap.doctor.map((d) => ({
+            id: d.id, kind: d.what, name: d.id, detail: d.detail,
+            sigil: '!', fields: [['what', d.what], ['detail', d.detail]],
+          }));
+        if (s === 'env')
+          return snap.env.map((e) => ({
+            id: e.name, kind: e.set ? 'set' : 'unset', name: e.name,
+            detail: e.site, sigil: e.set ? ' ' : '?',
+            fields: [
+              ['read at', e.site],
+              ['state', e.set ? 'set' : 'not set'],
+              ['if unset', e.match_key
+                ? 'the target simply does not match'
+                : e.has_default
+                  ? 'falls back to its | default(…)'
+                  : 'resolve fails — nothing to fall back to'],
+            ],
+          }));
+        return snap.config[s] || [];
+      }
+
+      function sigilClass(c) {
+        return { '+': 'add', '~': 'change', '-': 'remove', '!': 'drift', '?': 'change' }[c] || '';
+      }
+
+      function render() {
+        if (!snap) return;
+        for (const b of $('tabs').children) {
+          const s = b.dataset.section;
+          b.setAttribute('aria-selected', String(s === section));
+          const n = rowsFor(s).length;
+          b.querySelector('.n').textContent = n || '';
+        }
+
+        const rows = rowsFor(section);
+        const ul = $('rows');
+        if (!rows.length) {
+          ul.innerHTML = `<div class="empty"><pre>${esc(TENT)}</pre>${
+            esc(EMPTY[section] || `Nothing declared under \`${section}:\`.`)
+          }</div>`;
+          $('details').className = 'hint';
+          $('details').textContent = 'Nothing to show.';
+          return;
+        }
+        ul.innerHTML = rows
+          .map(
+            (r, i) => `<li data-i="${i}" aria-current="${i === selected}">
+              <span class="sigil ${sigilClass(r.sigil)}">${esc(r.sigil.trim() || '·')}</span>
+              <span class="kind">${esc(r.kind)}</span>
+              <span class="name">${esc(r.name)}</span>
+              <span class="detail">${esc(r.detail)}</span>
+            </li>`
+          )
+          .join('');
+        renderDetails(rows[Math.min(selected, rows.length - 1)]);
+      }
+
+      function renderDetails(r) {
+        if (!r) return;
+        const fields = [...(r.fields || [])];
+        if (r.action) fields.unshift(['action', r.action]);
+        if (r.needs_root) fields.push(['needs root', 'yes']);
+        for (const [k, v] of r.arms || []) fields.push([`arm · ${k}`, v]);
+
+        const body = fields
+          .map(([k, v]) => {
+            const val = String(v).includes('\n')
+              ? `<pre>${esc(v)}</pre>`
+              : esc(v);
+            return `<dt>${esc(k)}</dt><dd>${val}</dd>`;
+          })
+          .join('');
+        $('details').className = '';
+        $('details').innerHTML =
+          `<div class="head"><span class="sigil ${sigilClass(r.sigil)}">${
+            esc(r.sigil.trim() || '·')
+          }</span><span class="name mono">${esc(r.name)}</span></div><dl>${body}</dl>`;
+      }
+
+      $('tabs').addEventListener('click', (e) => {
+        const b = e.target.closest('button');
+        if (!b) return;
+        section = b.dataset.section;
+        selected = 0;
+        render();
+      });
+
+      $('rows').addEventListener('click', (e) => {
+        const li = e.target.closest('li');
+        if (!li) return;
+        selected = Number(li.dataset.i);
+        render();
+      });
+
+      addEventListener('keydown', (e) => {
+        const rows = rowsFor(section);
+        if (e.key === 'j' || e.key === 'ArrowDown') {
+          selected = Math.min(selected + 1, rows.length - 1);
+          render();
+        } else if (e.key === 'k' || e.key === 'ArrowUp') {
+          selected = Math.max(selected - 1, 0);
+          render();
+        }
+      });
+
+      async function load() {
+        try {
+          const r = await fetch('/api/state');
+          if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+          snap = await r.json();
+        } catch (err) {
+          $('where').textContent = String(err);
+          $('rows').innerHTML =
+            `<div class="empty">bedouin-ui is not answering.<br>${esc(err)}</div>`;
+          return;
+        }
+        const m = snap.machine;
+        $('where').innerHTML =
+          `${esc(m.user)}@${esc(m.hostname)} · ${esc(m.distro)} ${esc(m.arch)}<br>${esc(snap.config_path)}`;
+        const c = snap.plan.counts;
+        $('foot').textContent =
+          `bedouin-ui ${snap.version} — ${c.add} to add, ${c.change} to change, ${c.remove} to remove. Applying is `
+          + `\`bedouin apply\`; this view does not change the machine.`;
+        $('warnings').innerHTML = snap.plan.warnings.length
+          ? `<div class="warn">${snap.plan.warnings.map(esc).join('<br>')}</div>`
+          : '';
+        render();
+      }
+
+      load();
+    </script>
+  </body>
+</html>

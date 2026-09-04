@@ -3,6 +3,26 @@
 Dates are release dates. Versions before 0.2.0 are omitted: they predate this
 file and nothing depended on them.
 
+## 0.11.0 — 2026-09-04
+
+**The web UI has an interface.** Astro, built to a single inlined file and
+embedded in the sidecar with `include_str!` — 16 KB, no runtime asset
+lookup, because a binary that is *fetched into a directory of its own* cannot
+expect to find files beside itself.
+
+The same nine sections as the TUI — plan, packages, files, repos, links,
+aliases, languages, doctor, env — with a list, a details pane, the mark's
+palette in both light and dark, and `j`/`k` because the TUI has them. The
+empty states get the tent.
+
+**One endpoint, `/api/state`.** Nine would each re-probe the machine;
+`run::plan` is the expensive call and it already produces everything the page
+draws. A test asserts every key the page indexes by name still exists — a
+rename there is a blank screen with nothing else to catch it.
+
+The page is read-only for now: applying is still `bedouin apply`, and the
+footer says so rather than showing a button that is not wired.
+
 ## 0.10.0 — 2026-09-04
 
 **`bedouin ui` serves a web UI, from a separate binary.** The HTTP stack and
