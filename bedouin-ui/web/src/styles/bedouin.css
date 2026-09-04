@@ -115,6 +115,19 @@ body {
   display: flex;
 }
 
+.find {
+  align-items: center;
+  gap: 0.45rem;
+  position: relative;
+  color: var(--dim);
+}
+
+.find .ico {
+  position: absolute;
+  left: 0.55rem;
+  pointer-events: none;
+}
+
 .find input {
   width: 100%;
   appearance: none;
@@ -122,7 +135,10 @@ body {
   background: var(--weft);
   border: 1px solid var(--warp);
   border-radius: 3px;
+  /* After the shorthand, not before it: `padding` would reset the left inset
+     the mark sits in and drop the icon on top of the placeholder. */
   padding: 0.32rem 0.6rem;
+  padding-left: 1.9rem;
   font: 0.82rem/1.4 var(--mono);
   color: var(--wool);
 }
@@ -432,13 +448,49 @@ main {
   color: var(--madder);
 }
 
+/* Marks, not a font: one sprite, referenced. Stroked rather than filled so
+   they hold at the size a row actually shows them, on the tent's own 24 grid
+   and its 45-degree diagonals. */
+.sprite {
+  display: none;
+}
+
+.ico {
+  width: 15px;
+  height: 15px;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vertical-align: -2px;
+}
+
+.ico.big {
+  width: 17px;
+  height: 17px;
+}
+
 .kind {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
   font-size: 0.66rem;
   letter-spacing: 0.11em;
   text-transform: uppercase;
   color: var(--dim);
   overflow: hidden;
+}
+
+.kindword {
+  overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.rows li:hover .kind,
+.rows li[aria-current="true"] .kind {
+  color: var(--wool);
 }
 
 .rows .name {
@@ -462,6 +514,10 @@ main {
   gap: 0.5rem;
   padding: 0.8rem 0.95rem;
   border-bottom: 1px solid var(--warp);
+}
+
+.head .ico {
+  color: var(--dim);
 }
 
 .head .name {

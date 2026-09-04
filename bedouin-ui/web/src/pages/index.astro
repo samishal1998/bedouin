@@ -21,9 +21,32 @@ const SECTIONS = [
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>bedouin</title>
-    <link rel="icon" href="data:," />
+    <link rel="icon" href='data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"%3E%3Cpath fill="%23a82a24" fill-rule="evenodd" d="M 3 50 Q 12 46 22 12 Q 32 34 42 12 Q 52 46 61 50 Z M 26 50 L 26 37 Q 32 32 38 37 L 38 50 Z"/%3E%3C/svg%3E' />
   </head>
   <body>
+    <svg class="sprite" aria-hidden="true">
+      <defs>
+        <g id="i-package"><path d="M12 3 21 8v8l-9 5-9-5V8Z"/><path d="M3 8l9 5 9-5"/><path d="M12 13v8"/></g>
+        <g id="i-file"><path d="M6 3h8l4 4v14H6Z"/><path d="M14 3v4h4"/></g>
+        <g id="i-repo"><circle cx="7" cy="6" r="2"/><circle cx="7" cy="18" r="2"/><circle cx="17" cy="10" r="2"/><path d="M7 8v8"/><path d="M17 12c0 4-4 3-10 5"/></g>
+        <g id="i-link"><path d="M4 12h12"/><path d="m12 8 4 4-4 4"/><path d="M20 5v14"/></g>
+        <g id="i-alias"><path d="M4 8h7"/><path d="M4 16h16"/><path d="m8 12 3 4-3 4" opacity="0"/></g>
+        <g id="i-language"><path d="m6 8 4 4-4 4"/><path d="M13 16h5"/></g>
+        <g id="i-manager"><path d="M12 3 21 8l-9 5-9-5Z"/><path d="m3 12 9 5 9-5"/><path d="m3 16 9 5 9-5"/></g>
+        <g id="i-dir"><path d="M3 7h7l2 2h9v10H3Z"/></g>
+        <g id="i-rc"><path d="M6 3h12v18H6Z"/><path d="M9 8h6"/><path d="M9 12h6"/><path d="M9 16h4"/></g>
+        <g id="i-path"><path d="M6 21 11 3"/><path d="M18 21 13 3"/><path d="M12 7v2"/><path d="M12 12v2"/><path d="M12 17v2"/></g>
+        <g id="i-env"><path d="M9 4C6 4 7 11 4 12c3 1 2 8 5 8"/><path d="M15 4c3 0 2 7 5 8-3 1-2 8-5 8"/></g>
+        <g id="i-drift"><path d="M12 4 22 20H2Z"/><path d="M12 10v4"/><path d="M12 17h.01"/></g>
+        <g id="i-search"><circle cx="10.5" cy="10.5" r="6"/><path d="m15 15 5 5"/></g>
+        <g id="i-add"><path d="M12 5v14"/><path d="M5 12h14"/></g>
+        <g id="i-edit"><path d="M4 20h4L19 9a2.8 2.8 0 0 0-4-4L4 16Z"/><path d="m14 6 4 4"/></g>
+        <g id="i-delete"><path d="M4 7h16"/><path d="M9 7V4h6v3"/><path d="M6 7l1 13h10l1-13"/></g>
+        <g id="i-save"><path d="m5 12 5 6L19 6"/></g>
+        <g id="i-cancel"><path d="m6 6 12 12"/><path d="m18 6-12 12"/></g>
+      </defs>
+    </svg>
+
     <div class="wrap">
       <div class="crest">
         <svg class="mark" viewBox="0 0 64 64" aria-hidden="true">
@@ -35,6 +58,7 @@ const SECTIONS = [
         </svg>
         <span class="wordmark">bedouin</span>
         <label class="find">
+          <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-search"/></svg>
           <input
             id="q"
             type="search"
@@ -164,6 +188,26 @@ const SECTIONS = [
         return rows.filter((r) => haystack(r).includes(q));
       }
 
+      // A row's kind is a manager name for a package (apt, cargo) and an item
+      // kind for a plan row (dir, rc, path). Both map onto one mark.
+      const MARK = {
+        package: 'package', file: 'file', repo: 'repo', link: 'link',
+        alias: 'alias', language: 'language', manager: 'manager',
+        dir: 'dir', rc: 'rc', path: 'path', env: 'env',
+      };
+
+      function markFor(r, s) {
+        if (s === 'doctor') return 'drift';
+        if (s === 'env') return 'env';
+        if (MARK[r.kind]) return MARK[r.kind];
+        // A package's kind is the manager that installs it.
+        return MARK[s === 'plan' ? r.kind : s.replace(/e?s$/, '')] || 'package';
+      }
+
+      const icon = (id, cls = '') =>
+        `<svg class="ico ${cls}" viewBox="0 0 24 24" aria-hidden="true">` +
+        `<use href="#i-${id}"/></svg>`;
+
       const dye = (c) =>
         ({ '+': 'add', '~': 'change', '-': 'remove', '!': 'remove', '?': 'change' })[c] || '';
 
@@ -232,7 +276,9 @@ const SECTIONS = [
           .map(
             (r, i) => `<li data-i="${i}" aria-current="${i === selected}">
               <span class="sigil ${dye(r.sigil)}">${esc(r.sigil.trim() || '·')}</span>
-              <span class="kind">${esc(r.kind)}</span>
+              <span class="kind" title="${esc(r.kind)}">${
+                icon(markFor(r, section))
+              }<span class="kindword">${esc(r.kind)}</span></span>
               <span class="name">${esc(r.name)}</span>
               <span class="detail">${esc(r.detail)}</span>
             </li>`
@@ -252,7 +298,9 @@ const SECTIONS = [
         $('details').innerHTML =
           `<div class="head"><span class="sigil ${dye(r.sigil)}">${
             esc(r.sigil.trim() || '·')
-          }</span><span class="name">${esc(r.name)}</span></div><dl>${
+          }</span>${icon(markFor(r, section), 'big')}<span class="name">${
+            esc(r.name)
+          }</span></div><dl>${
             fields
               .map(([k, v]) => `<dt>${esc(k)}</dt><dd>${
                 String(v).includes('\n') ? `<pre>${esc(v)}</pre>` : esc(v)
