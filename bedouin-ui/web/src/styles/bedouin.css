@@ -1,238 +1,503 @@
-/* The mark's palette, same values the TUI and the docs site use. */
+/* bedouin — the weave.
+ *
+ * Madder is a dye before it is a hex value, and the mark's red is the one
+ * bedouin weaving actually uses. So the palette is the rest of that dye pot:
+ * madder, ochre, olive, on either goat-hair black or undyed wool. Three dyes,
+ * three actions — and they land where a developer already expects them, red
+ * on remove and green on add, because legibility outranks the conceit.
+ *
+ * Monospace is the voice, not the code font: this page is a machine
+ * describing itself. Sans is demoted to annotation.
+ */
+
 :root {
+  /* Undyed wool. Warmer and more sunk than paper — this is fleece, not a
+     sheet of A4. */
+  --ground: #e8e0d2;
+  --weft: #f4efe5;
+  --warp: #d3c7b3;
+  --wool: #1a1512;
+  --dim: #6d6053;
   --madder: #a82a24;
-  --lift: #d4443c;
-  --pale: #f0b8b4;
-  --sand: #f7f5f2;
-  --paper: #ffffff;
-  --ink: #17161a;
-  --dim: #6d6873;
-  --rule: #e0dcd6;
-  --add: #5f7a4f;
-  --edge: 0 1px 2px rgb(23 22 26 / 6%);
+  --ochre: #94670f;
+  --olive: #4f6b39;
+  --edge: 0 1px 0 rgb(26 21 18 / 5%);
+  --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, "DejaVu Sans Mono",
+    Consolas, monospace;
+  --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", sans-serif;
   color-scheme: light dark;
 }
 
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme='light']) {
-    --sand: #131216;
-    --paper: #1b1a1f;
-    --ink: #edeae4;
-    --dim: #928c96;
-    --rule: #2c2a31;
+  :root:not([data-theme="light"]) {
+    /* Goat hair. Warm black, never neutral — the tent is woven from an
+       animal, not printed on a screen. */
+    --ground: #14100f;
+    --weft: #1c1715;
+    --warp: #322822;
+    --wool: #ebe2d6;
+    --dim: #998a7c;
     --madder: #d4443c;
-    --lift: #f0b8b4;
-    --add: #8fae7c;
+    --ochre: #c9973f;
+    --olive: #85a468;
     --edge: none;
   }
 }
 
-* { box-sizing: border-box; }
+:root[data-theme="dark"] {
+  --ground: #14100f;
+  --weft: #1c1715;
+  --warp: #322822;
+  --wool: #ebe2d6;
+  --dim: #998a7c;
+  --madder: #d4443c;
+  --ochre: #c9973f;
+  --olive: #85a468;
+  --edge: none;
+}
+
+* {
+  box-sizing: border-box;
+}
 
 body {
   margin: 0;
-  background: var(--sand);
-  color: var(--ink);
-  font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  background: var(--ground);
+  color: var(--wool);
+  font: 400 14px/1.6 var(--sans);
   -webkit-font-smoothing: antialiased;
 }
 
-code, .mono, pre {
-  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+.mono {
+  font-family: var(--mono);
 }
 
-/* ---- shell ------------------------------------------------------------- */
-
-header {
-  border-bottom: 1px solid var(--rule);
-  background: var(--paper);
+:focus-visible {
+  outline: 2px solid var(--madder);
+  outline-offset: 2px;
 }
 
-.bar {
-  max-width: 78rem;
+.wrap {
+  max-width: 74rem;
   margin: 0 auto;
-  padding: 0.85rem 1.25rem;
+  padding: 0 1.5rem;
+}
+
+/* ---- crest -------------------------------------------------------------- */
+
+.crest {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
+  gap: 0.6rem;
+  padding: 1.1rem 0 0;
 }
 
-.mark { width: 26px; height: 26px; color: var(--madder); flex: none; }
-.wordmark { font-weight: 620; letter-spacing: 0.01em; }
-.where {
-  color: var(--dim);
-  font-size: 0.8rem;
+.mark {
+  width: 22px;
+  height: 22px;
+  color: var(--madder);
+  flex: none;
+}
+
+.wordmark {
+  font-family: var(--mono);
+  font-size: 0.95rem;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.machine {
   margin-left: auto;
   text-align: right;
-  line-height: 1.35;
+  color: var(--dim);
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  line-height: 1.45;
+  max-width: 34rem;
+  overflow-wrap: anywhere;
 }
 
-nav {
-  max-width: 78rem;
-  margin: 0 auto;
-  padding: 0 1.25rem;
+/* ---- the verdict -------------------------------------------------------- */
+
+/* The one question this page answers, in the largest type on it. It used to
+   live in the footer as prose, which is the wrong end of the page for the
+   only fact most visits are here for. */
+
+.verdict {
+  font-family: var(--mono);
+  font-size: clamp(2rem, 6.5vw, 3.9rem);
+  font-weight: 500;
+  letter-spacing: -0.045em;
+  line-height: 1;
+  margin: 0;
+  padding: 1.4rem 0 1.5rem;
   display: flex;
-  gap: 0.15rem;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.4rem 2.2rem;
+}
+
+.verdict .tally {
+  white-space: nowrap;
+}
+
+.verdict .n {
+  font-variant-numeric: tabular-nums;
+}
+
+.verdict .n.add {
+  color: var(--olive);
+}
+.verdict .n.change {
+  color: var(--ochre);
+}
+.verdict .n.remove {
+  color: var(--madder);
+}
+
+.verdict .verb {
+  font-family: var(--sans);
+  font-size: 0.26em;
+  font-weight: 500;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--dim);
+  margin-left: 0.5em;
+  vertical-align: 0.55em;
+}
+
+.verdict.pitched {
+  color: var(--dim);
+  letter-spacing: -0.03em;
+}
+
+/* ---- the band ----------------------------------------------------------- */
+
+/* One thread per item in the plan, dyed by what it does. It is the rule
+   under the header and it is the plan at a glance: where the weave is dense
+   with colour, the machine has work to do. Threads pick their item.
+   When there is nothing to do it falls back to the warp — every managed
+   thing, quiet — because "finished" is a pattern too, not an empty box. */
+
+.band {
+  display: flex;
+  gap: 2px;
+  height: 30px;
+  align-items: stretch;
+  border-top: 1px solid var(--warp);
+  border-bottom: 1px solid var(--warp);
+  padding: 5px 0;
+  overflow: hidden;
+}
+
+.thread {
+  appearance: none;
+  border: 0;
+  padding: 0;
+  flex: 1 1 0;
+  min-width: 2px;
+  border-radius: 1px;
+  background: var(--warp);
+  cursor: pointer;
+  transform-origin: center;
+  animation: beat 0.32s cubic-bezier(0.2, 0.9, 0.3, 1) backwards;
+  animation-delay: calc(var(--i) * 11ms);
+}
+
+.thread.add {
+  background: var(--olive);
+}
+.thread.change {
+  background: var(--ochre);
+}
+.thread.remove {
+  background: var(--madder);
+}
+/* Nothing to weave: show the loom strung instead of an empty bar. Thin,
+   many, and structural -- which is what a warp is. */
+.band.bare {
+  background: repeating-linear-gradient(
+    90deg,
+    var(--warp) 0 3px,
+    transparent 3px 9px
+  );
+}
+
+.thread:hover,
+.thread[aria-current="true"] {
+  filter: brightness(1.25);
+  transform: scaleY(1.14);
+}
+
+@keyframes beat {
+  from {
+    transform: scaleY(0.06);
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .thread {
+    animation: none;
+  }
+  .thread:hover,
+  .thread[aria-current="true"] {
+    transform: none;
+  }
+}
+
+/* ---- tabs --------------------------------------------------------------- */
+
+nav {
+  display: flex;
+  gap: 1.4rem;
+  padding: 0.9rem 0 0;
   overflow-x: auto;
   scrollbar-width: none;
 }
-nav::-webkit-scrollbar { display: none; }
+nav::-webkit-scrollbar {
+  display: none;
+}
 
 nav button {
   appearance: none;
   border: 0;
   background: none;
+  padding: 0.2rem 0 0.7rem;
+  font: 500 0.7rem/1 var(--sans);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
   color: var(--dim);
-  font: inherit;
-  font-size: 0.86rem;
-  padding: 0.55rem 0.7rem;
-  border-bottom: 2px solid transparent;
   cursor: pointer;
   white-space: nowrap;
-}
-nav button:hover { color: var(--ink); }
-nav button[aria-selected='true'] {
-  color: var(--madder);
-  border-bottom-color: var(--madder);
-  font-weight: 600;
-}
-nav button .n {
-  color: var(--dim);
-  font-variant-numeric: tabular-nums;
-  font-size: 0.78rem;
-  margin-left: 0.3rem;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
 }
 
+nav button:hover {
+  color: var(--wool);
+}
+
+nav button[aria-selected="true"] {
+  color: var(--wool);
+  border-bottom-color: var(--madder);
+}
+
+nav button .n {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  letter-spacing: 0;
+  margin-left: 0.35rem;
+  color: var(--dim);
+}
+
+/* ---- body --------------------------------------------------------------- */
+
 main {
-  max-width: 78rem;
-  margin: 0 auto;
-  padding: 1.25rem;
   display: grid;
-  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr);
   gap: 1.25rem;
   align-items: start;
+  padding: 1.25rem 0 3rem;
+  border-top: 1px solid var(--warp);
 }
-@media (max-width: 62rem) {
-  main { grid-template-columns: minmax(0, 1fr); }
-  .aside { position: static; }
+
+@media (max-width: 60rem) {
+  main {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .aside {
+    position: static;
+  }
+}
+
+/* A long config path was pushing the wordmark off its own line. Below this
+   the machine gets a line of its own instead of a column. */
+@media (max-width: 34rem) {
+  .crest {
+    flex-wrap: wrap;
+  }
+  .machine {
+    order: 3;
+    width: 100%;
+    margin-left: 0;
+    text-align: left;
+  }
 }
 
 .panel {
-  background: var(--paper);
-  border: 1px solid var(--rule);
-  border-radius: 8px;
+  background: var(--weft);
+  border: 1px solid var(--warp);
+  border-radius: 3px;
   box-shadow: var(--edge);
   overflow: hidden;
 }
 
-.aside { position: sticky; top: 1.25rem; }
+.aside {
+  position: sticky;
+  top: 1.25rem;
+}
 
-/* ---- list -------------------------------------------------------------- */
-
-.rows { list-style: none; margin: 0; padding: 0; }
+.rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
 
 .rows li {
   display: grid;
-  grid-template-columns: 1.1rem 6.5rem minmax(0, 1fr);
-  gap: 0.6rem;
+  grid-template-columns: 1rem 5.5rem minmax(0, 1fr);
+  gap: 0.7rem;
   align-items: baseline;
   padding: 0.5rem 0.9rem;
-  border-bottom: 1px solid var(--rule);
+  border-bottom: 1px solid var(--warp);
   cursor: pointer;
-  font-size: 0.88rem;
 }
-.rows li:last-child { border-bottom: 0; }
-.rows li:hover { background: color-mix(in srgb, var(--madder) 5%, transparent); }
-.rows li[aria-current='true'] {
-  background: color-mix(in srgb, var(--madder) 10%, transparent);
+
+.rows li:last-child {
+  border-bottom: 0;
+}
+
+.rows li:hover {
+  background: color-mix(in srgb, var(--madder) 6%, transparent);
+}
+
+.rows li[aria-current="true"] {
+  background: color-mix(in srgb, var(--madder) 11%, transparent);
   box-shadow: inset 2px 0 0 var(--madder);
 }
 
-.sigil { font-weight: 700; }
-.sigil.add { color: var(--add); }
-.sigil.change { color: var(--lift); }
-.sigil.remove { color: var(--madder); }
-.sigil.drift { color: var(--madder); }
+.sigil {
+  font-family: var(--mono);
+  font-weight: 700;
+  color: var(--dim);
+}
+.sigil.add {
+  color: var(--olive);
+}
+.sigil.change {
+  color: var(--ochre);
+}
+.sigil.remove,
+.sigil.drift {
+  color: var(--madder);
+}
 
 .kind {
+  font-size: 0.66rem;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
   color: var(--dim);
-  font-size: 0.76rem;
-  text-transform: lowercase;
-  letter-spacing: 0.02em;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
-.name { font-family: ui-monospace, Menlo, monospace; overflow-wrap: anywhere; }
-.detail {
-  color: var(--dim);
-  font-size: 0.8rem;
-  grid-column: 3;
+
+.rows .name {
+  font-family: var(--mono);
+  font-size: 0.84rem;
   overflow-wrap: anywhere;
 }
 
-.empty {
-  padding: 2.5rem 1rem 3rem;
-  text-align: center;
+.rows .detail {
+  grid-column: 3;
+  font-size: 0.76rem;
   color: var(--dim);
-}
-.empty pre {
-  color: color-mix(in srgb, var(--madder) 45%, transparent);
-  margin: 0 0 1rem;
-  font-size: 0.72rem;
-  line-height: 1.15;
+  overflow-wrap: anywhere;
 }
 
-/* ---- details ----------------------------------------------------------- */
+/* ---- details ------------------------------------------------------------ */
 
 .head {
-  padding: 0.85rem 0.95rem;
-  border-bottom: 1px solid var(--rule);
   display: flex;
   align-items: baseline;
   gap: 0.5rem;
+  padding: 0.8rem 0.95rem;
+  border-bottom: 1px solid var(--warp);
 }
-.head .name { font-weight: 600; }
 
-dl { margin: 0; padding: 0.5rem 0.95rem 0.95rem; }
-dt {
-  color: var(--dim);
-  font-size: 0.74rem;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
-  margin-top: 0.85rem;
-}
-dd {
-  margin: 0.15rem 0 0;
-  font-family: ui-monospace, Menlo, monospace;
-  font-size: 0.85rem;
+.head .name {
+  font-family: var(--mono);
+  font-size: 0.92rem;
+  font-weight: 600;
   overflow-wrap: anywhere;
 }
-dd pre {
-  margin: 0.2rem 0 0;
-  padding: 0.6rem 0.7rem;
-  background: var(--sand);
-  border: 1px solid var(--rule);
-  border-radius: 5px;
-  overflow-x: auto;
-  font-size: 0.8rem;
-  line-height: 1.45;
+
+dl {
+  margin: 0;
+  padding: 0.3rem 0.95rem 1rem;
 }
 
-.hint { padding: 1.6rem 0.95rem; color: var(--dim); font-size: 0.88rem; }
+dt {
+  font-size: 0.64rem;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--dim);
+  margin-top: 0.9rem;
+}
+
+dd {
+  margin: 0.15rem 0 0;
+  font-family: var(--mono);
+  font-size: 0.82rem;
+  overflow-wrap: anywhere;
+}
+
+dd pre {
+  margin: 0.25rem 0 0;
+  padding: 0.6rem 0.7rem;
+  background: var(--ground);
+  border: 1px solid var(--warp);
+  border-radius: 2px;
+  overflow-x: auto;
+  font-size: 0.76rem;
+  line-height: 1.5;
+}
+
+.hint {
+  padding: 1.5rem 0.95rem;
+  color: var(--dim);
+}
+
+/* ---- empty, warning, foot ----------------------------------------------- */
+
+.empty {
+  padding: 2.4rem 1.2rem 2.8rem;
+  text-align: center;
+  color: var(--dim);
+}
+
+.empty pre {
+  margin: 0 0 1.1rem;
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  line-height: 1.15;
+  color: color-mix(in srgb, var(--madder) 42%, transparent);
+}
+
+.empty .do {
+  display: block;
+  margin-top: 0.5rem;
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  color: var(--wool);
+}
 
 .warn {
-  margin: 0 1.25rem;
-  max-width: 78rem;
-  padding: 0.6rem 0.85rem;
-  border-radius: 6px;
-  background: color-mix(in srgb, var(--lift) 12%, transparent);
-  border: 1px solid color-mix(in srgb, var(--lift) 35%, transparent);
-  color: var(--ink);
-  font-size: 0.85rem;
+  margin-top: 1rem;
+  padding: 0.6rem 0.8rem;
+  border-left: 2px solid var(--ochre);
+  background: color-mix(in srgb, var(--ochre) 11%, transparent);
+  font-size: 0.82rem;
 }
 
 footer {
-  max-width: 78rem;
-  margin: 0 auto;
-  padding: 0 1.25rem 2.5rem;
+  padding: 0 0 3rem;
   color: var(--dim);
-  font-size: 0.78rem;
+  font-size: 0.74rem;
+}
+
+footer code {
+  font-family: var(--mono);
+  color: var(--wool);
 }

@@ -3,6 +3,40 @@
 Dates are release dates. Versions before 0.2.0 are omitted: they predate this
 file and nothing depended on them.
 
+## 0.12.0 — 2026-09-04
+
+**The web UI has a face of its own.** Madder is a dye before it is a hex
+value, and it is the one bedouin weaving actually uses — so the palette is now
+the rest of that dye pot: madder, ochre and olive, on goat-hair black or
+undyed wool. The three dyes land where a developer already expects them, red
+on remove and green on add: legibility outranks the conceit. Monospace is the
+page's voice rather than its code font, because this is a machine describing
+itself; the sans is demoted to annotation.
+
+**The verdict moved to the top.** How many things this machine needs is the
+only fact most visits are here for, and it used to be a sentence in the
+footer. It is now the largest type on the page. When there is nothing to do it
+says `camp is pitched`.
+
+**The band.** One thread per item in the plan, dyed by what it does, running
+edge to edge under the header — the rule between the verdict and the content
+is the plan itself. Where the weave is dense with colour, the machine has work
+to do; picking a thread selects its item. With nothing to do it falls back to
+the bare warp, because a finished camp is a pattern too, not an empty box.
+It is `aria-hidden` and out of the tab order on purpose: it is a pointer
+shortcut to the list below, which carries the same items in the same order
+with real names, and sixty tab stops in front of the content would be a worse
+page for the people that claims to help.
+
+**Two fixes behind the paint.** `action` in `/api/state` was Rust's `Debug`
+output — `reinstall { from_method: "apt", to_method: "cargo" }` — where the
+TUI has always said `reinstall via apt -> cargo`. `action_label` moved to
+`bedouin-core`, so both front ends now spell an action one way. And a failed
+`/api/state` showed `500 Internal Server Error` while throwing away the
+message bedouin-ui had put in the body; the page shows the real reason now.
+
+Empty sections say what would go there and the command that puts it there.
+
 ## 0.11.1 — 2026-09-04
 
 **`bedouin ui --hostname`.** It still binds loopback by default — this serves

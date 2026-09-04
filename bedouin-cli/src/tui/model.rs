@@ -196,7 +196,7 @@ impl App {
                     let mut d = vec![
                         ("id".into(), i.id.clone()),
                         ("kind".into(), kind_label(i.kind).to_string()),
-                        ("action".into(), action_label(&i.action)),
+                        ("action".into(), bedouin_core::plan::action_label(&i.action)),
                         ("detail".into(), i.detail.clone()),
                     ];
                     if i.needs_root {
@@ -892,23 +892,6 @@ fn raw_field(text: &str, section: &str, name: &str, key: &str) -> Option<String>
         }
     }
     None
-}
-
-fn action_label(a: &bedouin_core::plan::Action) -> String {
-    use bedouin_core::plan::Action::*;
-    match a {
-        Create => "create".into(),
-        Adopt => "adopt (backs up what is there)".into(),
-        Upgrade { from, to } => format!("upgrade {from} -> {to}"),
-        Reinstall {
-            from_method,
-            to_method,
-        } => {
-            format!("reinstall via {from_method} -> {to_method}")
-        }
-        Remove => "remove".into(),
-        NoOp => "already matches".into(),
-    }
 }
 
 fn payload_details(p: &Payload) -> Vec<(String, String)> {

@@ -284,6 +284,22 @@ impl Plan {
     }
 }
 
+/// What an action does, in words. Shared: the TUI and the web UI both show
+/// it, and two spellings of the same action is two products.
+pub fn action_label(a: &Action) -> String {
+    match a {
+        Action::Create => "create".into(),
+        Action::Adopt => "adopt (backs up what is there)".into(),
+        Action::Upgrade { from, to } => format!("upgrade {from} -> {to}"),
+        Action::Reinstall {
+            from_method,
+            to_method,
+        } => format!("reinstall via {from_method} -> {to_method}"),
+        Action::Remove => "remove".into(),
+        Action::NoOp => "already matches".into(),
+    }
+}
+
 pub fn kind_label(k: ItemKind) -> &'static str {
     match k {
         ItemKind::Manager => "manager",

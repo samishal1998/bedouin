@@ -5,7 +5,7 @@
 //! expensive call, and it already produces everything the browser needs.
 
 use bedouin_core::host::OsHost;
-use bedouin_core::plan::kind_label;
+use bedouin_core::plan::{action_label, kind_label};
 use bedouin_core::{doctor, envfile, run};
 use serde::Serialize;
 use std::path::Path;
@@ -104,7 +104,7 @@ pub fn snapshot(config: Option<&Path>, cwd: &Path) -> Result<Snapshot, String> {
             name: i.name.clone(),
             detail: i.detail.clone(),
             sigil: i.action.sigil().to_string(),
-            action: format!("{:?}", i.action).to_lowercase(),
+            action: action_label(&i.action),
             needs_root: i.needs_root,
             arms: i.arms.iter().map(|(k, v)| [k.clone(), v.clone()]).collect(),
             fields: vec![],
