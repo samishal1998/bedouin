@@ -107,6 +107,37 @@ body {
   letter-spacing: -0.02em;
 }
 
+/* Sits in the crest, small until it is used. The `/` hint is in the
+   placeholder rather than a separate kbd chip -- one thing, one job. */
+.find {
+  margin-left: 1.25rem;
+  flex: 0 1 20rem;
+  display: flex;
+}
+
+.find input {
+  width: 100%;
+  appearance: none;
+  -webkit-appearance: none;
+  background: var(--weft);
+  border: 1px solid var(--warp);
+  border-radius: 3px;
+  padding: 0.32rem 0.6rem;
+  font: 0.82rem/1.4 var(--mono);
+  color: var(--wool);
+}
+
+.find input::placeholder {
+  color: var(--dim);
+  letter-spacing: 0.04em;
+}
+
+.find input:focus {
+  outline: none;
+  border-color: var(--madder);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--madder) 22%, transparent);
+}
+
 .machine {
   margin-left: auto;
   text-align: right;
@@ -230,6 +261,12 @@ body {
   transform: scaleY(1.14);
 }
 
+/* Struck out of the weave by a search, not removed from it: where a match
+   sits among everything else is the thing worth seeing. */
+.thread.faded {
+  opacity: 0.14;
+}
+
 @keyframes beat {
   from {
     transform: scaleY(0.06);
@@ -314,6 +351,17 @@ main {
 
 /* A long config path was pushing the wordmark off its own line. Below this
    the machine gets a line of its own instead of a column. */
+@media (max-width: 52rem) {
+  .crest {
+    flex-wrap: wrap;
+  }
+  .find {
+    order: 4;
+    flex: 1 0 100%;
+    margin-left: 0;
+  }
+}
+
 @media (max-width: 34rem) {
   .crest {
     flex-wrap: wrap;

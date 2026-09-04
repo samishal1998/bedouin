@@ -34,6 +34,16 @@ const SECTIONS = [
           />
         </svg>
         <span class="wordmark">bedouin</span>
+        <label class="find">
+          <input
+            id="q"
+            type="search"
+            placeholder="search   /"
+            autocomplete="off"
+            spellcheck="false"
+            aria-label="Search everything in this config"
+          />
+        </label>
         <div class="machine" id="machine">reading this machine…</div>
       </div>
 
@@ -103,6 +113,7 @@ const SECTIONS = [
       let snap = null;
       let section = 'plan';
       let selected = 0;
+      let query = '';
 
       const $ = (id) => document.getElementById(id);
       const esc = (s) =>
@@ -133,6 +144,24 @@ const SECTIONS = [
             ],
           }));
         return snap.config[s] || [];
+      }
+
+      /// Everything a row shows, flattened once so a search reads what the eye
+      /// reads: the name, the detail beside it, and every field in the pane
+      /// that opens when you pick it.
+      function haystack(r) {
+        return [r.name, r.detail, r.kind, ...(r.fields || []).flat()]
+          .join('\u0000')
+          .toLowerCase();
+      }
+
+      const sections = () => [...$('tabs').children].map((b) => b.dataset.section);
+
+      function rowsIn(s) {
+        const rows = rowsFor(s);
+        if (!query) return rows;
+        const q = query.toLowerCase();
+        return rows.filter((r) => haystack(r).includes(q));
       }
 
       const dye = (c) =>
@@ -170,19 +199,27 @@ const SECTIONS = [
         for (const b of $('tabs').children) {
           const s = b.dataset.section;
           b.setAttribute('aria-selected', String(s === section));
-          b.querySelector('.n').textContent = rowsFor(s).length || '';
+          b.querySelector('.n').textContent = rowsIn(s).length || '';
         }
 
-        for (const t of $('band').children)
-          t.setAttribute(
-            'aria-current',
-            String(section === 'plan' && Number(t.dataset.i) === selected)
-          );
+        // The band answers the query too. Leaving it showing all 62 threads
+        // while the list shows one makes it decoration; fading the rest keeps
+        // it the plan-at-a-glance it claims to be, and keeps the position of
+        // a match visible in the whole.
+        const shown = new Set(rowsIn('plan').map((r) => r.id));
+        const items = snap.plan.items;
+        for (const t of $('band').children) {
+          const i = Number(t.dataset.i);
+          t.setAttribute('aria-current', String(section === 'plan' && i === selected));
+          t.classList.toggle('faded', !!query && !shown.has(items[i].id));
+        }
 
-        const rows = rowsFor(section);
+        const rows = rowsIn(section);
         const ul = $('rows');
         if (!rows.length) {
-          const [said, run] = EMPTY[section] || [`Nothing under \`${section}:\` yet.`, ''];
+          const [said, run] = query
+            ? [`Nothing here matches “${query}”.`, '']
+            : EMPTY[section] || [`Nothing under \`${section}:\` yet.`, ''];
           ul.innerHTML = `<div class="empty"><pre>${esc(TENT)}</pre>${esc(said)}${
             run ? `<span class="do">${esc(run)}</span>` : ''
           }</div>`;
@@ -246,9 +283,38 @@ const SECTIONS = [
         if (t) show('plan', Number(t.dataset.i));
       });
 
+      // Typing a query moves you to where the answer is. Searching "zellij"
+      // from the plan tab and being shown an empty list, while packages holds
+      // the one match, is the failure this avoids.
+      $('q').addEventListener('input', (e) => {
+        query = e.target.value.trim();
+        selected = 0;
+        if (query && !rowsIn(section).length) {
+          const found = sections().find((s) => rowsIn(s).length);
+          if (found) section = found;
+        }
+        render();
+      });
+
       addEventListener('keydown', (e) => {
-        const n = rowsFor(section).length;
-        const tabs = [...$('tabs').children].map((b) => b.dataset.section);
+        // While the caret is in the search box, letters are letters.
+        if (e.target === $('q')) {
+          if (e.key === 'Escape') {
+            $('q').value = '';
+            query = '';
+            $('q').blur();
+            render();
+          }
+          return;
+        }
+        if (e.key === '/') {
+          $('q').focus();
+          $('q').select();
+          e.preventDefault();
+          return;
+        }
+        const n = rowsIn(section).length;
+        const tabs = sections();
         const at = tabs.indexOf(section);
         if (e.key === 'j' || e.key === 'ArrowDown') show(section, Math.min(selected + 1, n - 1));
         else if (e.key === 'k' || e.key === 'ArrowUp') show(section, Math.max(selected - 1, 0));

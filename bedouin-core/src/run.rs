@@ -26,6 +26,64 @@ pub fn plan(host: &dyn Host, explicit: Option<&Path>, cwd: &Path) -> Result<Outc
     plan_for(host, explicit, cwd, os, arch)
 }
 
+/// Write a config, then prove bedouin can still read it.
+///
+/// A backup, the new text, a re-plan -- and if that plan fails, the original
+/// goes back. The alternative is handing someone a config their own tool can
+/// no longer load, from an edit their own tool made.
+///
+/// Shared rather than owned by whoever writes first: `bedouin add`, the TUI's
+/// editor and the web UI all mutate this file, and a second copy of this
+/// function is a second chance to skip the restore.
+pub fn write_verified(
+    host: &dyn Host,
+    entry: &Path,
+    text: &str,
+    explicit: Option<&Path>,
+    cwd: &Path,
+) -> Result<Outcome> {
+    let original = host
+        .read(entry)
+        .map_err(|e| ConfigError::new(e.to_string()))?
+        .map(|b| String::from_utf8_lossy(&b).into_owned())
+        .ok_or_else(|| ConfigError::new(format!("{} is not there to edit", entry.display())))?;
+
+    // The file's own mode, carried through every write below. `Host::write`
+    // always sets one, so picking a number here would quietly re-permission a
+    // config that is checked into git -- a mode change in `git status` that
+    // the user did not ask for and cannot explain.
+    let mode = host
+        .symlink_meta(entry)
+        .ok()
+        .flatten()
+        .map(|m| m.mode & 0o7777)
+        .unwrap_or(0o644);
+
+    // Written before the change, not after: if this process dies mid-write the
+    // previous text is still on disk beside the file.
+    let backup = PathBuf::from(format!("{}.bedouin-bak", entry.display()));
+    host.write(&backup, original.as_bytes(), mode)
+        .map_err(|e| ConfigError::new(format!("{}: {e}", backup.display())))?;
+    host.write(entry, text.as_bytes(), mode)
+        .map_err(|e| ConfigError::new(format!("{}: {e}", entry.display())))?;
+
+    match plan(host, explicit, cwd) {
+        Ok(o) => {
+            let _ = host.remove(&backup);
+            Ok(o)
+        }
+        Err(e) => {
+            let _ = host.write(entry, original.as_bytes(), mode);
+            let _ = host.remove(&backup);
+            Err(ConfigError::new(format!(
+                "{e}\n  The edit would have left a config bedouin cannot load, so \
+                 {} has been restored unchanged.",
+                entry.display()
+            )))
+        }
+    }
+}
+
 /// The shell a config declares, if it declares one.
 fn declared_shell(loaded: &Loaded) -> Result<Option<Shell>> {
     let Some(s) = loaded.raw.shell.as_ref().and_then(|s| s.name.as_ref()) else {
@@ -130,4 +188,86 @@ pub fn plan_for(
         state,
         plan,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::host::OsHost;
+    use std::fs;
+
+    /// A real config on a real disk, because this function's whole job is
+    /// what is left on disk afterwards. A fake here would test the fake.
+    fn fixture(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("bedouin-write-verified-{name}"));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("bedouin.yaml"),
+            "version: 0\nshell: bash\npackages:\n  - name: jq\n    from: apt\naliases:\n  ll: ls -alh\n",
+        )
+        .unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_config_that_will_not_load_is_put_back_exactly_as_it_was() {
+        let dir = fixture("restore");
+        let entry = dir.join("bedouin.yaml");
+        let before = fs::read_to_string(&entry).unwrap();
+
+        let err = write_verified(
+            &OsHost::new(),
+            &entry,
+            "packages:\n  - this is not\n   valid: yaml: at all\n",
+            Some(&entry),
+            &dir,
+        )
+        .expect_err("a config bedouin cannot load must not be left on disk");
+
+        assert!(
+            err.to_string().contains("restored unchanged"),
+            "the error must say the file was put back: {err}"
+        );
+        assert_eq!(
+            fs::read_to_string(&entry).unwrap(),
+            before,
+            "the original config did not come back"
+        );
+        assert!(
+            !dir.join("bedouin.yaml.bedouin-bak").exists(),
+            "the backup was left lying beside the config"
+        );
+    }
+
+    #[test]
+    fn the_files_own_permissions_survive_the_edit() {
+        // `Host::write` always sets a mode, so this function has to carry the
+        // existing one through. Picking a number instead silently
+        // re-permissions a config that is checked into git, which shows up as
+        // a mode change the user did not make and cannot explain.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let dir = fixture("mode");
+            let entry = dir.join("bedouin.yaml");
+            fs::set_permissions(&entry, fs::Permissions::from_mode(0o644)).unwrap();
+
+            write_verified(
+                &OsHost::new(),
+                &entry,
+                "version: 0\nshell: bash\npackages:\n  - name: jq\n    from: apt\n\
+                 aliases:\n  ll: ls -alh\n  gs: git status\n",
+                Some(&entry),
+                &dir,
+            )
+            .expect("a valid edit");
+
+            let mode = fs::metadata(&entry).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o644, "the edit changed the config's permissions");
+            assert!(fs::read_to_string(&entry)
+                .unwrap()
+                .contains("gs: git status"));
+        }
+    }
 }
