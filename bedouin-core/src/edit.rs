@@ -865,11 +865,14 @@ fn verify_only_change(
 
     // And nothing else moved. `landed` only proves the change arrived; it says
     // nothing about what else the text surgery hit on the way. Every edit that
-    // comes through here sets exactly one value, so the documents are allowed
-    // to differ in exactly one place.
+    // comes through here sets one value, so the documents are allowed to
+    // differ in one place at most.
     let before: serde_yaml_ng::Value = serde_yaml_ng::from_str(before_text)
         .map_err(|e| ConfigError::new(format!("this config does not parse: {e}")))?;
-    if differences(&before, &after) != 1 {
+    // At most one, not exactly one: committing a value back unchanged is a
+    // legitimate thing to do from a form, and `landed` has already proved the
+    // value is there.
+    if differences(&before, &after) > 1 {
         return Err(ConfigError::new(
             "could not cleanly make that edit: it would change more than the one \
              value it was meant to.\n  Refusing to write it. Make the change by hand",
@@ -959,6 +962,8 @@ files:
         let doc = |y: &str| serde_yaml_ng::from_str::<serde_yaml_ng::Value>(y).unwrap();
         let base = doc("a: 1\nb: 2\nps:\n  - name: jq\n    from: apt\n");
 
+        // Zero matters: a form that commits a value back unchanged is an
+        // edit that must be allowed through, not refused as suspicious.
         assert_eq!(differences(&base, &base), 0);
         assert_eq!(
             differences(
