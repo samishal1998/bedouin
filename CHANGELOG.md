@@ -3,6 +3,47 @@
 Dates are release dates. Versions before 0.2.0 are omitted: they predate this
 file and nothing depended on them.
 
+## 0.14.0 — 2026-09-04
+
+**Search.** `/` focuses it. Typing filters every section at once and the tab
+counts become match counts, so "where is zellij" is answered without knowing
+it is a package. If the section you are on has no matches and another does, it
+moves you there. A row matches on everything it shows — its name, the detail
+beside it, and every field in the pane that opens when you pick it. The band
+answers the query too: non-matching threads fade rather than vanish, so where
+a match sits in the whole plan stays visible.
+
+**Marks.** One inline SVG sprite, no icon font and no request — this page is
+embedded in a binary that runs on machines with no network. They replace the
+tracked uppercase kind word, on the tent's own 24 grid and its 45-degree
+diagonals. The action sigils stay text: `+ ~ -` in madder, ochre and olive
+already read at a glance and belong to the monospace voice. The page also has
+a real favicon at last, instead of the deliberate blank it has shipped since
+0.10.
+
+**Every config section is now editable.** `edit.rs` could only find an entry
+by `name:`, so files, repos and links were invisible to every edit in the
+module — no create, no update, no delete. They are keyed by `dest:` instead,
+which is the only thing unique about them. `Section` grows an `id_field()`,
+`add_entry` generalises `add_package`, and `remove_alias` closes the last gap.
+Values are quoted only when leaving them bare would change their meaning:
+`~/.config/nvim` is fine, but `1.80` is a float, `0644` is an int, `no` is
+false and a bare `~` is null.
+
+**Two things that were quietly wrong.** `verify_only_change` promised that an
+edit changed nothing else and never checked — its body ended `let _ =
+before_text;`. It counts now. And `expected_after`, the guard that a removal
+touched exactly one entry, compared against a document with nothing removed
+for any dest-keyed section.
+
+**`write_config_verified` moved into core** as `run::write_verified`, so the
+web UI can edit a config with the same net the CLI has: back up, write,
+re-plan, and put the original back if the result no longer loads. It carries
+the file's existing mode through the write now — `Host::write` always sets
+one, and picking a number silently re-permissions a config that is in git.
+
+The browser can search and read, not yet write; the endpoints are next.
+
 ## 0.13.0 — 2026-09-04
 
 **`bedouin self upgrade`.** It checks for a newer release, shows what is out
