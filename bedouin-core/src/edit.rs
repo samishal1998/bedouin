@@ -18,6 +18,9 @@ use crate::schema::{ConfigError, Result};
 pub enum Section {
     Packages,
     Languages,
+    Files,
+    Repos,
+    Links,
 }
 
 impl Section {
@@ -25,13 +28,44 @@ impl Section {
         match self {
             Self::Packages => "packages:",
             Self::Languages => "languages:",
+            Self::Files => "files:",
+            Self::Repos => "repos:",
+            Self::Links => "links:",
         }
+    }
+
+    /// The field that says which entry this is.
+    ///
+    /// A package and a language have names. A file, a repo and a link are
+    /// identified by where they land -- there is nothing else unique about
+    /// them, and two links to the same source are a normal thing to write.
+    pub fn id_field(self) -> &'static str {
+        match self {
+            Self::Packages | Self::Languages => "name",
+            Self::Files | Self::Repos | Self::Links => "dest",
+        }
+    }
+
+    /// Parse a section name as the config spells it. Closed vocabulary: an
+    /// unknown one is an error rather than an edit aimed at nowhere.
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "packages" => Self::Packages,
+            "languages" => Self::Languages,
+            "files" => Self::Files,
+            "repos" => Self::Repos,
+            "links" => Self::Links,
+            _ => return None,
+        })
     }
 
     pub fn label(self) -> &'static str {
         match self {
             Self::Packages => "package",
             Self::Languages => "language",
+            Self::Files => "file",
+            Self::Repos => "repo",
+            Self::Links => "link",
         }
     }
 }
@@ -83,21 +117,21 @@ fn indent_of(line: &str) -> usize {
     line.len() - line.trim_start().len()
 }
 
-/// Does this line begin a list entry naming `name`?
+/// Does this line begin a list entry identified by `name`?
 ///
-/// Handles both the block form (`- name: jq`, with `name:` on the same line or
-/// the next) and the flow form (`- { name: jq, from: apt }`).
-fn entry_names(lines: &[&str], at: usize, name: &str) -> bool {
+/// `field` is the section's identifying key -- `name:` for a package,
+/// `dest:` for a file. Handles both the block form (`- name: jq`, with the
+/// key on the same line or the next) and the flow form
+/// (`- { name: jq, from: apt }`).
+fn entry_names(lines: &[&str], at: usize, field: &str, name: &str) -> bool {
     let line = lines[at].trim_start();
     let Some(rest) = line.strip_prefix("- ") else {
         return false;
     };
     let rest = rest.trim();
-    let matches_here = |s: &str| {
-        s.split_once("name:")
-            .is_some_and(|(_, v)| value_is(v, name))
-    };
-    if rest.contains("name:") {
+    let key = format!("{field}:");
+    let matches_here = |s: &str| s.split_once(&key).is_some_and(|(_, v)| value_is(v, name));
+    if rest.contains(&key) {
         return matches_here(rest);
     }
     // `- ` alone, with the fields on following lines.
@@ -149,7 +183,7 @@ pub fn remove_entry(text: &str, section: Section, name: &str) -> Result<String> 
         if !l.trim().is_empty() && indent_of(l) <= head_indent {
             break; // out of this section
         }
-        if entry_names(&lines, i, name) {
+        if entry_names(&lines, i, section.id_field(), name) {
             found = Some(i);
             break;
         }
@@ -221,10 +255,10 @@ fn expected_after(
     let Some(items) = doc.get_mut(key).and_then(|v| v.as_sequence_mut()) else {
         return doc;
     };
-    if let Some(i) = items
-        .iter()
-        .position(|i| i.get("name").is_some_and(|n| scalar_is(n, name)))
-    {
+    if let Some(i) = items.iter().position(|i| {
+        i.get(section.id_field())
+            .is_some_and(|n| scalar_is(n, name))
+    }) {
         items.remove(i);
     }
     doc
@@ -241,28 +275,71 @@ fn scalar_is(v: &serde_yaml_ng::Value, name: &str) -> bool {
     }
 }
 
-/// Append a package to `packages:`, creating the section if it is absent.
+/// How a value has to be written to survive a YAML round trip.
+///
+/// Left bare when it is an unambiguous plain scalar, quoted otherwise --
+/// because `dest: ~/.config/nvim` is fine but `version: 1.80` is a float,
+/// `mode: 0644` is an int, and a value that merely *starts* `~` is null.
+/// Quoting everything would be safe and would also make every entry this
+/// writes look unlike every entry the user wrote by hand.
+fn scalar(v: &str) -> String {
+    let plain = !v.is_empty()
+        && v.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+        && v.chars()
+            .all(|c| c.is_ascii_alphanumeric() || "._+-/".contains(c))
+        && !matches!(
+            v.to_ascii_lowercase().as_str(),
+            "true" | "false" | "null" | "yes" | "no" | "on" | "off"
+        );
+    if plain {
+        v.to_string()
+    } else {
+        format!("\"{}\"", v.replace('\\', "\\\\").replace('"', "\\\""))
+    }
+}
+
+/// Append an entry to one of the list sections, creating the section if it is
+/// absent.
 ///
 /// The insert mirror of [`remove_entry`], with the same verify-by-reparsing:
 /// this writes the file the user keeps in git, so it appends and touches
-/// nothing else.
-pub fn add_package(text: &str, name: &str, from: &str, version: Option<&str>) -> Result<String> {
+/// nothing else. `fields` is written in the order given, so the result reads
+/// the way a person would have typed it.
+pub fn add_entry(text: &str, section: Section, fields: &[(&str, &str)]) -> Result<String> {
+    let key = section.id_field();
+    let name = fields
+        .iter()
+        .find(|(k, _)| *k == key)
+        .map(|(_, v)| *v)
+        .filter(|v| !v.trim().is_empty())
+        .ok_or_else(|| {
+            ConfigError::new(format!(
+                "a {} needs a `{key}:` -- that is what names it",
+                section.label()
+            ))
+        })?;
+
     if serde_yaml_ng::from_str::<serde_yaml_ng::Value>(text)
         .ok()
-        .is_some_and(|d| still_present(&d, Section::Packages, name))
+        .is_some_and(|d| still_present(&d, section, name))
     {
         return Err(ConfigError::new(format!(
             "`{name}` is already in this config"
         )));
     }
 
-    let entry = match version {
-        Some(v) => format!("  - name: {name}\n    from: {from}\n    version: \"{v}\"\n"),
-        None => format!("  - name: {name}\n    from: {from}\n"),
-    };
+    let entry: String = fields
+        .iter()
+        .filter(|(_, v)| !v.trim().is_empty())
+        .enumerate()
+        .map(|(i, (k, v))| {
+            let lead = if i == 0 { "  - " } else { "    " };
+            format!("{lead}{k}: {}\n", scalar(v))
+        })
+        .collect();
 
     let lines: Vec<&str> = text.lines().collect();
-    let out = match section_head(&lines, Section::Packages) {
+    let out = match section_head(&lines, section) {
         // Append to the end of the existing section rather than the file: a
         // `packages:` block followed by `files:` must not swallow the latter.
         Some(head) => {
@@ -289,7 +366,9 @@ pub fn add_package(text: &str, name: &str, from: &str, version: Option<&str>) ->
         }
         None => {
             let mut base = text.trim_end().to_string();
-            base.push_str("\n\npackages:\n");
+            base.push_str("\n\n");
+            base.push_str(section.key());
+            base.push('\n');
             base.push_str(entry.trim_end());
             base
         }
@@ -303,12 +382,21 @@ pub fn add_package(text: &str, name: &str, from: &str, version: Option<&str>) ->
              Refusing to write it. Add the entry by hand"
         ))
     })?;
-    if !still_present(&parsed, Section::Packages, name) {
+    if !still_present(&parsed, section, name) {
         return Err(ConfigError::new(format!(
             "could not cleanly add `{name}`. Refusing to guess -- add it by hand"
         )));
     }
     Ok(out)
+}
+
+/// Append a package to `packages:`. The shape `bedouin add` reduces to.
+pub fn add_package(text: &str, name: &str, from: &str, version: Option<&str>) -> Result<String> {
+    let mut fields = vec![("name", name), ("from", from)];
+    if let Some(v) = version {
+        fields.push(("version", v));
+    }
+    add_entry(text, Section::Packages, &fields)
 }
 
 /// Replace the `content:` of one package's rc block.
@@ -330,7 +418,7 @@ pub fn set_rc_content(
         .take_while(|i| {
             lines[*i].trim().is_empty() || indent_of(lines[*i]) > indent_of(lines[head])
         })
-        .find(|i| entry_names(&lines, *i, package))
+        .find(|i| entry_names(&lines, *i, "name", package))
         .ok_or_else(|| ConfigError::new(format!("no package named `{package}` in this config")))?;
     let (from, to) = entry_span(&lines, start);
 
@@ -466,6 +554,115 @@ pub fn set_field(
             .and_then(|e| e.get(key))
             .is_some()
     })?;
+    Ok(out)
+}
+
+/// Remove an alias, globally or from one package.
+///
+/// The mirror of [`set_alias`]. Emptying the block takes the block with it:
+/// a bare `aliases:` is null rather than an empty map, and leaving one behind
+/// turns a delete into a config that fails to resolve.
+pub fn remove_alias(text: &str, package: Option<&str>, alias: &str) -> Result<String> {
+    let lines: Vec<&str> = text.lines().collect();
+    let nl = newline_of(text);
+
+    // The `aliases:` block this alias would live in -- the top-level one, or
+    // the one nested under a named package.
+    let head = match package {
+        None => lines
+            .iter()
+            .position(|l| *l == "aliases:")
+            .ok_or_else(|| ConfigError::new("this config has no `aliases:` section"))?,
+        Some(pkg) => {
+            let (from, to) = locate_entry(&lines, Section::Packages, pkg)?;
+            (from..to)
+                .find(|i| lines[*i].trim_start() == "aliases:")
+                .ok_or_else(|| ConfigError::new(format!("`{pkg}` has no aliases in this config")))?
+        }
+    };
+    let (_, end) = block_span(&lines, head);
+
+    let key = format!("{alias}:");
+    let at = (head + 1..end)
+        .find(|i| lines[*i].trim_start().starts_with(&key))
+        .ok_or_else(|| {
+            ConfigError::new(match package {
+                Some(p) => format!("`{p}` has no alias `{alias}`"),
+                None => format!("there is no alias `{alias}` in this config"),
+            })
+        })?;
+
+    // The last entry in the block: the block goes too.
+    let only = (head + 1..end)
+        .filter(|i| !lines[*i].trim().is_empty())
+        .count()
+        == 1;
+    let (from, to) = if only { (head, end) } else { (at, at + 1) };
+
+    let mut kept: Vec<&str> = Vec::with_capacity(lines.len());
+    kept.extend_from_slice(&lines[..from]);
+    kept.extend_from_slice(&lines[to..]);
+    let mut out = kept.join(nl);
+    if text.ends_with('\n') {
+        out.push_str(nl);
+    }
+
+    // The document is allowed to become exactly itself minus that one alias.
+    let before: serde_yaml_ng::Value = serde_yaml_ng::from_str(text)
+        .map_err(|e| ConfigError::new(format!("this config does not parse: {e}")))?;
+    let parsed: serde_yaml_ng::Value = serde_yaml_ng::from_str(&out).map_err(|e| {
+        ConfigError::new(format!(
+            "removing `{alias}` would leave a file that no longer parses: {e}\n  \
+             Refusing to write it. Remove it by hand"
+        ))
+    })?;
+    let mut expected = before.clone();
+    let map = match package {
+        None => expected.get_mut("aliases"),
+        Some(pkg) => expected
+            .get_mut("packages")
+            .and_then(|v| v.as_sequence_mut())
+            .and_then(|items| {
+                items
+                    .iter_mut()
+                    .find(|e| e.get("name").is_some_and(|n| scalar_is(n, pkg)))
+            })
+            .and_then(|e| e.get_mut("aliases")),
+    };
+    if let Some(m) = map.and_then(|m| m.as_mapping_mut()) {
+        m.remove(serde_yaml_ng::Value::String(alias.to_string()));
+        if m.is_empty() {
+            // An emptied block was deleted above, so the parsed document has
+            // no key at all -- match that rather than an empty mapping.
+            match package {
+                None => {
+                    if let Some(d) = expected.as_mapping_mut() {
+                        d.remove(serde_yaml_ng::Value::String("aliases".into()));
+                    }
+                }
+                Some(pkg) => {
+                    if let Some(e) = expected
+                        .get_mut("packages")
+                        .and_then(|v| v.as_sequence_mut())
+                        .and_then(|items| {
+                            items
+                                .iter_mut()
+                                .find(|e| e.get("name").is_some_and(|n| scalar_is(n, pkg)))
+                        })
+                        .and_then(|e| e.as_mapping_mut())
+                    {
+                        e.remove(serde_yaml_ng::Value::String("aliases".into()));
+                    }
+                }
+            }
+        }
+    }
+    if parsed != expected {
+        return Err(ConfigError::new(format!(
+            "could not cleanly remove `{alias}`: the edit would change more than \
+             that one alias.\n  Refusing to write it. Remove it by hand"
+        )));
+    }
     Ok(out)
 }
 
@@ -623,7 +820,7 @@ fn locate_entry(lines: &[&str], section: Section, name: &str) -> Result<(usize, 
     let head_indent = indent_of(lines[head]);
     let start = (head + 1..lines.len())
         .take_while(|i| lines[*i].trim().is_empty() || indent_of(lines[*i]) > head_indent)
-        .find(|i| entry_names(lines, *i, name))
+        .find(|i| entry_names(lines, *i, section.id_field(), name))
         .ok_or_else(|| {
             ConfigError::new(format!(
                 "no {} named `{name}` in this config",
@@ -641,7 +838,10 @@ fn entry_of<'a>(
     doc.get(section.key().trim_end_matches(':'))?
         .as_sequence()?
         .iter()
-        .find(|e| e.get("name").is_some_and(|n| scalar_is(n, name)))
+        .find(|e| {
+            e.get(section.id_field())
+                .is_some_and(|n| scalar_is(n, name))
+        })
 }
 
 /// The guard every edit here shares: the result parses, the change landed, and
@@ -671,15 +871,150 @@ fn still_present(doc: &serde_yaml_ng::Value, section: Section, name: &str) -> bo
     doc.get(key)
         .and_then(|v| v.as_sequence())
         .is_some_and(|items| {
-            items
-                .iter()
-                .any(|i| i.get("name").is_some_and(|n| scalar_is(n, name)))
+            items.iter().any(|i| {
+                i.get(section.id_field())
+                    .is_some_and(|n| scalar_is(n, name))
+            })
         })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Files, repos and links are keyed by where they land rather than by a
+    /// name, which is the whole reason `Section::id_field` exists.
+    const DEST_KEYED: &str = r#"version: 0
+shell: bash
+
+packages:
+  - name: jq
+    from: apt
+
+# where my dotfiles go
+files:
+  - { src: templates/gitconfig.j2, dest: "~/.gitconfig" }
+  - src: templates/starship.j2
+    dest: "~/.config/starship.toml"
+"#;
+
+    #[test]
+    fn an_alias_can_be_taken_back_out_again() {
+        let cfg = "version: 0\nshell: bash\n\naliases:\n  ll: ls -alh\n  gs: git status\n\npackages:\n  - name: jq\n    from: apt\n";
+        let out = remove_alias(cfg, None, "gs").unwrap();
+        assert!(!out.contains("git status"));
+        assert!(out.contains("ll: ls -alh"), "it took the wrong one");
+        assert!(out.contains("packages:"));
+
+        let e = remove_alias(cfg, None, "nope").unwrap_err();
+        assert!(e.to_string().contains("no alias `nope`"), "{e}");
+    }
+
+    #[test]
+    fn emptying_an_alias_block_removes_the_block_with_it() {
+        // A bare `aliases:` is null, not an empty map. Leaving one behind
+        // turns a delete into a config that will not resolve.
+        let cfg = "version: 0\nshell: bash\n\naliases:\n  ll: ls -alh\n\npackages:\n  - name: jq\n    from: apt\n";
+        let out = remove_alias(cfg, None, "ll").unwrap();
+        assert!(
+            !out.contains("aliases:"),
+            "a bare `aliases:` was left:\n{out}"
+        );
+        let doc: serde_yaml_ng::Value = serde_yaml_ng::from_str(&out).unwrap();
+        assert!(doc.get("aliases").is_none());
+        assert!(doc.get("packages").is_some(), "it took the packages too");
+    }
+
+    #[test]
+    fn a_package_scoped_alias_is_removed_from_that_package_only() {
+        let cfg = "version: 0\nshell: bash\n\naliases:\n  ll: ls -alh\n\npackages:\n  - name: fd-find\n    from: apt\n    aliases:\n      fd: fd-find\n      f: fd-find\n";
+        let out = remove_alias(cfg, Some("fd-find"), "f").unwrap();
+        assert!(out.contains("fd: fd-find"), "it took the wrong one:\n{out}");
+        assert!(out.contains("ll: ls -alh"), "it reached the global block");
+        let doc: serde_yaml_ng::Value = serde_yaml_ng::from_str(&out).unwrap();
+        assert!(doc["packages"][0]["aliases"].get("f").is_none());
+    }
+
+    #[test]
+    fn an_entry_identified_by_dest_can_be_found_and_removed() {
+        // `locate_entry` used to look for `name:` and nothing else, so a file
+        // was invisible to every edit in this module.
+        let out = remove_entry(DEST_KEYED, Section::Files, "~/.gitconfig").unwrap();
+        assert!(
+            !out.contains("gitconfig.j2"),
+            "the flow-form entry survived"
+        );
+        assert!(out.contains("starship.toml"), "it took the wrong entry");
+        assert!(
+            out.contains("# where my dotfiles go"),
+            "the comment above the section was collateral"
+        );
+
+        // The block form too, not just the flow form.
+        let out = remove_entry(DEST_KEYED, Section::Files, "~/.config/starship.toml").unwrap();
+        assert!(!out.contains("starship.toml"));
+        assert!(out.contains("gitconfig.j2"));
+    }
+
+    #[test]
+    fn a_section_that_does_not_exist_yet_is_created_to_hold_the_first_entry() {
+        let out = add_entry(
+            DEST_KEYED,
+            Section::Links,
+            &[
+                ("src", "~/projects/dotfiles/nvim"),
+                ("dest", "~/.config/nvim"),
+            ],
+        )
+        .unwrap();
+        assert!(out.contains("links:"), "no links section was created");
+        // `~` alone is null in YAML and `~/...` is not, but quoting is what
+        // keeps that from being a thing anyone has to know.
+        assert!(out.contains(r#"dest: "~/.config/nvim""#), "got:\n{out}");
+        let doc: serde_yaml_ng::Value = serde_yaml_ng::from_str(&out).unwrap();
+        assert_eq!(
+            doc["links"][0]["dest"].as_str(),
+            Some("~/.config/nvim"),
+            "it did not round trip as a string"
+        );
+        assert!(out.contains("packages:"), "it clobbered what was there");
+    }
+
+    #[test]
+    fn adding_something_that_is_already_there_is_refused_not_duplicated() {
+        let e = add_entry(
+            DEST_KEYED,
+            Section::Files,
+            &[("src", "x.j2"), ("dest", "~/.gitconfig")],
+        )
+        .unwrap_err();
+        assert!(e.to_string().contains("already in this config"), "{e}");
+    }
+
+    #[test]
+    fn a_value_is_quoted_when_leaving_it_bare_would_change_what_it_means() {
+        // Bare where bare is unambiguous, quoted where YAML would read it as
+        // something other than the text the user typed.
+        assert_eq!(scalar("apt"), "apt");
+        assert_eq!(scalar("stable"), "stable");
+        assert_eq!(scalar("templates/git.j2"), "templates/git.j2");
+        for v in ["1.80", "0644", "~/.config/nvim", "no", "true", "~", ""] {
+            assert!(
+                scalar(v).starts_with('"'),
+                "`{v}` must be quoted or it is not a string any more"
+            );
+        }
+        assert_eq!(
+            scalar("https://github.com/o/r"),
+            r#""https://github.com/o/r""#
+        );
+    }
+
+    #[test]
+    fn an_entry_with_no_identifying_field_is_refused() {
+        let e = add_entry(DEST_KEYED, Section::Files, &[("src", "x.j2")]).unwrap_err();
+        assert!(e.to_string().contains("`dest:`"), "{e}");
+    }
 
     const CFG: &str = r#"version: 0
 shell: zsh
