@@ -59,7 +59,7 @@ fn usable(host: &dyn Host, candidates: &[PathBuf]) -> Option<PathBuf> {
     None
 }
 
-pub fn run(host: &OsHost, config: Option<&Path>, port: u16, yes: bool) -> ExitCode {
+pub fn run(host: &OsHost, config: Option<&Path>, hostname: &str, port: u16, yes: bool) -> ExitCode {
     let Some(target) = target() else {
         eprintln!(
             "bedouin: no {NAME} build for {}/{}",
@@ -112,6 +112,7 @@ pub fn run(host: &OsHost, config: Option<&Path>, port: u16, yes: bool) -> ExitCo
     // password to cross an HTTP boundary.
     let mut cmd = std::process::Command::new(&found);
     cmd.arg("--port").arg(port.to_string());
+    cmd.arg("--hostname").arg(hostname);
     if let Some(c) = config {
         cmd.arg("--config").arg(c);
     }

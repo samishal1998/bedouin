@@ -3,6 +3,20 @@
 Dates are release dates. Versions before 0.2.0 are omitted: they predate this
 file and nothing depended on them.
 
+## 0.11.1 — 2026-09-04
+
+**`bedouin ui --hostname`.** It still binds loopback by default — this serves
+a machine's configuration, and that is not a thing to put on an interface by
+accident — but `-H 0.0.0.0` is how you say you meant it.
+
+Bind anywhere but loopback and it says so, once, at startup: there is no
+authentication, so anyone who can reach the port can read the config, the
+machine's facts and the *names* of the environment variables it reads. On a
+rented box `0.0.0.0` is the internet, not a LAN.
+
+Loopback is decided by asking the socket, not the string: `localhost` resolves
+to `::1` and `127.0.0.2` is loopback too, and neither is spelled `127.0.0.1`.
+
 ## 0.11.0 — 2026-09-04
 
 **The web UI has an interface.** Astro, built to a single inlined file and

@@ -162,6 +162,11 @@ enum Command {
     Ui {
         #[arg(short, long, default_value_t = 7777)]
         port: u16,
+        /// Address to bind. Loopback by default: the UI has no
+        /// authentication, so `0.0.0.0` means anyone who can reach the port
+        /// can read this machine's configuration.
+        #[arg(short = 'H', long, default_value = "127.0.0.1")]
+        hostname: String,
         /// Fetch `bedouin-ui` without asking, if it is missing.
         #[arg(short = 'y', long)]
         yes: bool,
@@ -665,8 +670,13 @@ fn main() -> ExitCode {
 
     // Hands over to another binary; it needs no config resolved here, and
     // the config path is passed straight through.
-    if let Command::Ui { port, yes } = cli.command {
-        return sidecar::run(&host, cli.config.as_deref(), port, yes);
+    if let Command::Ui {
+        port,
+        ref hostname,
+        yes,
+    } = cli.command
+    {
+        return sidecar::run(&host, cli.config.as_deref(), hostname, port, yes);
     }
 
     // `tui` plans for itself, and re-plans after each apply.

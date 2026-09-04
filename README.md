@@ -112,6 +112,7 @@ wrote them in.
 | `bedouin init` | write a starter config |
 | `bedouin plan` | show what would change (exit 2 = changes pending) |
 | `bedouin tui` | browse the config and the plan, edit, diff, apply |
+| `bedouin ui` | the same in a browser, from a sidecar binary (loopback only unless you pass `--hostname`) |
 | `bedouin apply` | make it so |
 | `bedouin apply --skip jq` | ...without one step that this machine cannot do yet |
 | `bedouin doctor` | report managed content edited by hand (exit 2 = drift) |
