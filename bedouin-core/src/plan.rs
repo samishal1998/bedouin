@@ -133,6 +133,7 @@ pub enum Payload {
         url: String,
         dest: PathBuf,
         reference: Option<String>,
+        subdir: Option<String>,
     },
     /// Run a tool's own completion generator and write its stdout. The output
     /// is a file Bedouin wholly owns: no sentinels, never evaluated.
@@ -309,6 +310,20 @@ pub fn kind_label(k: ItemKind) -> &'static str {
         ItemKind::File => "file",
         ItemKind::Rc => "rc",
         ItemKind::Path => "path",
+    }
+}
+
+/// What a repo is pinned to, as the one string state records and plan
+/// compares. `ref` alone stays exactly the ref, so state written before
+/// `subdir:` existed still compares equal instead of re-cloning everything.
+pub fn repo_spec(reference: &Option<String>, subdir: &Option<String>) -> Option<String> {
+    match (reference, subdir) {
+        (None, None) => None,
+        (Some(r), None) => Some(r.clone()),
+        (r, Some(s)) => Some(format!(
+            "{} #{s}",
+            r.clone().unwrap_or_else(|| "@default".into())
+        )),
     }
 }
 
@@ -861,11 +876,19 @@ pub fn build(
             .map_err(|e| ConfigError::new(e.to_string()))?
             .is_some();
         let known = state.done(&id);
+        let spec = repo_spec(&repo.r#ref, &repo.subdir);
         let action = match (known, on_disk) {
             // A different remote at the same path is not an update.
             (Some(st), _) if st.method.as_deref() != Some(repo.url.as_str()) => Action::Reinstall {
                 from_method: st.method.clone().unwrap_or_default(),
                 to_method: repo.url.clone(),
+            },
+            // The pin moved in the CONFIG -- a different ref or subdir than
+            // the one recorded. That is knowable without the network, unlike
+            // the remote itself moving, so it does not break convergence.
+            (Some(st), true) if st.version != spec => Action::Upgrade {
+                from: st.version.clone().unwrap_or_else(|| "@default".into()),
+                to: spec.clone().unwrap_or_else(|| "@default".into()),
             },
             // Present and ours is done. Pulling on every apply would mean
             // `plan` never converges and would make it claim a change it
@@ -895,6 +918,7 @@ pub fn build(
                 url: repo.url.clone(),
                 dest,
                 reference: repo.r#ref.clone(),
+                subdir: repo.subdir.clone(),
             },
         });
         declared_ids.insert(id);

@@ -86,3 +86,142 @@ mod tests {
         assert_eq!(without.argv, vec!["git", "pull"]);
     }
 }
+
+/// Where the clone behind a `subdir:` repo lives.
+///
+/// The destination holds an exported snapshot, so the repository itself needs
+/// a home of its own -- one per remote, shared by every subdir taken from it.
+pub fn store_dir(home: &std::path::Path, url: &str) -> PathBuf {
+    let slug: String = url
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string();
+    home.join(".local/share/bedouin/repos").join(slug)
+}
+
+/// Single-quote a value for the one shell line the export pipe needs.
+fn sq(s: &str) -> String {
+    format!("'{}'", s.replace('\'', r"'\''"))
+}
+
+/// The commands that bring one `subdir:` repo up to date, in two halves:
+/// the fetch half (clone the store if absent, fetch the ref) and the export.
+///
+/// Two halves so the caller can clear `dest` between them -- after the fetch
+/// has succeeded, never before it. A snapshot is derived content, so files
+/// the source deleted must go; but wiping it ahead of a fetch that then fails
+/// on a dead network leaves an empty config directory, which is strictly
+/// worse than a stale one.
+///
+/// The export is a pipe, because `git archive` writes a tar stream and
+/// nothing else here touches a shell: the two ends meet in `sh -c`, with
+/// every path quoted.
+pub fn subdir_export(
+    host: &dyn Host,
+    env: BTreeMap<String, String>,
+    url: &str,
+    store: &std::path::Path,
+    dest: &std::path::Path,
+    reference: Option<&str>,
+    subdir: &str,
+) -> (Vec<Cmd>, Cmd) {
+    let mut cmds = Vec::new();
+    let store_s = store.display().to_string();
+
+    let cloned = host
+        .symlink_meta(&store.join("HEAD"))
+        .ok()
+        .flatten()
+        .is_some();
+    if !cloned {
+        let mut args = vec![
+            "clone".to_string(),
+            "--bare".into(),
+            "--depth".into(),
+            "1".into(),
+        ];
+        if let Some(r) = reference {
+            args.push("--branch".into());
+            args.push(r.to_string());
+        }
+        args.push(url.to_string());
+        args.push(store_s.clone());
+        cmds.push(git(host, env.clone(), &args));
+    }
+
+    // Fetched every time, so `sync` on a moved branch or tag actually moves.
+    // `--force` because a re-pointed tag is a thing remotes do.
+    cmds.push(git(
+        host,
+        env.clone(),
+        &[
+            "-C".into(),
+            store_s.clone(),
+            "fetch".into(),
+            "--depth".into(),
+            "1".into(),
+            "--force".into(),
+            "origin".into(),
+            reference.unwrap_or("HEAD").to_string(),
+        ],
+    ));
+
+    // Contents at the root of dest: strip the subdir's own components.
+    let depth = subdir.trim_matches('/').split('/').count();
+    let mut sh = Cmd::new([
+        "sh".to_string(),
+        "-c".into(),
+        format!(
+            "git -C {} archive FETCH_HEAD -- {} | tar -x --strip-components={depth} -C {}",
+            sq(&store_s),
+            sq(subdir.trim_matches('/')),
+            sq(&dest.display().to_string()),
+        ),
+    ]);
+    sh.env = env;
+    (cmds, sh)
+}
+
+/// A command that fails, with a sentence, if a working tree has uncommitted
+/// changes. Run before anything that would delete the tree: what happens to
+/// the user's commits is the user's call, and that call is not "silently
+/// gone because the config changed a ref".
+pub fn dirty_guard(env: BTreeMap<String, String>, dest: &std::path::Path) -> Cmd {
+    let d = sq(&dest.display().to_string());
+    let mut cmd = Cmd::new([
+        "sh".to_string(),
+        "-c".into(),
+        format!(
+            "if [ -n \"$(git -C {d} status --porcelain 2>/dev/null)\" ]; then \
+             echo \"{}: uncommitted changes -- commit or stash them first\" >&2; exit 1; fi",
+            dest.display()
+        ),
+    ]);
+    cmd.env = env;
+    cmd
+}
+
+#[cfg(test)]
+mod spec_tests {
+    use crate::plan::repo_spec;
+
+    #[test]
+    fn a_ref_alone_spells_exactly_the_ref_state_already_recorded() {
+        // State written before `subdir:` existed recorded `version = ref`.
+        // If the spec for that same shape spelled anything else, every
+        // existing repo would plan as "the pin moved" and re-clone on the
+        // first run after upgrading bedouin.
+        assert_eq!(repo_spec(&None, &None), None);
+        assert_eq!(repo_spec(&Some("v1.2".into()), &None), Some("v1.2".into()));
+        assert_eq!(
+            repo_spec(&Some("main".into()), &Some("nvim".into())),
+            Some("main #nvim".into())
+        );
+        assert_eq!(
+            repo_spec(&None, &Some("nvim".into())),
+            Some("@default #nvim".into())
+        );
+    }
+}

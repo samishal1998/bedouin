@@ -581,6 +581,25 @@ packages:
 #     dest: ~/.gitconfig
 "#;
 
+/// Run a prebuilt command, keeping only stderr for the failure message.
+fn run_quiet(host: &OsHost, cmd: &bedouin_core::host::Cmd) -> Result<(), String> {
+    let mut err = String::new();
+    let status = bedouin_core::host::Host::run(host, cmd, &mut |l| {
+        if let bedouin_core::host::Line::Err(s) = l {
+            err.push_str(&s);
+            err.push('\n');
+        }
+    })
+    .map_err(|e| e.to_string())?;
+    if status.ok() {
+        Ok(())
+    } else if err.trim().is_empty() {
+        Err(format!("`{}` failed", cmd.display()))
+    } else {
+        Err(err.trim().to_string())
+    }
+}
+
 fn git(root: &std::path::Path, args: &[&str]) -> Result<String, String> {
     // Through the shared builder: prompt disabled, gh borrowed when
     // installed. `bedouin sync` against a private config repository is the
@@ -790,6 +809,36 @@ fn main() -> ExitCode {
                     &outcome.facts.home,
                     &outcome.facts.home,
                 );
+                // A subdir snapshot has no .git at dest on purpose: the clone
+                // is in the store. Fetch there, then re-export -- clearing
+                // dest only after the fetch succeeded, so a dead network
+                // leaves a stale snapshot rather than an empty one.
+                if let Some(sub) = &repo.subdir {
+                    let store = bedouin_core::gitcmd::store_dir(&outcome.facts.home, &repo.url);
+                    let (prep, export) = bedouin_core::gitcmd::subdir_export(
+                        &host,
+                        std::env::vars().collect(),
+                        &repo.url,
+                        &store,
+                        &dest,
+                        repo.r#ref.as_deref(),
+                        sub,
+                    );
+                    let all = prep
+                        .iter()
+                        .try_for_each(|c| run_quiet(&host, c))
+                        .and_then(|()| {
+                            let _ = std::fs::remove_dir_all(&dest);
+                            std::fs::create_dir_all(&dest).map_err(|e| e.to_string())?;
+                            run_quiet(&host, &export)
+                        });
+                    match all {
+                        Ok(()) => println!("{}: exported", dest.display()),
+                        // Not fatal: one repo should not stop the rest.
+                        Err(e) => eprintln!("bedouin: {}: {e}", dest.display()),
+                    }
+                    continue;
+                }
                 if !dest.join(".git").exists() {
                     continue;
                 }

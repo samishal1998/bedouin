@@ -132,6 +132,11 @@ pub struct RawRepo {
     /// A branch or tag. Defaults to whatever the remote's HEAD is.
     #[serde(default)]
     pub r#ref: Option<Val>,
+    /// One directory of the repository, exported to `dest` with its contents
+    /// at the root. The clone itself lives in bedouin's store; `dest` holds a
+    /// snapshot bedouin owns, refreshed by `sync`.
+    #[serde(default)]
+    pub subdir: Option<Val>,
     #[serde(default)]
     pub only: Option<OneOrMany<String>>,
 }
@@ -315,6 +320,7 @@ pub struct Repo {
     pub url: String,
     pub dest: String,
     pub r#ref: Option<String>,
+    pub subdir: Option<String>,
     pub resolved_from: Provenance,
 }
 
@@ -707,10 +713,18 @@ pub fn resolve(raw: &RawConfig, vocab: &Vocabulary, facts: &Facts) -> Result<Con
             Some(v) => Some(r.one(v, "ref", &mut prov).map_err(|e| e.in_item(&item))?),
             None => None,
         };
+        let subdir = match &repo.subdir {
+            Some(v) => Some(
+                r.one(v, "subdir", &mut prov)
+                    .map_err(|e| e.in_item(&item))?,
+            ),
+            None => None,
+        };
         repos.push(Repo {
             url,
             dest,
             r#ref: reference,
+            subdir,
             resolved_from: prov,
         });
     }

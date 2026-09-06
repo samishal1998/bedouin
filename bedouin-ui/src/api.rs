@@ -380,7 +380,7 @@ pub fn snapshot(config: Option<&Path>, cwd: &Path, writable: bool) -> Result<Sna
 const PACKAGE_KEYS: &[&str] = &["from", "version", "only", "needs", "path"];
 const LANGUAGE_KEYS: &[&str] = &["installer", "version", "only"];
 const FILE_KEYS: &[&str] = &["src", "dest", "mode", "only"];
-const REPO_KEYS: &[&str] = &["url", "dest", "only"];
+const REPO_KEYS: &[&str] = &["url", "dest", "ref", "subdir", "only"];
 const LINK_KEYS: &[&str] = &["src", "dest", "only"];
 
 /// Each key that is actually written in this entry, with its text verbatim.

@@ -406,6 +406,9 @@ pub fn env_refs(
         if let Some(v) = &r.r#ref {
             walk!(v, site);
         }
+        if let Some(v) = &r.subdir {
+            walk!(v, site);
+        }
     }
     for l in &raw.links {
         let hint = l.dest.payloads().next().map(|t| t.as_str()).unwrap_or("");

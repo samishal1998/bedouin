@@ -645,46 +645,95 @@ impl Executor<'_> {
                     url,
                     dest,
                     reference,
+                    subdir,
                 },
             ) => {
-                // Through the shared builder: prompt disabled, gh borrowed
-                // when installed. Every git bedouin runs goes this way.
-                let git = |args: Vec<String>| {
-                    crate::gitcmd::git(self.host, step_env(&self.state, self.facts), &args)
-                };
-                // A changed remote: the old clone comes out first. Two remotes
-                // at one path is not a thing.
-                if matches!(action, Action::Reinstall { .. }) {
+                if let Some(sub) = subdir {
+                    // The repository lives in the store; dest is an exported
+                    // snapshot bedouin owns. A moved pin or a changed remote
+                    // rebuilds the snapshot from nothing, because derived
+                    // content that is merely overlaid keeps files the source
+                    // deleted.
+                    let store = crate::gitcmd::store_dir(&self.facts.home, url);
+                    // ponytail: a Reinstall leaves the old remote's store
+                    // directory behind; harmless, add a sweep if it bothers.
+                    let (prep, export) = crate::gitcmd::subdir_export(
+                        self.host,
+                        step_env(&self.state, self.facts),
+                        url,
+                        &store,
+                        dest,
+                        reference.as_deref(),
+                        sub,
+                    );
+                    for cmd in prep {
+                        self.run(&cmd)?;
+                    }
+                    // Cleared between fetch and unpack: only once the fetch
+                    // has succeeded, so a dead network leaves a stale
+                    // snapshot rather than an empty one.
                     self.host
                         .remove_dir_all(dest)
                         .map_err(|e| (e.to_string(), Vec::new()))?;
-                }
-                let exists = self
-                    .host
-                    .symlink_meta(&dest.join(".git"))
-                    .map_err(|e| (e.to_string(), Vec::new()))?
-                    .is_some();
-                if exists {
-                    // --ff-only: what happens to your commits is your call.
-                    // A pull that cannot fast-forward is a reported failure.
-                    self.run(&git(vec![
-                        "-C".into(),
-                        dest.display().to_string(),
-                        "pull".into(),
-                        "--ff-only".into(),
-                    ]))?;
+                    self.host
+                        .mkdir_p(dest)
+                        .map_err(|e| (e.to_string(), Vec::new()))?;
+                    self.run(&export)?;
                 } else {
-                    let mut argv = vec!["clone".to_string(), "--depth".into(), "1".into()];
-                    if let Some(r) = reference {
-                        argv.push("--branch".into());
-                        argv.push(r.clone());
+                    // A changed remote or a moved pin: the old clone comes out
+                    // first -- but never over the user's uncommitted work.
+                    if matches!(action, Action::Reinstall { .. } | Action::Upgrade { .. }) {
+                        let has_git = self
+                            .host
+                            .symlink_meta(&dest.join(".git"))
+                            .map_err(|e| (e.to_string(), Vec::new()))?
+                            .is_some();
+                        if has_git {
+                            self.run(&crate::gitcmd::dirty_guard(
+                                step_env(&self.state, self.facts),
+                                dest,
+                            ))?;
+                        }
+                        self.host
+                            .remove_dir_all(dest)
+                            .map_err(|e| (e.to_string(), Vec::new()))?;
                     }
-                    argv.push(url.clone());
-                    argv.push(dest.display().to_string());
-                    self.run(&git(argv))?;
+                    let exists = self
+                        .host
+                        .symlink_meta(&dest.join(".git"))
+                        .map_err(|e| (e.to_string(), Vec::new()))?
+                        .is_some();
+                    if exists {
+                        // --ff-only: what happens to your commits is your call.
+                        // A pull that cannot fast-forward is a reported failure.
+                        // Through the shared builder: prompt disabled, gh
+                        // borrowed when installed.
+                        let cmd = crate::gitcmd::git(
+                            self.host,
+                            step_env(&self.state, self.facts),
+                            &[
+                                "-C".into(),
+                                dest.display().to_string(),
+                                "pull".into(),
+                                "--ff-only".into(),
+                            ],
+                        );
+                        self.run(&cmd)?;
+                    } else {
+                        let mut argv = vec!["clone".to_string(), "--depth".into(), "1".into()];
+                        if let Some(r) = reference {
+                            argv.push("--branch".into());
+                            argv.push(r.clone());
+                        }
+                        argv.push(url.clone());
+                        argv.push(dest.display().to_string());
+                        let cmd =
+                            crate::gitcmd::git(self.host, step_env(&self.state, self.facts), &argv);
+                        self.run(&cmd)?;
+                    }
                 }
                 rec.method = Some(url.clone());
-                rec.version = reference.clone();
+                rec.version = crate::plan::repo_spec(reference, subdir);
                 rec.owned_files = vec![dest.display().to_string()];
             }
 
