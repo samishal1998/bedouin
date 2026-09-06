@@ -582,16 +582,36 @@ packages:
 "#;
 
 fn git(root: &std::path::Path, args: &[&str]) -> Result<String, String> {
-    let out = std::process::Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(args)
-        .output()
-        .map_err(|e| format!("git: {e}"))?;
-    if !out.status.success() {
-        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+    // Through the shared builder: prompt disabled, gh borrowed when
+    // installed. `bedouin sync` against a private config repository is the
+    // most likely place any of that matters.
+    let host = OsHost::new();
+    let mut full = vec!["-C".to_string(), root.display().to_string()];
+    full.extend(args.iter().map(|s| s.to_string()));
+    let cmd = bedouin_core::gitcmd::git(&host, std::env::vars().collect(), &full);
+    let (mut out, mut err) = (String::new(), String::new());
+    let status = bedouin_core::host::Host::run(&host, &cmd, &mut |l| match l {
+        bedouin_core::host::Line::Out(s) => {
+            out.push_str(&s);
+            out.push('\n');
+        }
+        bedouin_core::host::Line::Err(s) => {
+            err.push_str(&s);
+            err.push('\n');
+        }
+        // Step markers are for the apply renderer; a one-off git has none.
+        _ => {}
+    })
+    .map_err(|e| e.to_string())?;
+    if status.ok() {
+        Ok(out.trim().to_string())
+    } else {
+        Err(if err.trim().is_empty() {
+            format!("git {} failed", args.join(" "))
+        } else {
+            err.trim().to_string()
+        })
     }
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
 fn main() -> ExitCode {

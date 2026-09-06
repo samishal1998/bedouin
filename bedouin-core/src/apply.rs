@@ -647,10 +647,10 @@ impl Executor<'_> {
                     reference,
                 },
             ) => {
+                // Through the shared builder: prompt disabled, gh borrowed
+                // when installed. Every git bedouin runs goes this way.
                 let git = |args: Vec<String>| {
-                    let mut c = Cmd::new(args);
-                    c.env = step_env(&self.state, self.facts);
-                    c
+                    crate::gitcmd::git(self.host, step_env(&self.state, self.facts), &args)
                 };
                 // A changed remote: the old clone comes out first. Two remotes
                 // at one path is not a thing.
@@ -668,19 +668,13 @@ impl Executor<'_> {
                     // --ff-only: what happens to your commits is your call.
                     // A pull that cannot fast-forward is a reported failure.
                     self.run(&git(vec![
-                        "git".into(),
                         "-C".into(),
                         dest.display().to_string(),
                         "pull".into(),
                         "--ff-only".into(),
                     ]))?;
                 } else {
-                    let mut argv = vec![
-                        "git".to_string(),
-                        "clone".into(),
-                        "--depth".into(),
-                        "1".into(),
-                    ];
+                    let mut argv = vec!["clone".to_string(), "--depth".into(), "1".into()];
                     if let Some(r) = reference {
                         argv.push("--branch".into());
                         argv.push(r.clone());
