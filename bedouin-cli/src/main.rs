@@ -1,5 +1,6 @@
 //! The only thing that runs on a fresh machine.
 
+mod provision;
 mod release;
 mod selfcmd;
 mod sidecar;
@@ -189,6 +190,38 @@ enum Command {
         /// Fetch `bedouin-ui` without asking, if it is missing.
         #[arg(short = 'y', long)]
         yes: bool,
+    },
+    /// Install bedouin on a machine over ssh, clone the config, apply.
+    /// Your agent is forwarded for the first clone; nothing credential-shaped
+    /// is stored on the machine.
+    Ssh {
+        /// An ssh destination: user@host, or a Host alias from ~/.ssh/config.
+        target: String,
+        /// Config repository to clone there. Defaults to this machine's own
+        /// config repo `origin`.
+        #[arg(long)]
+        repo: Option<String>,
+        /// Provision without asking.
+        #[arg(short = 'y', long)]
+        yes: bool,
+        /// Extra arguments handed to ssh verbatim, e.g. `-- -p 2222 -i key`.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        ssh_args: Vec<String>,
+    },
+    /// Write a cloud-init user-data file: install bedouin, clone the config
+    /// with a read-only deploy key, apply on first boot. age-encrypted,
+    /// because the file holds a private key.
+    Cloudinit {
+        /// Config repository the machine will clone. Defaults to this
+        /// machine's own config repo `origin`; must be ssh-cloneable.
+        #[arg(long)]
+        repo: Option<String>,
+        /// Where to write it.
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+        /// Skip encryption. The file then holds a plain private key.
+        #[arg(long)]
+        plain: bool,
     },
     /// This binary and the pieces released with it. Not `bedouin upgrade`:
     /// that would read as upgrading the packages bedouin manages, which it
@@ -717,6 +750,48 @@ fn main() -> ExitCode {
     // `self` is about the binary, not the machine's configuration. Resolving
     // a config first would make `self upgrade` fail on exactly the box whose
     // broken config you are upgrading to fix.
+    // Provisioning talks to OTHER machines; the local config is only read
+    // to find the repo URL, and lazily.
+    if let Command::Ssh {
+        ref target,
+        ref repo,
+        yes,
+        ref ssh_args,
+    } = cli.command
+    {
+        return provision::ssh(
+            &host,
+            cli.config.as_deref(),
+            &cwd,
+            target,
+            repo.clone(),
+            yes,
+            ssh_args,
+        );
+    }
+    if let Command::Cloudinit {
+        ref repo,
+        ref out,
+        plain,
+    } = cli.command
+    {
+        let out = out.clone().unwrap_or_else(|| {
+            PathBuf::from(if plain {
+                "user-data.yaml"
+            } else {
+                "user-data.age"
+            })
+        });
+        return provision::cloudinit(
+            &host,
+            cli.config.as_deref(),
+            &cwd,
+            repo.clone(),
+            &out,
+            plain,
+        );
+    }
+
     if let Command::Selfy { ref action } = cli.command {
         return match *action {
             SelfAction::Upgrade { check, yes } => selfcmd::upgrade(&host, check, yes),
@@ -992,6 +1067,9 @@ fn main() -> ExitCode {
         // before the pipeline above.
         Command::Ui { .. } => unreachable!("handed over above"),
         Command::Selfy { .. } => unreachable!("handled before the config is resolved"),
+        Command::Ssh { .. } | Command::Cloudinit { .. } => {
+            unreachable!("handled before the config is resolved")
+        }
         Command::Init | Command::Env { .. } | Command::Facts => {
             unreachable!("handled before the config is resolved")
         }

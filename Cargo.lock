@@ -122,6 +122,7 @@ dependencies = [
  "crossterm",
  "ratatui",
  "serde_json",
+ "serde_yaml_ng",
 ]
 
 [[package]]
