@@ -125,6 +125,8 @@ wrote them in.
 | `bedouin sync` | pull the config repo, then apply what changed |
 | `bedouin reconcile --watch` | keep the machine matching, unattended |
 | `bedouin daemon install` | write the systemd/launchd unit that runs it |
+| `bedouin ssh root@new-box` | install bedouin there, clone the config, apply — over your own keys |
+| `bedouin cloudinit` | user-data for a machine that boots unattended, deploy key encrypted at rest |
 | `bedouin self upgrade` | check for a newer bedouin, and the sidecar, then install it |
 | `bedouin self version` | what is installed here — works with no network |
 

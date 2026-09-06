@@ -3,6 +3,51 @@
 Dates are release dates. Versions before 0.2.0 are omitted: they predate this
 file and nothing depended on them.
 
+## 0.16.0 — 2026-09-06
+
+**Private repositories work, quietly.** Every git command bedouin runs now
+carries `GIT_TERMINAL_PROMPT=0` — a private repo used to make git wait for a
+username on a terminal nobody is watching, ten silent minutes to the timeout,
+which in the reconcile daemon was a machine that just stopped converging. And
+when `gh` is installed, it is appended as a credential helper for that one
+command: signed into gh means private GitHub repos clone and `bedouin sync`
+pulls, with no global gitconfig edits and the user's own helpers untouched.
+
+**Repos: a moved pin is a change, and `subdir:` syncs one directory.**
+Changing `ref:` used to plan NoOp forever. It now plans as an upgrade and
+re-clones — refusing first if the tree is dirty, a guard the changed-remote
+path also gained (it used to delete uncommitted work without asking).
+`subdir: nvim` puts that directory's contents at `dest` with nothing nested
+and no symlink: the clone lives in `~/.local/share/bedouin/repos`, `dest` is
+an exported snapshot bedouin owns, and `bedouin sync` re-exports it — fetch
+first, clear second, unpack third, so files deleted upstream leave, and a
+dead network leaves a stale snapshot rather than an empty one.
+
+**Hooks.** `hooks: {before_apply, before_step, after_step, on_failure,
+after_apply}` — conditional arms and `{{ env }}` included, frozen into the
+plan artifact like everything else, so `apply -f` runs exactly the hooks that
+were reviewed. `before_apply` failing stops the run before the first step;
+the step hooks see `BEDOUIN_STEP` and `BEDOUIN_ACTION`; the observers see
+`BEDOUIN_STATUS`. One block per config, across includes.
+
+**`bedouin ssh user@host`.** Install bedouin on a machine, clone the config,
+apply — four staged commands over your ssh connection, agent forwarded for
+exactly that long, nothing credential-shaped stored on the box. Running it
+again pulls and applies the delta, which makes it the re-provision command
+too. Extra ssh flags pass through after `--`. Verified against a bare
+ubuntu:24.04 container: no git, no curl, no bedouin — one command later,
+five steps applied.
+
+**`bedouin cloudinit`.** The same walk written down for a machine that boots
+unattended: user-data that installs bedouin, clones with a generated
+read-only deploy key, applies. The public half is printed for the forge; the
+private half exists only inside the file, which is why the file is
+age-encrypted by default (`age -d user-data.age | …`) and `--plain` comes
+with a warning that means it.
+
+Configs using `hooks:` or `subdir:` are rejected by older binaries — upgrade
+the fleet first (`bedouin self upgrade`), then the config.
+
 ## 0.15.2 — 2026-09-04
 
 **An entry from an `includes:` file says so, instead of offering a button that
