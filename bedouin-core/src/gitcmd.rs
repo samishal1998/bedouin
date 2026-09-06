@@ -98,7 +98,16 @@ pub fn store_dir(home: &std::path::Path, url: &str) -> PathBuf {
         .collect::<String>()
         .trim_matches('-')
         .to_string();
-    home.join(".local/share/bedouin/repos").join(slug)
+    // The slug flattens every separator to `-`, so `a/b-c` and `a-b/c` would
+    // share a directory and one remote's content would answer for the other.
+    // A hash of the URL itself keeps them apart.
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in url.bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    home.join(".local/share/bedouin/repos")
+        .join(format!("{slug}-{h:08x}"))
 }
 
 /// Single-quote a value for the one shell line the export pipe needs.
@@ -136,6 +145,11 @@ pub fn subdir_export(
         .flatten()
         .is_some();
     if !cloned {
+        // A clone that died halfway leaves a directory with no HEAD, and git
+        // refuses to clone into a non-empty directory -- so the store would
+        // be bricked by the one interruption. Nothing in it is precious: it
+        // is a cache of the remote.
+        let _ = host.remove_dir_all(store);
         let mut args = vec![
             "clone".to_string(),
             "--bare".into(),
@@ -168,15 +182,40 @@ pub fn subdir_export(
         ],
     ));
 
-    // Contents at the root of dest: strip the subdir's own components.
-    let depth = subdir.trim_matches('/').split('/').count();
+    // One normalised spelling of the subdir, used for the depth AND the
+    // pathspec: `./nvim` counted `.` as a component, so tar stripped one
+    // level too many and silently dropped every file.
+    let sub: Vec<&str> = subdir
+        .split('/')
+        .filter(|c| !c.is_empty() && *c != ".")
+        .collect();
+    let sub = sub.join("/");
+    let depth = sub.split('/').count();
+
+    // Proof the subdir exists at that ref, as the last prep step: it runs
+    // BEFORE any caller clears dest, so a typo'd subdir -- or one upstream
+    // renamed away -- is a refusal with a sentence, not an emptied config
+    // directory that the fetch-first ordering was supposed to prevent.
+    let mut check = Cmd::new([
+        "sh".to_string(),
+        "-c".into(),
+        format!(
+            "git -C {} cat-file -e FETCH_HEAD:{} || {{              echo \"no directory {} at that ref -- check subdir: and ref:\" >&2; exit 1; }}",
+            sq(&store_s),
+            sq(&sub),
+            sub
+        ),
+    ]);
+    check.env = env.clone();
+    cmds.push(check);
+
     let mut sh = Cmd::new([
         "sh".to_string(),
         "-c".into(),
         format!(
             "git -C {} archive FETCH_HEAD -- {} | tar -x --strip-components={depth} -C {}",
             sq(&store_s),
-            sq(subdir.trim_matches('/')),
+            sq(&sub),
             sq(&dest.display().to_string()),
         ),
     ]);
@@ -190,15 +229,21 @@ pub fn subdir_export(
 /// gone because the config changed a ref".
 pub fn dirty_guard(env: BTreeMap<String, String>, dest: &std::path::Path) -> Cmd {
     let d = sq(&dest.display().to_string());
-    let mut cmd = Cmd::new([
-        "sh".to_string(),
-        "-c".into(),
-        format!(
-            "if [ -n \"$(git -C {d} status --porcelain 2>/dev/null)\" ]; then \
-             echo \"{}: uncommitted changes -- commit or stash them first\" >&2; exit 1; fi",
-            dest.display()
-        ),
-    ]);
+    // Three kinds of work a re-clone would destroy: uncommitted changes,
+    // commits no remote has, and stashes. And fail CLOSED: a git that cannot
+    // even report status -- a corrupt repo, an ownership refusal -- used to
+    // read as clean, which meant "delete it" was the answer to "I don't
+    // know what's in it".
+    let script = format!(
+        "cd {d} || exit 1; \
+         st=$(git status --porcelain 2>&1) || {{ echo \"cannot read $(pwd): $st\" >&2; exit 1; }}; \
+         [ -z \"$st\" ] || {{ echo \"$(pwd): uncommitted changes -- commit or stash them first\" >&2; exit 1; }}; \
+         [ -z \"$(git log --branches --not --remotes -n 1 --format=x 2>/dev/null)\" ] || \
+           {{ echo \"$(pwd): has commits no remote has -- push them first\" >&2; exit 1; }}; \
+         [ -z \"$(git stash list 2>/dev/null)\" ] || \
+           {{ echo \"$(pwd): has stashes -- apply or drop them first\" >&2; exit 1; }}"
+    );
+    let mut cmd = Cmd::new(["sh".to_string(), "-c".into(), script]);
     cmd.env = env;
     cmd
 }

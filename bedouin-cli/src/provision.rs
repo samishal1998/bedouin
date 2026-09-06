@@ -78,6 +78,17 @@ pub fn ssh(
         }
     };
 
+    // The promise on the next line is agent forwarding, and an agent only
+    // answers ssh remotes. GitHub https rewrites cleanly; anything else https
+    // gets a warning instead of a clone that hangs asking for a password.
+    let repo = match to_ssh_remote(&repo) {
+        Some(r) => r,
+        None => {
+            println!("  note    {repo} is not an ssh remote; the clone will need");
+            println!("          its own credentials on the machine");
+            repo
+        }
+    };
     println!("  target  {target}");
     println!("  repo    {repo}");
     println!("  keys    forwarded for the clone, stored nowhere\n");
@@ -193,7 +204,16 @@ pub fn cloudinit(
     // goes only into the user-data, the public half goes to the forge as a
     // read-only deploy key.
     let keydir = std::env::temp_dir().join(format!("bedouin-cloudinit-{}", std::process::id()));
-    if std::fs::create_dir_all(&keydir).is_err() {
+    let _ = std::fs::remove_dir_all(&keydir);
+    let mut mk = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        mk.mode(0o700);
+    }
+    // create, not create_all: if something already sits at this exact path
+    // after the cleanup above, that is a race worth refusing, not joining.
+    if mk.create(&keydir).is_err() {
         eprintln!("bedouin: cannot create {}", keydir.display());
         return ExitCode::FAILURE;
     }
@@ -225,7 +245,7 @@ pub fn cloudinit(
     let user_data = render_user_data(&repo, &private);
 
     let written = if plain {
-        std::fs::write(out, user_data.as_bytes()).map_err(|e| e.to_string())
+        write_private(out, user_data.as_bytes())
     } else {
         encrypt_with_age(&user_data, out)
     };
@@ -276,6 +296,13 @@ fn render_user_data(repo: &str, private_key: &str) -> String {
          git clone {} /root/.config/bedouin",
         sh_quote(repo)
     );
+    // Remembered by the clone itself, so `bedouin sync` next month can still
+    // pull -- a deploy key that worked exactly once turns the config into a
+    // snapshot nobody meant to take.
+    s.push_str(
+        "  - git -C /root/.config/bedouin config core.sshCommand \
+         'ssh -i /root/.ssh/bedouin_deploy -o StrictHostKeyChecking=accept-new'\n",
+    );
     s.push_str("  - HOME=/root PATH=/root/.local/bin:$PATH bedouin apply -y\n");
     s
 }
@@ -289,6 +316,22 @@ fn to_ssh_remote(url: &str) -> Option<String> {
     let rest = url.strip_prefix("https://github.com/")?;
     let rest = rest.trim_end_matches('/').trim_end_matches(".git");
     Some(format!("git@github.com:{rest}.git"))
+}
+
+/// Written 0600 from the first byte: this file holds a private key, and a
+/// default-umask write leaves it world-readable for as long as it exists.
+fn write_private(out: &Path, data: &[u8]) -> Result<(), String> {
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new();
+    f.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        f.mode(0o600);
+    }
+    f.open(out)
+        .and_then(|mut f| f.write_all(data))
+        .map_err(|e| format!("{}: {e}", out.display()))
 }
 
 fn encrypt_with_age(data: &str, out: &Path) -> Result<(), String> {
@@ -372,6 +415,16 @@ mod tests {
         );
         assert_eq!(doc["write_files"][0]["permissions"].as_str(), Some("0600"));
         let cmds = doc["runcmd"].as_sequence().expect("runcmd");
-        assert_eq!(cmds.len(), 3, "install, clone, apply -- nothing else");
+        assert_eq!(
+            cmds.len(),
+            4,
+            "install, clone, remember-the-key, apply -- nothing else"
+        );
+        assert!(
+            cmds[2]
+                .as_str()
+                .is_some_and(|c| c.contains("core.sshCommand")),
+            "the clone must remember its deploy key, or the first sync is the last"
+        );
     }
 }

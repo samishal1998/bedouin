@@ -878,6 +878,14 @@ pub fn build(
         let known = state.done(&id);
         let spec = repo_spec(&repo.r#ref, &repo.subdir);
         let action = match (known, on_disk) {
+            // Adopted stays adopted, no matter what the config now says.
+            // Bedouin did not put this directory here, so no edit -- a new
+            // url, a moved ref, a subdir -- makes replacing it fine; remove
+            // it yourself if you want bedouin to take over. FIRST, because
+            // an adopted record has no method and every arm below would read
+            // that as a changed remote and reinstall over someone's
+            // hand-managed config.
+            (Some(st), true) if st.owner == crate::state::Owner::Preexisting => Action::NoOp,
             // A different remote at the same path is not an update.
             (Some(st), _) if st.method.as_deref() != Some(repo.url.as_str()) => Action::Reinstall {
                 from_method: st.method.clone().unwrap_or_default(),

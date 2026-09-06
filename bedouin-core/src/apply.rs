@@ -148,6 +148,12 @@ fn step_env(state: &State, facts: &Facts) -> BTreeMap<String, String> {
         "HTTPS_PROXY",
         "HTTP_PROXY",
         "NO_PROXY",
+        // The ssh agent, when there is one. `bedouin ssh` provisions over a
+        // forwarded agent, and the machine's own repo clones during apply
+        // reach git through this environment -- dropping the socket made
+        // "keys forwarded for the clone" true for the config repo and false
+        // for every repo the config declares.
+        "SSH_AUTH_SOCK",
     ] {
         if let Some(v) = facts.env.get(keep) {
             env.insert(keep.into(), v.clone());
@@ -671,6 +677,17 @@ impl Executor<'_> {
                     // rebuilds the snapshot from nothing, because derived
                     // content that is merely overlaid keeps files the source
                     // deleted.
+                    let was_clone = self
+                        .host
+                        .symlink_meta(&dest.join(".git"))
+                        .map_err(|e| (e.to_string(), Vec::new()))?
+                        .is_some();
+                    if was_clone {
+                        self.run(&crate::gitcmd::dirty_guard(
+                            step_env(&self.state, self.facts),
+                            dest,
+                        ))?;
+                    }
                     let store = crate::gitcmd::store_dir(&self.facts.home, url);
                     // ponytail: a Reinstall leaves the old remote's store
                     // directory behind; harmless, add a sweep if it bothers.
@@ -697,8 +714,10 @@ impl Executor<'_> {
                         .map_err(|e| (e.to_string(), Vec::new()))?;
                     self.run(&export)?;
                 } else {
-                    // A changed remote or a moved pin: the old clone comes out
-                    // first -- but never over the user's uncommitted work.
+                    // A changed remote or a moved pin: never over the user's
+                    // uncommitted work, and never delete before the new clone
+                    // is on disk -- a re-clone that dies on the network must
+                    // not have already destroyed the old one.
                     if matches!(action, Action::Reinstall { .. } | Action::Upgrade { .. }) {
                         let has_git = self
                             .host
@@ -711,16 +730,39 @@ impl Executor<'_> {
                                 dest,
                             ))?;
                         }
+                        let fresh = dest.with_extension("bedouin-new");
+                        let _ = self.host.remove_dir_all(&fresh);
+                        let mut argv = vec!["clone".to_string(), "--depth".into(), "1".into()];
+                        if let Some(r) = reference {
+                            argv.push("--branch".into());
+                            argv.push(r.clone());
+                        }
+                        argv.push(url.clone());
+                        argv.push(fresh.display().to_string());
+                        let cmd =
+                            crate::gitcmd::git(self.host, step_env(&self.state, self.facts), &argv);
+                        self.run(&cmd)?;
                         self.host
                             .remove_dir_all(dest)
                             .map_err(|e| (e.to_string(), Vec::new()))?;
+                        let mut mv = Cmd::new([
+                            "mv".to_string(),
+                            fresh.display().to_string(),
+                            dest.display().to_string(),
+                        ]);
+                        mv.env = step_env(&self.state, self.facts);
+                        self.run(&mv)?;
                     }
+                    let just_recloned =
+                        matches!(action, Action::Reinstall { .. } | Action::Upgrade { .. });
                     let exists = self
                         .host
                         .symlink_meta(&dest.join(".git"))
                         .map_err(|e| (e.to_string(), Vec::new()))?
                         .is_some();
-                    if exists {
+                    if just_recloned {
+                        // The swap above already put the declared ref here.
+                    } else if exists {
                         // --ff-only: what happens to your commits is your call.
                         // A pull that cannot fast-forward is a reported failure.
                         // Through the shared builder: prompt disabled, gh

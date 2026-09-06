@@ -889,6 +889,26 @@ fn main() -> ExitCode {
                 // dest only after the fetch succeeded, so a dead network
                 // leaves a stale snapshot rather than an empty one.
                 if let Some(sub) = &repo.subdir {
+                    // Only a snapshot bedouin itself exported gets refreshed
+                    // here. Anything else at dest -- a hand-managed dir the
+                    // plan adopted, a plain clone that predates `subdir:` --
+                    // goes through `bedouin apply`, where the ownership and
+                    // dirty guards live. sync consulting no state was how a
+                    // hand-managed ~/.config/nvim could be deleted by a
+                    // command whose job is "go and get what changed".
+                    let id = format!("repo/{}", dest.display());
+                    let ours = outcome.state.items.get(&id).is_some_and(|st| {
+                        st.owner == bedouin_core::state::Owner::Bedouin
+                            && st.version
+                                == bedouin_core::plan::repo_spec(&repo.r#ref, &repo.subdir)
+                    });
+                    if !ours {
+                        eprintln!(
+                            "bedouin: {}: not applied as this snapshot yet -- run `bedouin apply` first",
+                            dest.display()
+                        );
+                        continue;
+                    }
                     let store = bedouin_core::gitcmd::store_dir(&outcome.facts.home, &repo.url);
                     let (prep, export) = bedouin_core::gitcmd::subdir_export(
                         &host,
