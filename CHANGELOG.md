@@ -45,6 +45,17 @@ private half exists only inside the file, which is why the file is
 age-encrypted by default (`age -d user-data.age | …`) and `--plain` comes
 with a warning that means it.
 
+**Reviewed before release.** An adversarial review of this diff confirmed 22
+findings; every one is fixed. The theme: the snapshot's "clear and re-export"
+rule must never touch a dest that is not yet a snapshot — an adopted
+directory stays adopted no matter what the config says, a dest that is still
+a git clone gets the dirty guard (which now also counts unpushed commits and
+stashes, and fails closed), sync refreshes only what state says bedouin
+exported, and a typo'd `subdir:` is refused before anything is cleared.
+Deploy keys are 0600 from the first byte, the provisioned clone remembers its
+key so the second sync still pulls, and the forwarded agent reaches the
+declared repos too.
+
 Configs using `hooks:` or `subdir:` are rejected by older binaries — upgrade
 the fleet first (`bedouin self upgrade`), then the config.
 
