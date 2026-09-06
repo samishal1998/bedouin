@@ -206,6 +206,23 @@ impl Executor<'_> {
         self.run(&cmd)
     }
 
+    /// One lifecycle hook: the script through `sh -c`, with the step
+    /// environment plus whatever the moment knows.
+    fn run_hook(
+        &mut self,
+        name: &str,
+        script: &str,
+        extra: &[(&str, &str)],
+    ) -> std::result::Result<(), (String, Vec<String>)> {
+        let mut cmd = Cmd::new(["sh".to_string(), "-c".into(), script.to_string()]);
+        cmd.env = step_env(&self.state, self.facts);
+        for (k, v) in extra {
+            cmd.env.insert((*k).to_string(), (*v).to_string());
+        }
+        self.run(&cmd)
+            .map_err(|(m, t)| (format!("hook `{name}`: {m}"), t))
+    }
+
     fn run(&mut self, cmd: &Cmd) -> std::result::Result<(), (String, Vec<String>)> {
         let mut tail: Vec<String> = Vec::new();
         let status = match self.host.run(cmd, &mut |l| {
@@ -887,7 +904,25 @@ pub fn apply(
         skipped,
         ..Default::default()
     };
+
+    // The run's own doorway. A before_apply that fails stops everything
+    // before the first step -- that is what makes it a gate rather than a
+    // notification.
+    if let Some(h) = ex.cfg.hooks.before_apply.clone() {
+        if let Err((message, output_tail)) = ex.run_hook("before_apply", &h, &[]) {
+            report.failure = Some(Failure {
+                id: "hook/before_apply".into(),
+                message,
+                output_tail,
+            });
+            report.not_attempted = changes.iter().map(|x| x.id.clone()).collect();
+        }
+    }
+
     for (i, item) in changes.iter().enumerate() {
+        if report.failure.is_some() {
+            break;
+        }
         // A heading per step. Running this by eye, the old output was one
         // undifferentiated wall of package-manager chatter.
         (ex.out)(Line::Step {
@@ -895,6 +930,29 @@ pub fn apply(
             total: changes.len(),
             id: item.id.clone(),
         });
+        if let Some(h) = ex.cfg.hooks.before_step.clone() {
+            let action = crate::plan::action_label(&item.action);
+            if let Err((message, output_tail)) = ex.run_hook(
+                "before_step",
+                &h,
+                &[
+                    ("BEDOUIN_STEP", item.id.as_str()),
+                    ("BEDOUIN_ACTION", action.as_str()),
+                ],
+            ) {
+                (ex.out)(Line::StepEnd {
+                    id: item.id.clone(),
+                    ok: false,
+                });
+                report.failure = Some(Failure {
+                    id: item.id.clone(),
+                    message,
+                    output_tail,
+                });
+                report.not_attempted = changes[i..].iter().map(|x| x.id.clone()).collect();
+                break;
+            }
+        }
         // Intent first: if the run dies here, the record says so.
         if item.action != Action::Remove {
             // Flip the status on whatever is already recorded. Replacing the
@@ -977,6 +1035,28 @@ pub fn apply(
                 break;
             }
         }
+
+        // Reaching the loop bottom means the step succeeded and was
+        // recorded; after_step sees it with the same eyes before_step did.
+        if let Some(h) = ex.cfg.hooks.after_step.clone() {
+            let action = crate::plan::action_label(&item.action);
+            if let Err((message, output_tail)) = ex.run_hook(
+                "after_step",
+                &h,
+                &[
+                    ("BEDOUIN_STEP", item.id.as_str()),
+                    ("BEDOUIN_ACTION", action.as_str()),
+                ],
+            ) {
+                report.failure = Some(Failure {
+                    id: item.id.clone(),
+                    message,
+                    output_tail,
+                });
+                report.not_attempted = changes[i + 1..].iter().map(|x| x.id.clone()).collect();
+                break;
+            }
+        }
     }
 
     // Anything already on the machine that Bedouin did not install is adopted
@@ -1009,6 +1089,39 @@ pub fn apply(
                 message: format!("every step ran, but the record could not be saved: {e}"),
                 output_tail: Vec::new(),
             });
+        }
+    }
+
+    // The observers, last. on_failure sees which step stopped the run;
+    // after_apply sees how it ended either way. Neither can un-write the
+    // run's story: on_failure's own failure is only reported, and
+    // after_apply's promotes to THE failure only when the run was otherwise
+    // clean -- burying a step failure under a hook failure helps nobody.
+    if let Some(f) = report.failure.as_ref().map(|f| f.id.clone()) {
+        if let Some(h) = ex.cfg.hooks.on_failure.clone() {
+            if let Err((m, _)) = ex.run_hook("on_failure", &h, &[("BEDOUIN_STEP", f.as_str())]) {
+                (ex.out)(Line::Err(m));
+            }
+        }
+    }
+    if let Some(h) = ex.cfg.hooks.after_apply.clone() {
+        let status = if report.failure.is_some() {
+            "failed"
+        } else {
+            "ok"
+        };
+        if let Err((message, output_tail)) =
+            ex.run_hook("after_apply", &h, &[("BEDOUIN_STATUS", status)])
+        {
+            if report.failure.is_none() {
+                report.failure = Some(Failure {
+                    id: "hook/after_apply".into(),
+                    message,
+                    output_tail,
+                });
+            } else {
+                (ex.out)(Line::Err(message));
+            }
         }
     }
 

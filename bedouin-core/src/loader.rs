@@ -370,6 +370,18 @@ pub fn load(entry: &Path, host: &dyn Host) -> Result<Loaded> {
         if cfg.shell.is_some() {
             merged.shell = cfg.shell;
         }
+        if let Some(h) = cfg.hooks {
+            // Two hook blocks would run in include order, which is an
+            // ordering nobody wrote down. One block, declared once -- the
+            // same rule as a repeated package, for the same reason.
+            if merged.hooks.is_some() {
+                return Err(ConfigError::new(
+                    "`hooks:` is declared in more than one file -- keep one block",
+                )
+                .at(path.display().to_string()));
+            }
+            merged.hooks = Some(h);
+        }
         if cfg.package_managers.is_some() {
             merged.package_managers = cfg.package_managers;
         }

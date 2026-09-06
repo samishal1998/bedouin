@@ -410,6 +410,19 @@ pub fn env_refs(
             walk!(v, site);
         }
     }
+    if let Some(h) = &raw.hooks {
+        for (v, name) in [
+            (&h.before_apply, "before_apply"),
+            (&h.after_apply, "after_apply"),
+            (&h.before_step, "before_step"),
+            (&h.after_step, "after_step"),
+            (&h.on_failure, "on_failure"),
+        ] {
+            if let Some(v) = v {
+                walk!(v, format!("hooks.{name}"));
+            }
+        }
+    }
     for l in &raw.links {
         let hint = l.dest.payloads().next().map(|t| t.as_str()).unwrap_or("");
         let site = format!("links.{hint}");

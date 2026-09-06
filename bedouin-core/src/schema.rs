@@ -82,6 +82,10 @@ pub struct RawConfig {
     pub version: u32,
     #[serde(default)]
     pub includes: Vec<String>,
+    /// Scripts that run at the run's own edges. Same trust as `script:` --
+    /// this is the user's config running on the user's machine.
+    #[serde(default)]
+    pub hooks: Option<RawHooks>,
     /// The shell being configured. Not evaluatable, and not a fact: on a fresh
     /// box Bedouin is usually installing the shell it configures, so the
     /// detected one is the wrong answer.
@@ -139,6 +143,34 @@ pub struct RawRepo {
     pub subdir: Option<Val>,
     #[serde(default)]
     pub only: Option<OneOrMany<String>>,
+}
+
+/// The run's own edges, scriptable. `before_apply` failing stops the run
+/// before the first step; a failing `before_step` or `after_step` stops it
+/// there, the same way a failing step does. `on_failure` and `after_apply`
+/// only observe.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawHooks {
+    #[serde(default)]
+    pub before_apply: Option<Val>,
+    #[serde(default)]
+    pub after_apply: Option<Val>,
+    #[serde(default)]
+    pub before_step: Option<Val>,
+    #[serde(default)]
+    pub after_step: Option<Val>,
+    #[serde(default)]
+    pub on_failure: Option<Val>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Hooks {
+    pub before_apply: Option<String>,
+    pub after_apply: Option<String>,
+    pub before_step: Option<String>,
+    pub after_step: Option<String>,
+    pub on_failure: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -336,6 +368,9 @@ pub struct FileSpec {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Config {
     pub shell: Shell,
+    /// Absent in plan artifacts written before hooks existed.
+    #[serde(default)]
+    pub hooks: Hooks,
     pub framework: Option<Framework>,
     pub vars: BTreeMap<String, String>,
     pub aliases: BTreeMap<String, String>,
@@ -802,8 +837,31 @@ pub fn resolve(raw: &RawConfig, vocab: &Vocabulary, facts: &Facts) -> Result<Con
         }
     }
 
+    let hooks = match &raw.hooks {
+        None => Hooks::default(),
+        Some(h) => {
+            let mut prov = Provenance::new();
+            let mut one = |v: &Option<Val>, key: &str| -> Result<Option<String>> {
+                match v {
+                    None => Ok(None),
+                    Some(v) => Ok(Some(
+                        r.one(v, key, &mut prov).map_err(|e| e.in_item("hooks"))?,
+                    )),
+                }
+            };
+            Hooks {
+                before_apply: one(&h.before_apply, "before_apply")?,
+                after_apply: one(&h.after_apply, "after_apply")?,
+                before_step: one(&h.before_step, "before_step")?,
+                after_step: one(&h.after_step, "after_step")?,
+                on_failure: one(&h.on_failure, "on_failure")?,
+            }
+        }
+    };
+
     Ok(Config {
         shell,
+        hooks,
         framework,
         aliases: global_aliases,
         vars: r.vars,
