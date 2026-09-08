@@ -3,6 +3,35 @@
 Dates are release dates. Versions before 0.2.0 are omitted: they predate this
 file and nothing depended on them.
 
+## 0.16.1 — 2026-09-08
+
+**The web UI went through a full interface review — accessibility, layout,
+copy, typography, colour and motion — and this is the result.** Five findings
+were blockers.
+
+Editing a value was reachable by pointer only; it is a real `<button>` now,
+so the keyboard works and the focus ring and accessible name come free. The
+inline editor had no focus indicator at all — a `:focus` rule was
+out-specifying the global `:focus-visible` one, and its border was madder
+either way. Four of the nine section tabs were invisible at 420px behind a
+scrollbar-less scroll container; they wrap now. On a phone the details pane —
+the only place the edit and delete controls live — sat thousands of pixels
+below the list, so tapping a row did nothing you could see; it sits above the
+list and stays pinned.
+
+Two dyes failed contrast as 14px sigil text, one per theme: light ochre and
+dark madder. Both corrected, and the selection tint eased from 11% to 8%,
+which was the worst case and also lifts the row detail above its threshold.
+
+Then: the verdict's "to add" rendered 8.32px on every phone; the band's
+animation replayed for a second after every save; the save and cancel buttons
+were 20×20 and four pixels apart with no shape at rest; nothing acknowledged
+a press during a write; the row detail was the one machine value set in the
+annotation face; text inputs had no visible boundary until focused; the tab
+strip announced tabs with no panel and nine tab stops; the page had no
+headings; one icon shipped an invisible dead stroke; and refusals stated a
+fact without naming the next step.
+
 ## 0.16.0 — 2026-09-06
 
 **Private repositories work, quietly.** Every git command bedouin runs now
