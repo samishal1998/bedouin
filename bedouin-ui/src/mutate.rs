@@ -82,8 +82,8 @@ fn allowed(ctx: &Ctx, headers: &HeaderMap) -> Result<(), Response> {
     if headers.get("x-bedouin").is_none() {
         return Err(problem(
             StatusCode::FORBIDDEN,
-            "missing X-Bedouin header -- this request did not come from the \
-             bedouin page",
+            "This request did not come from the bedouin page.\n  \
+             Reload the page, then try the edit again.",
         ));
     }
     // Defence in depth: a browser always sends Origin on a non-GET. When it
@@ -98,7 +98,9 @@ fn allowed(ctx: &Ctx, headers: &HeaderMap) -> Result<(), Response> {
         if !ours {
             return Err(problem(
                 StatusCode::FORBIDDEN,
-                "this request came from another origin",
+                "This page was opened at another origin.\n  \
+                 Open it at http://127.0.0.1 or http://localhost, then try \
+                 the edit again.",
             ));
         }
     }
@@ -109,7 +111,10 @@ fn section_of(s: &str) -> Result<Section, Response> {
     Section::parse(s).ok_or_else(|| {
         problem(
             StatusCode::BAD_REQUEST,
-            &format!("`{s}` is not a section this can edit"),
+            &format!(
+                "`{s}` is not a section this page can edit.\n  \
+                 Edit it in the config file instead."
+            ),
         )
     })
 }

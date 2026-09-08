@@ -30,8 +30,8 @@ const SECTIONS = [
         <g id="i-file"><path d="M6 3h8l4 4v14H6Z"/><path d="M14 3v4h4"/></g>
         <g id="i-repo"><circle cx="7" cy="6" r="2"/><circle cx="7" cy="18" r="2"/><circle cx="17" cy="10" r="2"/><path d="M7 8v8"/><path d="M17 12c0 4-4 3-10 5"/></g>
         <g id="i-link"><path d="M4 12h12"/><path d="m12 8 4 4-4 4"/><path d="M20 5v14"/></g>
-        <g id="i-alias"><path d="M4 8h7"/><path d="M4 16h16"/><path d="m8 12 3 4-3 4" opacity="0"/></g>
-        <g id="i-language"><path d="m6 8 4 4-4 4"/><path d="M13 16h5"/></g>
+        <g id="i-alias"><path d="M4 7h6"/><path d="M4 17h16"/><path d="m11 7 3 5-3 5"/></g>
+        <g id="i-language"><path d="m5 7 5 5-5 5"/><path d="M13 17h6"/></g>
         <g id="i-manager"><path d="M12 3 21 8l-9 5-9-5Z"/><path d="m3 12 9 5 9-5"/><path d="m3 16 9 5 9-5"/></g>
         <g id="i-dir"><path d="M3 7h7l2 2h9v10H3Z"/></g>
         <g id="i-rc"><path d="M6 3h12v18H6Z"/><path d="M9 8h6"/><path d="M9 12h6"/><path d="M9 16h4"/></g>
@@ -71,8 +71,9 @@ const SECTIONS = [
         <div class="machine" id="machine">reading this machine…</div>
       </div>
 
-      <!-- The only fact most visits are here for, in the largest type. -->
-      <p class="verdict" id="verdict"></p>
+      <!-- The only fact most visits are here for, in the largest type, and
+           the page's one <h1>. -->
+      <h1 class="verdict" id="verdict"></h1>
     </div>
 
     <!-- The plan, one thread per item, dyed by what it does. Hidden from
@@ -89,7 +90,14 @@ const SECTIONS = [
       <nav id="tabs" role="tablist">
         {
           SECTIONS.map((id) => (
-            <button role="tab" data-section={id} aria-selected={id === 'plan'}>
+            <button
+              role="tab"
+              id={`tab-${id}`}
+              aria-controls="panel"
+              tabindex={id === 'plan' ? 0 : -1}
+              data-section={id}
+              aria-selected={id === 'plan'}
+            >
               {id}
               <span class="n" data-count={id} />
             </button>
@@ -98,11 +106,13 @@ const SECTIONS = [
       </nav>
 
       <main>
-        <section class="panel" aria-label="items">
+        <section class="panel" role="tabpanel" id="panel" aria-labelledby="tab-plan">
+          <h2 class="vh" id="panel-h">plan</h2>
           <div id="new"></div>
           <ul class="rows" id="rows"></ul>
         </section>
-        <section class="panel aside" aria-label="details">
+        <section class="panel aside" aria-labelledby="aside-h">
+          <h2 class="vh" id="aside-h">Details</h2>
           <div id="details" class="hint">Pick something on the left.</div>
         </section>
       </main>
@@ -244,9 +254,12 @@ const SECTIONS = [
         }
         el.className = 'verdict';
         el.innerHTML = tally
+          // The space lives INSIDE the verb, so it renders at the verb's size.
+          // Outside it, it would be a space in 62px type and blow the tally
+          // apart -- and this is the page's <h1>, so the text has to read.
           .map(([verb, n]) =>
             `<span class="tally"><span class="n ${verb}">${n}</span>` +
-            `<span class="verb">to ${verb}</span></span>`)
+            `<span class="verb"> to ${verb}</span></span>`)
           .join('');
       }
 
@@ -263,9 +276,15 @@ const SECTIONS = [
       function render() {
         for (const b of $('tabs').children) {
           const s = b.dataset.section;
-          b.setAttribute('aria-selected', String(s === section));
+          const on = s === section;
+          b.setAttribute('aria-selected', String(on));
+          // Roving tabindex: one stop for the whole tablist, arrows move
+          // within it. Nine separate stops is not the tab pattern.
+          b.tabIndex = on ? 0 : -1;
           b.querySelector('.n').textContent = rowsIn(s).length || '';
         }
+        $('panel').setAttribute('aria-labelledby', `tab-${section}`);
+        $('panel-h').textContent = section;
 
         // The band answers the query too. Leaving it showing all 62 threads
         // while the list shows one makes it decoration; fading the rest keeps
@@ -381,9 +400,13 @@ const SECTIONS = [
             const val = String(v).includes('\n')
               ? `<pre>${esc(v)}</pre>`
               : esc(v);
-            return `<dt>${esc(k)}</dt><dd${
-              editable ? ` class="can-edit" data-key="${esc(k)}"` : ''
-            }>${val}${editable ? icon('edit', 'act') : ''}</dd>`;
+            if (!editable) return `<dt>${esc(k)}</dt><dd>${val}</dd>`;
+            // A button, not a click handler on the <dd>. The platform then
+            // supplies the keyboard path, the focus ring and the accessible
+            // name for free -- the <dd> version was reachable by pointer only.
+            return `<dt>${esc(k)}</dt><dd class="can-edit" data-key="${esc(k)}">` +
+              `<button type="button" class="edit-field" aria-label="Edit ${esc(k)}">` +
+              `<span>${val}</span>${icon('edit', 'act')}</button></dd>`;
           })
           .join('');
 
@@ -409,8 +432,10 @@ const SECTIONS = [
 
         if (!canWrite) return;
         $('del').onclick = () => remove(r);
-        for (const dd of $('details').querySelectorAll('dd.can-edit'))
-          dd.onclick = () => openField(r, dd.dataset.key, raw.get(dd.dataset.key));
+        for (const btn of $('details').querySelectorAll('.edit-field')) {
+          const key = btn.parentElement.dataset.key;
+          btn.onclick = () => openField(r, key, raw.get(key));
+        }
       }
 
       /// An inline editor seeded with the config's own text -- never the
@@ -474,10 +499,14 @@ const SECTIONS = [
         $('note').innerHTML = msg ? `<div class="warn">${esc(msg)}</div>` : '';
       }
 
-      function show(s, i = 0) {
+      function show(s, i = 0, moveFocus = false) {
         section = s;
         selected = i;
         render();
+        // Only when the tablist already had focus: arrows are also the row
+        // keys, and stealing focus from elsewhere on the page would surprise.
+        if (moveFocus && document.activeElement?.closest('#tabs'))
+          $('tabs').querySelector('[aria-selected="true"]')?.focus();
       }
 
       $('tabs').addEventListener('click', (e) => {
@@ -531,8 +560,9 @@ const SECTIONS = [
         const at = tabs.indexOf(section);
         if (e.key === 'j' || e.key === 'ArrowDown') show(section, Math.min(selected + 1, n - 1));
         else if (e.key === 'k' || e.key === 'ArrowUp') show(section, Math.max(selected - 1, 0));
-        else if (e.key === 'ArrowRight') show(tabs[(at + 1) % tabs.length]);
-        else if (e.key === 'ArrowLeft') show(tabs[(at - 1 + tabs.length) % tabs.length]);
+        else if (e.key === 'ArrowRight') show(tabs[(at + 1) % tabs.length], 0, true);
+        else if (e.key === 'ArrowLeft')
+          show(tabs[(at - 1 + tabs.length) % tabs.length], 0, true);
         else return;
         e.preventDefault();
       });
@@ -553,7 +583,7 @@ const SECTIONS = [
           renderBand([]);
           $('rows').innerHTML =
             `<div class="empty">${esc(said)}` +
-            `<span class="do">check the terminal you started bedouin ui in</span></div>`;
+            `<span class="do">fix the config, then reload this page</span></div>`;
           $('details').className = 'hint';
           $('details').textContent = 'Nothing to show.';
           return;
@@ -566,7 +596,8 @@ const SECTIONS = [
         $('foot').innerHTML =
           (writable
             ? `Edits here change the config. <code>bedouin apply</code> changes the machine.`
-            : `Read-only: not bound to loopback. <code>bedouin apply</code> changes the machine.`) +
+            : `Read-only: not bound to loopback — reach it through an ssh tunnel to edit. ` +
+              `<code>bedouin apply</code> changes the machine.`) +
           ` · bedouin-ui ${esc(snap.version)}`;
         // Directly under the verdict: a warning is a reason not to trust the
         // number above it, and it earns that place rather than the footer.

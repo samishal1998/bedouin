@@ -19,7 +19,7 @@
   --wool: #1a1512;
   --dim: #6d6053;
   --madder: #a82a24;
-  --ochre: #94670f;
+  --ochre: #865d0e;
   --olive: #4f6b39;
   --edge: 0 1px 0 rgb(26 21 18 / 5%);
   --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, "DejaVu Sans Mono",
@@ -38,7 +38,7 @@
     --warp: #322822;
     --wool: #ebe2d6;
     --dim: #998a7c;
-    --madder: #d4443c;
+    --madder: #da5e57;
     --ochre: #c9973f;
     --olive: #85a468;
     --edge: none;
@@ -51,7 +51,7 @@
   --warp: #322822;
   --wool: #ebe2d6;
   --dim: #998a7c;
-  --madder: #d4443c;
+  --madder: #da5e57;
   --ochre: #c9973f;
   --olive: #85a468;
   --edge: none;
@@ -133,7 +133,10 @@ body {
   appearance: none;
   -webkit-appearance: none;
   background: var(--weft);
-  border: 1px solid var(--warp);
+  /* --dim, not --warp: a field's edge is the only thing saying where it is,
+     and --warp against --ground measures 1.3:1. --dim clears 3:1 in both
+     themes and is already the token for "quiet but legible". */
+  border: 1px solid var(--dim);
   border-radius: 3px;
   /* After the shorthand, not before it: `padding` would reset the left inset
      the mark sits in and drop the icon on top of the placeholder. */
@@ -205,7 +208,9 @@ body {
 
 .verdict .verb {
   font-family: var(--sans);
-  font-size: 0.26em;
+  /* Floored: .verdict's clamp pins at 2rem below 492px, and 0.26em of that is
+     8.32px -- the words that say what the numbers mean, illegible on a phone. */
+  font-size: max(0.26em, 0.75rem);
   font-weight: 500;
   letter-spacing: 0.16em;
   text-transform: uppercase;
@@ -248,8 +253,6 @@ body {
   background: var(--warp);
   cursor: pointer;
   transform-origin: center;
-  animation: beat 0.32s cubic-bezier(0.2, 0.9, 0.3, 1) backwards;
-  animation-delay: calc(var(--i) * 11ms);
 }
 
 .thread.add {
@@ -283,17 +286,7 @@ body {
   opacity: 0.14;
 }
 
-@keyframes beat {
-  from {
-    transform: scaleY(0.06);
-    opacity: 0;
-  }
-}
-
 @media (prefers-reduced-motion: reduce) {
-  .thread {
-    animation: none;
-  }
   .thread:hover,
   .thread[aria-current="true"] {
     transform: none;
@@ -347,6 +340,16 @@ nav button .n {
 
 /* ---- body --------------------------------------------------------------- */
 
+/* 728px of tabs plus the wrap's 48px of padding: below this they no longer
+   fit, and a scroll container with no scrollbar hid four of the nine. */
+@media (max-width: 49rem) {
+  nav {
+    flex-wrap: wrap;
+    overflow-x: visible;
+    row-gap: 0.1rem;
+  }
+}
+
 main {
   display: grid;
   grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr);
@@ -360,8 +363,13 @@ main {
   main {
     grid-template-columns: minmax(0, 1fr);
   }
+  /* Above the list and pinned, rather than below several thousand pixels of
+     it: this pane is the only place the edit and delete controls live, and
+     selecting a row must answer where you are looking. */
   .aside {
-    position: static;
+    order: -1;
+    top: 0;
+    z-index: 1;
   }
 }
 
@@ -428,7 +436,7 @@ main {
 }
 
 .rows li[aria-current="true"] {
-  background: color-mix(in srgb, var(--madder) 11%, transparent);
+  background: color-mix(in srgb, var(--madder) 8%, transparent);
   box-shadow: inset 2px 0 0 var(--madder);
 }
 
@@ -501,6 +509,10 @@ main {
 
 .rows .detail {
   grid-column: 3;
+  /* Mono, like .name above it and like the same value in the details pane:
+     proportional digits never align down 62 rows, and 1/l and 0/O stop being
+     distinguishable in a path. */
+  font-family: var(--mono);
   font-size: 0.76rem;
   color: var(--dim);
   overflow-wrap: anywhere;
@@ -612,12 +624,16 @@ footer code {
   appearance: none;
   border: 0;
   background: none;
-  padding: 0.15rem;
+  /* 24x24 is the floor for a target, and a control that only takes shape on
+     hover has no shape at all on touch. */
+  padding: 0.28rem;
   margin: 0;
   color: var(--dim);
   cursor: pointer;
   line-height: 0;
   border-radius: 3px;
+  background: var(--ground);
+  border: 1px solid var(--warp);
 }
 
 .act-btn:hover {
@@ -629,30 +645,75 @@ footer code {
   color: var(--madder);
 }
 
+/* The only feedback between pressing a control and the write returning. */
+nav button:active,
+.act-btn:active,
+.add-row:active {
+  transform: scale(0.96);
+}
+
 .head .act-btn {
   margin-left: auto;
 }
 
-/* The pencil stays out of the way until the row is under the pointer: every
-   field carrying a visible button turns the pane into a toolbar. */
+/* Visually hidden, but in the accessibility tree and the heading outline. */
+.vh {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
 dd.can-edit {
   display: flex;
   align-items: center;
+}
+
+/* A button that reads as the value it edits: the chrome is the pencil and
+   the focus ring, not a box around every field. */
+.edit-field {
+  appearance: none;
+  background: none;
+  border: 0;
+  border-radius: 3px;
+  padding: 0;
+  margin: 0;
+  width: 100%;
+  display: flex;
+  align-items: center;
   gap: 0.4rem;
+  font: inherit;
+  color: inherit;
+  text-align: left;
   cursor: text;
 }
 
-dd.can-edit .ico.act {
+/* The pencil stays out of the way until the field is under the pointer or
+   focused: every field carrying a visible button turns the pane into a
+   toolbar. On touch there is no hover, so it is always there. */
+.edit-field .ico.act {
   opacity: 0;
   color: var(--dim);
+  margin-left: auto;
 }
 
-dd.can-edit:hover .ico.act {
+.edit-field:hover .ico.act,
+.edit-field:focus-visible .ico.act {
   opacity: 1;
 }
 
+@media (hover: none) {
+  .edit-field .ico.act {
+    opacity: 1;
+  }
+}
+
 dd.editing {
-  gap: 0.25rem;
+  gap: 0.9rem;
 }
 
 .fld {
@@ -666,9 +727,6 @@ dd.editing {
   color: var(--wool);
 }
 
-.fld:focus {
-  outline: none;
-}
 
 .add-row {
   display: flex;
@@ -718,7 +776,7 @@ dd.editing {
 .newform input {
   min-width: 0;
   background: var(--ground);
-  border: 1px solid var(--warp);
+  border: 1px solid var(--dim);
   border-radius: 3px;
   padding: 0.25rem 0.45rem;
   font: 0.82rem/1.4 var(--mono);
@@ -726,13 +784,13 @@ dd.editing {
 }
 
 .newform input:focus {
-  outline: none;
   border-color: var(--madder);
 }
 
 .newact {
   display: flex;
-  gap: 0.3rem;
+  /* Save and discard sit side by side and do opposite things. */
+  gap: 0.9rem;
   align-items: center;
 }
 
