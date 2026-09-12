@@ -50,6 +50,8 @@ set -e
 need=""
 command -v git >/dev/null 2>&1 || need="$need git"
 command -v curl >/dev/null 2>&1 || need="$need curl"
+# `subdir:` repos export through tar, and Leap's base image has none.
+command -v tar >/dev/null 2>&1 || need="$need tar"
 if [ -n "$need" ]; then
   # A freshly provisioned machine is usually root, and a minimal image has no
   # sudo to speak of -- so sudo only when we are not root.

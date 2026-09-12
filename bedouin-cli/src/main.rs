@@ -878,6 +878,13 @@ fn main() -> ExitCode {
             // Declared repos are pulled here rather than on every apply: a
             // repo that is present is done, and this is the command whose job
             // is "go and get what changed".
+            //
+            // A repo that fails does not stop the others, but it is remembered:
+            // the exit code is the only part of this a script reads, and
+            // `bedouin ssh` ends on `bedouin sync -y`. Reporting success for a
+            // provision whose config repo never landed is the worst of the
+            // available answers.
+            let mut repo_failed = false;
             for repo in &outcome.config.repos {
                 let dest = bedouin_core::loader::normalize(
                     &repo.dest,
@@ -930,7 +937,10 @@ fn main() -> ExitCode {
                     match all {
                         Ok(()) => println!("{}: exported", dest.display()),
                         // Not fatal: one repo should not stop the rest.
-                        Err(e) => eprintln!("bedouin: {}: {e}", dest.display()),
+                        Err(e) => {
+                            eprintln!("bedouin: {}: {e}", dest.display());
+                            repo_failed = true;
+                        }
                     }
                     continue;
                 }
@@ -943,8 +953,11 @@ fn main() -> ExitCode {
                     }
                     Err(e) => {
                         // Not fatal: one repo that diverged should not stop
-                        // the rest, and it is the user's call what to do.
+                        // the rest, and it is the user's call what to do --
+                        // but the machine is not in the declared state, so it
+                        // is not a success either.
                         eprintln!("bedouin: {}: {e}", dest.display());
+                        repo_failed = true;
                     }
                 }
             }
@@ -957,16 +970,31 @@ fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
+            // One line naming the count, because the per-repo errors are far
+            // up the scrollback by now.
+            let repos_code = || {
+                if repo_failed {
+                    eprintln!("bedouin: some declared repos did not sync -- see above");
+                    ExitCode::FAILURE
+                } else {
+                    ExitCode::SUCCESS
+                }
+            };
             if !after.plan.has_changes() {
                 println!("Up to date; nothing to apply.");
-                return ExitCode::SUCCESS;
+                return repos_code();
             }
             print!("{}", after.plan.render(cli.verbose));
             if !yes && !confirm() {
                 println!("Pulled, nothing applied.");
-                return ExitCode::SUCCESS;
+                return repos_code();
             }
-            run_apply(&host, after, cli.verbose, &Default::default())
+            let applied = run_apply(&host, after, cli.verbose, &Default::default());
+            if repo_failed {
+                repos_code()
+            } else {
+                applied
+            }
         }
 
         Command::Add {

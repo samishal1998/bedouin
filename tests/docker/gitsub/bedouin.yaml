@@ -1,0 +1,14 @@
+# The 0.16.0 surface -- subdir export and lifecycle hooks -- with no package
+# manager in it, so one fixture runs on every distro family.
+version: 0
+shell: bash
+hooks:
+  before_apply: echo "before_apply" >> /tmp/hooks.log
+  before_step: echo "before_step $BEDOUIN_STEP $BEDOUIN_ACTION" >> /tmp/hooks.log
+  after_step: echo "after_step $BEDOUIN_STEP $BEDOUIN_ACTION" >> /tmp/hooks.log
+  after_apply: echo "after_apply $BEDOUIN_STATUS" >> /tmp/hooks.log
+repos:
+  - url: file:///tmp/upstream.git
+    dest: "{{ home }}/.config/nvim"
+    ref: main
+    subdir: nvim

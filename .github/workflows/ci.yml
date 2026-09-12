@@ -39,17 +39,32 @@ jobs:
       matrix:
         include:
           - image: ubuntu:24.04
+            pre: "true"
             cfg: tests/docker/cfg
             script: tests/docker/smoke.sh
           - image: opensuse/tumbleweed
+            pre: "true"
             cfg: tests/docker/suse
             script: tests/docker/suse/smoke.sh
           # dnf had recipes and no test of any kind until a cross-distro run
           # found it. Fedora also reports no ID_LIKE, so `rhel-like` rests
           # entirely on the built-in fallback table.
           - image: fedora:41
+            pre: "true"
             cfg: tests/docker/fedora
             script: tests/docker/fedora/smoke.sh
+          # `subdir:` and hooks, which need no package manager -- so this runs
+          # on the one distro family bedouin has no `Manager` for, and is the
+          # only coverage Arch gets. A cross-distro run found openSUSE Leap
+          # ships no tar, which the export needs and git does not pull in.
+          - image: archlinux:latest
+            pre: "sh /bootstrap.sh"
+            cfg: tests/docker/gitsub
+            script: tests/docker/gitsub/smoke.sh
+          - image: opensuse/leap:15.6
+            pre: "sh /bootstrap.sh"
+            cfg: tests/docker/gitsub
+            script: tests/docker/gitsub/smoke.sh
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -58,10 +73,17 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: sudo apt-get update && sudo apt-get install -y musl-tools
       - run: cargo build --release --target x86_64-unknown-linux-musl
+      # The same string `bedouin ssh` sends to a new machine, taken from the
+      # source rather than retyped, so the two cannot drift. Only the rows
+      # whose fixture needs git run it: the ubuntu fixture's point is partly
+      # that the image has no apt lists yet.
+      - name: extract the ssh bootstrap
+        run: awk '/^const BOOTSTRAP_TOOLS/{f=1;next} /^"#;/{f=0} f' bedouin-cli/src/provision.rs > bootstrap.sh
       - name: apply for real, inside ${{ matrix.image }}
         run: |
           docker run --rm \
             -v "$PWD/target/x86_64-unknown-linux-musl/release/bedouin:/bedouin:ro" \
             -v "$PWD/${{ matrix.cfg }}:/cfg:ro" \
             -v "$PWD/${{ matrix.script }}:/smoke.sh:ro" \
-            -e HOME=/root ${{ matrix.image }} /smoke.sh
+            -v "$PWD/bootstrap.sh:/bootstrap.sh:ro" \
+            -e HOME=/root ${{ matrix.image }} sh -c '${{ matrix.pre }} && /smoke.sh'

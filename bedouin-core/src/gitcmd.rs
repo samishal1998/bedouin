@@ -196,11 +196,18 @@ pub fn subdir_export(
     // BEFORE any caller clears dest, so a typo'd subdir -- or one upstream
     // renamed away -- is a refusal with a sentence, not an emptied config
     // directory that the fetch-first ordering was supposed to prevent.
+    //
+    // tar is checked in the same breath and at the same moment, for the same
+    // reason. openSUSE Leap's base image has no tar, and git does not pull one
+    // in, so the export died mid-pipeline with a bare `tar: command not found`
+    // and exit 127 -- accurate, but not a sentence that tells you to install
+    // tar. Everything this needs to be true is asserted before dest is
+    // touched.
     let mut check = Cmd::new([
         "sh".to_string(),
         "-c".into(),
         format!(
-            "git -C {} cat-file -e FETCH_HEAD:{} || {{              echo \"no directory {} at that ref -- check subdir: and ref:\" >&2; exit 1; }}",
+            "command -v tar >/dev/null 2>&1 || {{ echo \"subdir: exports with tar(1), which is not installed here\" >&2; exit 1; }}; git -C {} cat-file -e FETCH_HEAD:{} || {{ echo \"no directory {} at that ref -- check subdir: and ref:\" >&2; exit 1; }}",
             sq(&store_s),
             sq(&sub),
             sub
