@@ -3,6 +3,45 @@
 Dates are release dates. Versions before 0.2.0 are omitted: they predate this
 file and nothing depended on them.
 
+## 0.16.2 — 2026-09-12
+
+**A twelve-distro container run found three bugs in provisioning, all of them
+in code 0.16.0 and 0.16.1 shipped.** CI smoke-tested three images; the features
+added over those two releases — `subdir:` export, hooks, `bedouin ssh`,
+`bedouin cloudinit` — had no container coverage on any distro, and the ssh
+bootstrap's dnf, pacman and zypper branches had never run anywhere.
+
+Rocky 9 and Alma 9 could not be provisioned at all. Both ship `curl-minimal`,
+which provides curl(1) and conflicts with the full `curl` package, so a machine
+that has curl and lacks git — the RHEL 9 default — asked for `git curl` and
+lost the whole transaction to the half it already had. Both provisioning paths
+made the same mistake: `bedouin ssh` in its bootstrap, and `bedouin cloudinit`
+in a `packages:` list. They now share one string that asks for only what is
+missing, so they cannot drift on what a new machine needs.
+
+`subdir:` could not work on openSUSE Leap. The export is
+`git archive | tar -x`, Leap's base image has no tar, and git does not pull one
+in, so it died mid-pipeline on `tar: command not found`. tar is checked in the
+same pre-flight that proves the subdir exists — which already runs before
+`dest` is cleared, so a machine without tar keeps the snapshot it had and is
+told what to install — and both provisioning paths install it.
+
+`bedouin sync` exited 0 when a declared repo failed to pull or export. One repo
+failing should not stop the others, but the exit code is the only part a script
+reads, and `bedouin ssh` ends on `bedouin sync -y` — so a provision whose
+config repo never landed reported success.
+
+Testing: a fixture for `subdir:` and hooks that needs no package manager, so it
+runs on Arch too, which has no `Manager` and had no container coverage at all.
+It pins two decisions that were previously only comments: `sync` is what chases
+a moved remote, and `plan` deliberately does not, because plan decides offline
+and convergence depends on it. CI gains an Arch row and a Leap row, and pulls
+the bootstrap string out of the Rust source rather than a copy.
+
+Docs: `subdir:` is documented, including the tar requirement; `links.mdx` no
+longer claims a subdirectory cannot be a repo on its own; private-repo
+credentials and `sync`'s exit code are written down.
+
 ## 0.16.1 — 2026-09-08
 
 **The web UI went through a full interface review — accessibility, layout,
