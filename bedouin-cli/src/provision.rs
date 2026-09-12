@@ -43,14 +43,21 @@ fn local_repo_url(host: &OsHost, config: Option<&Path>, cwd: &Path) -> Result<St
 /// sentence, not a guess.
 const BOOTSTRAP_TOOLS: &str = r#"
 set -e
-if ! command -v git >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1; then
+# Only what is actually missing. RHEL 9 (Rocky, Alma) ships `curl-minimal`,
+# which provides curl(1) but conflicts with the full `curl` package -- so
+# asking for `git curl` there fails the whole transaction over the half we
+# already have.
+need=""
+command -v git >/dev/null 2>&1 || need="$need git"
+command -v curl >/dev/null 2>&1 || need="$need curl"
+if [ -n "$need" ]; then
   # A freshly provisioned machine is usually root, and a minimal image has no
   # sudo to speak of -- so sudo only when we are not root.
   SUDO=""; [ "$(id -u)" = 0 ] || SUDO="sudo"
-  if command -v apt-get >/dev/null 2>&1; then $SUDO apt-get update -qq && $SUDO apt-get install -y -qq git curl
-  elif command -v dnf >/dev/null 2>&1; then $SUDO dnf install -y -q git curl
-  elif command -v pacman >/dev/null 2>&1; then $SUDO pacman -Sy --noconfirm --quiet git curl
-  elif command -v zypper >/dev/null 2>&1; then $SUDO zypper --quiet install -y git curl
+  if command -v apt-get >/dev/null 2>&1; then $SUDO apt-get update -qq && $SUDO apt-get install -y -qq $need
+  elif command -v dnf >/dev/null 2>&1; then $SUDO dnf install -y -q $need
+  elif command -v pacman >/dev/null 2>&1; then $SUDO pacman -Sy --noconfirm --quiet $need
+  elif command -v zypper >/dev/null 2>&1; then $SUDO zypper --quiet install -y $need
   else echo "bedouin: this machine has no package manager I recognise; install git and curl first" >&2; exit 1
   fi
 fi
