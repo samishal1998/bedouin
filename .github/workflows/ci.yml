@@ -57,6 +57,12 @@ jobs:
           # on the one distro family bedouin has no `Manager` for, and is the
           # only coverage Arch gets. A cross-distro run found openSUSE Leap
           # ships no tar, which the export needs and git does not pull in.
+          #
+          # If the Arch row starts flaking, look here first: the bootstrap runs
+          # `pacman -Sy <pkg>` without `-u`, which is the partial-upgrade
+          # pattern, and `archlinux:latest` is rebuilt weekly. Pin the image by
+          # digest before reaching for `-Syu`, which is the heavier thing to do
+          # to somebody's real machine.
           - image: archlinux:latest
             pre: "sh /bootstrap.sh"
             cfg: tests/docker/gitsub

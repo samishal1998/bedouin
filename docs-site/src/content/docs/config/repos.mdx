@@ -17,6 +17,34 @@ repos:
     only: linux        # optional, like everywhere else
 ```
 
+## One directory out of a repository
+
+`subdir:` takes a single directory and puts **its contents** at `dest`. A neovim
+config that lives in `nvim/` of a dotfiles repo lands as `~/.config/nvim`, not
+`~/.config/nvim/nvim`.
+
+```yaml
+repos:
+  - url: https://github.com/you/dotfiles
+    dest: ~/.config/nvim
+    ref: main
+    subdir: nvim
+```
+
+The clone itself lives in bedouin's store. `dest` holds a **snapshot bedouin
+owns**, which is the trade: a file you create inside `dest` is not in the
+repository, so the next `sync` removes it. Put things you edit in the repo.
+
+A `subdir:` that does not exist at that ref is refused before `dest` is
+touched, so a typo costs you nothing.
+
+<Aside type="note" title="subdir needs tar">
+The export runs `git archive | tar -x`, so the machine needs `tar` as well as
+`git`. Most have it; openSUSE Leap's base image does not, and git does not pull
+one in. `bedouin ssh` and `bedouin cloudinit` install it. Elsewhere bedouin
+tells you to, rather than failing halfway through.
+</Aside>
+
 ## What apply does
 
 | State | Action |
@@ -42,12 +70,21 @@ and it would never converge.
 
 **`bedouin sync` is what pulls** — the config repository and every declared
 repo, with `--ff-only`. What happens to your commits is your call, so a pull
-that cannot fast-forward is reported and the rest continue.
+that cannot fast-forward is reported and the rest continue. A `subdir:` snapshot
+is re-exported, which is how a moved branch or a re-pointed tag arrives.
+
+One repo failing does not stop the others, but `sync` **exits non-zero** if any
+of them did not end up as declared. Scripts and `bedouin ssh` read that.
 
 ## Bounds
 
-`dest` must be under `$HOME`. No submodule recursion. No credential handling —
-it inherits whatever git setup you already have, exactly like `sync`.
+`dest` must be under `$HOME`. No submodule recursion.
+
+Private repositories work through the git setup you already have. If the GitHub
+CLI is on `PATH`, bedouin adds `gh auth git-credential` to the helpers git
+already consults — added, not substituted, so your own helper keeps working.
+Git is never allowed to prompt: a repo bedouin cannot read is an error with a
+sentence, not a clone that hangs until the step times out.
 
 ## Coexisting with chezmoi or stow
 

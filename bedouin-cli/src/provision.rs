@@ -288,8 +288,21 @@ fn render_user_data(repo: &str, private_key: &str) -> String {
     let mut s = String::from("#cloud-config\n");
     s.push_str("# Written by `bedouin cloudinit`. The write_files entry is a read-only\n");
     s.push_str("# deploy key for the config repository and nothing else.\n");
-    s.push_str("packages:\n  - git\n  - curl\n  - tar\n");
+    // Not `packages:`. Naming curl unconditionally is the same mistake the ssh
+    // bootstrap made: every RHEL 9 cloud image ships `curl-minimal`, which
+    // provides curl(1) and conflicts with the `curl` package, so the whole
+    // transaction fails -- taking git with it and leaving a machine whose
+    // runcmd then cannot clone. BOOTSTRAP_TOOLS asks for only what is missing
+    // and is the same string `bedouin ssh` sends, so the two paths cannot
+    // disagree about what a new machine needs.
     s.push_str("write_files:\n");
+    s.push_str("  - path: /root/bedouin-tools.sh\n");
+    s.push_str("    permissions: \"0700\"\n");
+    s.push_str("    owner: root:root\n");
+    s.push_str("    content: |\n");
+    for line in BOOTSTRAP_TOOLS.lines().filter(|l| !l.is_empty()) {
+        let _ = writeln!(s, "      {line}");
+    }
     s.push_str("  - path: /root/.ssh/bedouin_deploy\n");
     s.push_str("    permissions: \"0600\"\n");
     s.push_str("    owner: root:root\n");
@@ -298,6 +311,7 @@ fn render_user_data(repo: &str, private_key: &str) -> String {
         let _ = writeln!(s, "      {line}");
     }
     s.push_str("runcmd:\n");
+    s.push_str("  - sh /root/bedouin-tools.sh\n");
     let _ = writeln!(s, "  - curl -fsSL {INSTALL_URL} | HOME=/root sh");
     let _ = writeln!(
         s,
@@ -413,24 +427,56 @@ mod tests {
         let ud = render_user_data("git@github.com:o/config.git", key);
         assert!(ud.starts_with("#cloud-config\n"));
         let doc: serde_yaml_ng::Value = serde_yaml_ng::from_str(&ud).expect("parses as YAML");
+        // Tools come from the same string `bedouin ssh` sends, written out and
+        // run rather than listed under `packages:`. A `packages:` list naming
+        // curl fails the whole transaction on any RHEL 9 image, because
+        // `curl-minimal` is installed and conflicts -- and takes git with it.
         assert_eq!(
             doc["write_files"][0]["path"].as_str(),
+            Some("/root/bedouin-tools.sh")
+        );
+        let tools = doc["write_files"][0]["content"]
+            .as_str()
+            .expect("the tools script");
+        assert!(
+            tools.starts_with("set -e"),
+            "the block scalar dropped the first line: {tools:?}"
+        );
+        for arm in ["apt-get", "dnf", "pacman", "zypper"] {
+            assert!(tools.contains(arm), "no {arm} arm survived the indentation");
+        }
+        assert!(
+            !tools.contains("install -y -qq git curl"),
+            "the tools script asks for packages it may already have"
+        );
+        assert!(
+            doc["packages"].is_null(),
+            "a `packages:` list is the RHEL 9 conflict; it must not come back"
+        );
+        assert_eq!(
+            doc["write_files"][1]["path"].as_str(),
             Some("/root/.ssh/bedouin_deploy")
         );
         // The key survives the block-scalar indentation byte for byte.
         assert_eq!(
-            doc["write_files"][0]["content"].as_str().map(str::trim_end),
+            doc["write_files"][1]["content"].as_str().map(str::trim_end),
             Some(key.trim_end())
         );
-        assert_eq!(doc["write_files"][0]["permissions"].as_str(), Some("0600"));
+        assert_eq!(doc["write_files"][1]["permissions"].as_str(), Some("0600"));
         let cmds = doc["runcmd"].as_sequence().expect("runcmd");
         assert_eq!(
             cmds.len(),
-            4,
-            "install, clone, remember-the-key, apply -- nothing else"
+            5,
+            "tools, install, clone, remember-the-key, apply -- nothing else"
         );
         assert!(
-            cmds[2]
+            cmds[0]
+                .as_str()
+                .is_some_and(|c| c.contains("bedouin-tools")),
+            "the tools must be installed before anything needs them"
+        );
+        assert!(
+            cmds[3]
                 .as_str()
                 .is_some_and(|c| c.contains("core.sshCommand")),
             "the clone must remember its deploy key, or the first sync is the last"

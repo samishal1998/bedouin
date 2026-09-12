@@ -11,9 +11,11 @@ Two things turn out to be the same thing.
 `~/.tmux.conf` at the copy inside it. That is its documented install.
 
 **A config that lives in a subdirectory of a repository** — a neovim config
-inside a dotfiles repo — cannot be a [repo](/bedouin/config/repos/) on its own,
-because a repo clones whole. Clone it somewhere, link the subdirectory into
-place, and it works, keeps its history, and `sync` pulls it like anything else.
+inside a dotfiles repo — can be handled two ways. If you want the git history
+at `dest`, so you can commit from inside it, clone the repo somewhere and link
+the subdirectory into place, as below. If you only want the files,
+[`subdir:`](/bedouin/config/repos/#one-directory-out-of-a-repository) exports
+them straight to `dest` and there is no link to explain.
 
 ```yaml
 repos:
