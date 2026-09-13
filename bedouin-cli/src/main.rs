@@ -1,5 +1,6 @@
 //! The only thing that runs on a fresh machine.
 
+mod install;
 mod provision;
 mod release;
 mod selfcmd;
@@ -132,6 +133,22 @@ enum Command {
     /// Lift hand edits of managed content back into the config.
     Absorb {
         /// Absorb everything absorbable without asking.
+        #[arg(short = 'y', long)]
+        yes: bool,
+    },
+    /// Install a binary from a GitHub release. `org/repo`, optionally
+    /// `@tag`, `@prerelease`, or `@/regex/` for repositories that publish
+    /// several products from one place.
+    Install {
+        /// `org/repo[@selector]`, e.g. `sharkdp/fd` or `helix-editor/helix@prerelease`.
+        spec: String,
+        /// Use this release file instead of choosing one.
+        #[arg(long)]
+        asset: Option<String>,
+        /// Call the installed binary this.
+        #[arg(long)]
+        bin: Option<String>,
+        /// Install without asking.
         #[arg(short = 'y', long)]
         yes: bool,
     },
@@ -1369,6 +1386,20 @@ fn main() -> ExitCode {
             yes,
             |text| set_completions(text, &package, &generate),
             &format!("Set completions for `{package}`: `{}`.", generate.join(" ")),
+        ),
+
+        Command::Install {
+            spec,
+            asset,
+            bin,
+            yes,
+        } => install::run(
+            &host,
+            &outcome.facts,
+            &spec,
+            asset.as_deref(),
+            bin.as_deref(),
+            yes,
         ),
 
         Command::Pickup => {

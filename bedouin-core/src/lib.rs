@@ -6,6 +6,7 @@ pub mod doctor;
 pub mod edit;
 pub mod envfile;
 pub mod facts;
+pub mod forge;
 pub mod gitcmd;
 pub mod host;
 pub mod loader;
