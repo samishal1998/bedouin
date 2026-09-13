@@ -149,6 +149,7 @@ fn base_arms() -> Vec<(&'static str, Implied)> {
         ("fedora", d(Distro::Fedora, DistroLike::Rhel)),
         ("opensuse", d(Distro::Opensuse, DistroLike::Suse)),
         ("arch", d(Distro::ArchLinux, DistroLike::Arch)),
+        ("alpine", d(Distro::Alpine, DistroLike::Alpine)),
         (
             "other-distro",
             Implied {
@@ -161,6 +162,7 @@ fn base_arms() -> Vec<(&'static str, Implied)> {
         ("rhel-like", like(DistroLike::Rhel)),
         ("suse-like", like(DistroLike::Suse)),
         ("arch-like", like(DistroLike::Arch)),
+        ("alpine-like", like(DistroLike::Alpine)),
     ]
 }
 

@@ -30,7 +30,10 @@ pub fn needs_root(m: Manager) -> bool {
     //
     // ponytail: static answer to an environment-dependent question. The fix is
     // a probe-time fact recording whether `npm root -g` is writable.
-    matches!(m, Manager::Apt | Manager::Zypper | Manager::Dnf)
+    matches!(
+        m,
+        Manager::Apt | Manager::Zypper | Manager::Dnf | Manager::Pacman | Manager::Apk
+    )
 }
 
 /// How each manager spells "this exact version".
@@ -38,7 +41,15 @@ fn pinned(m: Manager, pkg: &str, version: &str) -> String {
     match m {
         Manager::Apt => format!("{pkg}={version}"),
         Manager::Zypper | Manager::Dnf => format!("{pkg}-{version}"),
-        Manager::Brew | Manager::Npm => format!("{pkg}@{version}"),
+        // apk pins with `=`. pacman is deliberately absent: Arch repos keep
+        // only the current version, so a pin cannot be satisfied and the `_`
+        // arm below installs the current one rather than failing on every run.
+        Manager::Apk => format!("{pkg}={version}"),
+        Manager::Brew | Manager::Npm | Manager::Pnpm | Manager::Yarn | Manager::Bun => {
+            format!("{pkg}@{version}")
+        }
+        // pipx hands the spec to pip, which spells an exact pin with ==.
+        Manager::Pipx => format!("{pkg}=={version}"),
         // cargo and mise take the version as a separate flag; see `install`.
         _ => pkg.to_string(),
     }
@@ -57,6 +68,47 @@ pub fn install(m: Manager, pkg: &str, version: Option<&str>) -> Cmd {
             "apt-get".into(),
             "install".into(),
             "-y".into(),
+            v.map_or_else(|| pkg.to_string(), |ver| pinned(m, pkg, ver)),
+        ]),
+        // --needed is what makes a reinstall a no-op rather than a rebuild:
+        // "warning: jq is up to date -- skipping / there is nothing to do".
+        (Manager::Pacman, _) => Cmd::new([
+            "pacman".into(),
+            "-S".into(),
+            "--noconfirm".into(),
+            "--needed".into(),
+            v.map_or_else(|| pkg.to_string(), |ver| pinned(m, pkg, ver)),
+        ]),
+        (Manager::Apk, _) => Cmd::new([
+            "apk".into(),
+            "add".into(),
+            "--no-cache".into(),
+            v.map_or_else(|| pkg.to_string(), |ver| pinned(m, pkg, ver)),
+        ]),
+        (Manager::Pnpm, _) => Cmd::new([
+            "pnpm".into(),
+            "add".into(),
+            "-g".into(),
+            v.map_or_else(|| pkg.to_string(), |ver| pinned(m, pkg, ver)),
+        ]),
+        (Manager::Bun, _) => Cmd::new([
+            "bun".into(),
+            "add".into(),
+            "-g".into(),
+            v.map_or_else(|| pkg.to_string(), |ver| pinned(m, pkg, ver)),
+        ]),
+        // Classic yarn. `yarn global` was removed in yarn 2, which tells you
+        // to use npm for globals instead -- so this arm is only ever reached
+        // on a 1.x machine, where it is still how it is done.
+        (Manager::Yarn, _) => Cmd::new([
+            "yarn".into(),
+            "global".into(),
+            "add".into(),
+            v.map_or_else(|| pkg.to_string(), |ver| pinned(m, pkg, ver)),
+        ]),
+        (Manager::Pipx, _) => Cmd::new([
+            "pipx".into(),
+            "install".into(),
             v.map_or_else(|| pkg.to_string(), |ver| pinned(m, pkg, ver)),
         ]),
         (Manager::Npm, _) => Cmd::new([
@@ -129,6 +181,8 @@ pub fn installed(m: Manager, pkg: &str) -> Option<Cmd> {
         // Both rpm distros answer through rpm itself, which is faster than
         // asking dnf or zypper and does not touch the network.
         Manager::Dnf | Manager::Zypper => Cmd::new(["rpm".to_string(), "-q".into(), pkg.into()]),
+        Manager::Pacman => Cmd::new(["pacman".to_string(), "-Q".into(), pkg.into()]),
+        Manager::Apk => Cmd::new(["apk".to_string(), "info".into(), "-e".into(), pkg.into()]),
         Manager::Brew => Cmd::new([
             "brew".to_string(),
             "list".into(),
@@ -142,6 +196,26 @@ pub fn installed(m: Manager, pkg: &str) -> Option<Cmd> {
             "--depth=0".into(),
             pkg.into(),
         ]),
+        // These three print a tree rather than answering a question, so the
+        // question is asked of the tree. `pkg@` and not `pkg` so that `is-odd`
+        // does not match `is-odd-numeric`.
+        Manager::Pnpm => sh(format!(
+            "pnpm list -g --depth=0 2>/dev/null | grep -qF {}",
+            sq(&format!("{pkg}@"))
+        )),
+        Manager::Bun => sh(format!(
+            "bun pm ls -g 2>/dev/null | grep -qF {}",
+            sq(&format!("{pkg}@"))
+        )),
+        Manager::Yarn => sh(format!(
+            "yarn global list 2>/dev/null | grep -qF {}",
+            sq(&format!("{pkg}@"))
+        )),
+        // pipx answers plainly: `name version`, one per line.
+        Manager::Pipx => sh(format!(
+            "pipx list --short 2>/dev/null | grep -q {}",
+            sq(&format!("^{pkg} "))
+        )),
         // The header lines of `cargo install --list` are "name vX.Y.Z[ (src)]:"
         // at column zero; the binaries it installed are indented beneath.
         Manager::Cargo => sh(format!(
@@ -159,6 +233,9 @@ pub fn refresh(m: Manager) -> Option<Cmd> {
         Manager::Apt => Cmd::new(["apt-get", "update"]),
         Manager::Zypper => Cmd::new(["zypper", "--non-interactive", "refresh"]),
         Manager::Brew => Cmd::new(["brew", "update"]),
+        // Paired with `--needed` on install, which is what keeps `-Sy` from
+        // being the partial-upgrade trap it is on its own.
+        Manager::Pacman => Cmd::new(["pacman", "-Sy", "--noconfirm"]),
         _ => return None,
     };
     cmd.root = needs_root(m);
@@ -170,7 +247,13 @@ pub fn remove(m: Manager, pkg: &str) -> Cmd {
         Manager::Apt => Cmd::new(["apt-get", "remove", "-y", pkg]),
         Manager::Zypper => Cmd::new(["zypper", "--non-interactive", "remove", pkg]),
         Manager::Dnf => Cmd::new(["dnf", "remove", "-y", pkg]),
+        Manager::Pacman => Cmd::new(["pacman", "-R", "--noconfirm", pkg]),
+        Manager::Apk => Cmd::new(["apk", "del", pkg]),
         Manager::Npm => Cmd::new(["npm", "uninstall", "-g", pkg]),
+        Manager::Pnpm => Cmd::new(["pnpm", "remove", "-g", pkg]),
+        Manager::Bun => Cmd::new(["bun", "remove", "-g", pkg]),
+        Manager::Yarn => Cmd::new(["yarn", "global", "remove", pkg]),
+        Manager::Pipx => Cmd::new(["pipx", "uninstall", pkg]),
         Manager::Brew => Cmd::new(["brew", "uninstall", pkg]),
         Manager::Cargo => Cmd::new(["cargo", "uninstall", pkg]),
         Manager::Mise => Cmd::new(["mise", "rm", "-g", pkg]),
@@ -251,7 +334,16 @@ pub fn bootstrap(m: Manager, facts: &Facts) -> Option<Vec<Cmd>> {
         // npm is not installed on its own: it arrives with node. Declare node
         // under `languages:` and npm is simply there -- and if the machine
         // already has its own node, that is the npm Bedouin uses.
-        Manager::Apt | Manager::Zypper | Manager::Dnf | Manager::Npm => {
+        Manager::Apt
+        | Manager::Zypper
+        | Manager::Dnf
+        | Manager::Pacman
+        | Manager::Apk
+        | Manager::Npm
+        | Manager::Pnpm
+        | Manager::Yarn
+        | Manager::Bun
+        | Manager::Pipx => {
             let _ = facts;
             None
         }
@@ -304,6 +396,18 @@ pub fn bin_dirs(name: &str, facts: &Facts) -> Vec<PathBuf> {
             home.join(".local/bin"),
             home.join(".local/share/mise/shims"),
         ],
+        // Every one of these installs binaries somewhere a login PATH does not
+        // look. Without an arm here the `_` below returns nothing, the
+        // directory never reaches `step_env`, and the tools are invisible to
+        // later steps and to `pickup` -- silently, as an empty answer. That
+        // exact bug shipped for npm and was caught in a container.
+        "bun" => vec![home.join(".bun/bin")],
+        // $PNPM_HOME/bin, verified: `pnpm add -g json` puts the shim in
+        // ~/.local/share/pnpm/bin, not in PNPM_HOME itself.
+        "pnpm" => vec![home.join(".local/share/pnpm/bin")],
+        "yarn" => vec![home.join(".yarn/bin")],
+        // pipx installs its shims where pip's --user scripts go.
+        "pipx" => vec![home.join(".local/bin")],
         "brew" => vec![PathBuf::from(if facts.os == Os::Macos {
             "/opt/homebrew/bin"
         } else {
@@ -379,6 +483,40 @@ pub fn list_manual(m: Manager) -> Option<Cmd> {
             "npm ls -g --depth=0 --parseable 2>/dev/null | grep '/node_modules/' \
              | sed 's|.*/node_modules/||' | grep -vx 'npm' | grep -vx 'corepack' | sort -u",
         ),
+        // Arch records this properly: -Qe is what was asked for explicitly, and
+        // on a bare image that is one package. No filtering needed.
+        Manager::Pacman => sh("pacman -Qe 2>/dev/null | awk '{print $1}'"),
+        // apk keeps the same thing as a plain file: /etc/apk/world IS the list
+        // of packages somebody asked for, one name per line, with an optional
+        // version constraint to strip.
+        //
+        // A real Alpine install has `alpine-base` in world and nothing else
+        // from the base system. The container images do not -- minirootfs puts
+        // alpine-base's six dependencies in world individually -- and there is
+        // nothing to subtract them from, because alpine-base itself is not
+        // installed there. They are named instead.
+        //
+        // ponytail: a fixed list. It is six stable package names, and being
+        // wrong costs a spurious row rather than a wrong answer.
+        Manager::Apk => sh(
+            "sed 's/[<>=].*//' /etc/apk/world 2>/dev/null | sort -u \
+             | grep -vx -e alpine-base -e alpine-baselayout -e alpine-keys \
+                        -e alpine-release -e apk-tools -e busybox -e musl-utils",
+        ),
+        // Both print a tree. Take what follows the branch glyph and drop the
+        // trailing `@version`, non-greedily from the right so a scoped name
+        // like `@scope/pkg@1.0.0` keeps its leading @.
+        Manager::Pnpm => sh(
+            "pnpm list -g --depth=0 2>/dev/null | sed -n 's/.*── //p' | sed 's/@[^@]*$//' | sort -u",
+        ),
+        Manager::Bun => {
+            sh("bun pm ls -g 2>/dev/null | sed -n 's/.*── //p' | sed 's/@[^@]*$//' | sort -u")
+        }
+        Manager::Pipx => sh("pipx list --short 2>/dev/null | awk '{print $1}' | sort -u"),
+        // yarn classic prints `info \"pkg@1.0.0\" has binaries:` interleaved
+        // with progress lines, and yarn 2+ has no globals to list at all.
+        // Install and remove work; asking it what you installed does not.
+        Manager::Yarn => return None,
         Manager::Dnf | Manager::Zypper | Manager::Mise | Manager::Rustup => return None,
     })
 }
@@ -393,6 +531,11 @@ pub fn list_manual(m: Manager) -> Option<Cmd> {
 pub fn provides_manager(language: &str) -> Option<Manager> {
     match language {
         "node" => Some(Manager::Npm),
+        // mise carries both as tools of their own, so `languages: [bun]` makes
+        // `from: bun` resolvable on a machine that has neither yet -- the same
+        // shape as node and npm.
+        "bun" => Some(Manager::Bun),
+        "pnpm" => Some(Manager::Pnpm),
         _ => None,
     }
 }
@@ -453,6 +596,89 @@ mod tests {
         // adopt them.
         assert!(npm.contains("grep -vx 'npm'"), "{npm}");
         assert!(npm.contains("grep -vx 'corepack'"), "{npm}");
+    }
+
+    #[test]
+    fn every_manager_answers_the_five_questions() {
+        // The point of this test is the loop, not any one assertion: a new
+        // variant is caught here even where the match it belongs to has a
+        // wildcard arm and the compiler stays quiet.
+        let f = Facts::fixture(Os::Linux, Distro::Ubuntu, Arch::X86_64);
+        for m in Manager::ALL.iter().copied() {
+            // Never bootstrapped means the user brings it; bootstrappable
+            // means Bedouin must actually have steps for it.
+            assert_eq!(
+                m.is_bootstrappable(),
+                bootstrap(m, &f).is_some(),
+                "{m}: is_bootstrappable disagrees with whether bootstrap has steps"
+            );
+            if !m.installs_packages() {
+                continue;
+            }
+            // A package manager has to be able to install and remove by name.
+            assert!(!install(m, "x", None).argv.is_empty(), "{m} cannot install");
+            assert!(!remove(m, "x").argv.is_empty(), "{m} cannot remove");
+            // And a pin has to reach the command. `pinned` has a wildcard
+            // default returning the bare name, so a manager missing from it
+            // silently installs latest and reports success.
+            if m.pins_versions() {
+                let pinned_argv = install(m, "x", Some("9.9.9")).argv.join(" ");
+                assert!(
+                    pinned_argv.contains("9.9.9"),
+                    "{m} dropped the pinned version: {pinned_argv}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_managers_binaries_are_findable() {
+        // bin_dirs is keyed by string with a `_ => vec![]` default, so a
+        // manager missing an arm gets an empty answer, its directory never
+        // reaches step_env, and everything it installs is invisible to later
+        // steps and to `pickup`. That shipped once, for npm.
+        let f = Facts::fixture(Os::Linux, Distro::Ubuntu, Arch::X86_64);
+        for m in [
+            Manager::Bun,
+            Manager::Pnpm,
+            Manager::Yarn,
+            Manager::Pipx,
+            Manager::Cargo,
+            Manager::Mise,
+        ] {
+            assert!(
+                !bin_dirs(m.as_str(), &f).is_empty(),
+                "{m} installs binaries somewhere a login PATH does not look, \
+                 so it needs a bin_dirs arm"
+            );
+        }
+        // The distro managers install onto the system path, so they need none.
+        for m in [Manager::Apt, Manager::Dnf, Manager::Pacman, Manager::Apk] {
+            assert!(bin_dirs(m.as_str(), &f).is_empty(), "{m} needs no bin dir");
+        }
+    }
+
+    #[test]
+    fn the_distro_managers_need_root_and_the_user_ones_do_not() {
+        for m in [
+            Manager::Apt,
+            Manager::Dnf,
+            Manager::Zypper,
+            Manager::Pacman,
+            Manager::Apk,
+        ] {
+            assert!(needs_root(m), "{m} writes to the system");
+        }
+        for m in [
+            Manager::Npm,
+            Manager::Pnpm,
+            Manager::Bun,
+            Manager::Yarn,
+            Manager::Pipx,
+            Manager::Cargo,
+        ] {
+            assert!(!needs_root(m), "{m} installs into the user's own prefix");
+        }
     }
 
     #[test]

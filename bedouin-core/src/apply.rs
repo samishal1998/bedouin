@@ -145,6 +145,14 @@ pub fn step_env(state: &State, facts: &Facts) -> BTreeMap<String, String> {
     env.insert("USER".into(), facts.user.clone());
     // Package managers get noisy or interactive without these.
     env.insert("DEBIAN_FRONTEND".into(), "noninteractive".into());
+    // The only manager that needs an environment variable rather than a PATH
+    // entry. `pnpm add -g` refuses outright unless $PNPM_HOME/bin is on PATH
+    // ("ERR_PNPM_GLOBAL_BIN_DIR_NOT_IN_PATH"), and pnpm reads the variable
+    // rather than inferring it. Set to pnpm's own default so a machine that
+    // has never run `pnpm setup` behaves the same as one that has. If a second
+    // manager ever needs this, it wants a table rather than another line.
+    env.entry("PNPM_HOME".into())
+        .or_insert_with(|| facts.home.join(".local/share/pnpm").display().to_string());
     env.insert("LC_ALL".into(), "C".into());
     for keep in [
         "TERM",

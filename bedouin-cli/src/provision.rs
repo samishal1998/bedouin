@@ -60,6 +60,7 @@ if [ -n "$need" ]; then
   elif command -v dnf >/dev/null 2>&1; then $SUDO dnf install -y -q $need
   elif command -v pacman >/dev/null 2>&1; then $SUDO pacman -Sy --noconfirm --quiet $need
   elif command -v zypper >/dev/null 2>&1; then $SUDO zypper --quiet install -y $need
+  elif command -v apk >/dev/null 2>&1; then $SUDO apk add --no-cache $need
   else echo "bedouin: this machine has no package manager I recognise; install git and curl first" >&2; exit 1
   fi
 fi

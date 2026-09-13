@@ -162,6 +162,8 @@ pub fn facts_for(
                     "rhel" | "fedora" => Some(DistroLike::Rhel),
                     "suse" | "opensuse" => Some(DistroLike::Suse),
                     "arch" => Some(DistroLike::Arch),
+                    // Alpine itself ships no ID_LIKE; its derivatives do.
+                    "alpine" => Some(DistroLike::Alpine),
                     _ => None,
                 })
             })

@@ -64,6 +64,7 @@ str_enum!(Distro {
     Fedora => "fedora",
     Opensuse => "opensuse",
     ArchLinux => "arch",
+    Alpine => "alpine",
     Macos => "macos",
     Other => "other",
 });
@@ -77,6 +78,7 @@ str_enum!(DistroLike {
     Rhel => "rhel",
     Suse => "suse",
     Arch => "arch",
+    Alpine => "alpine",
     None => "none",
 });
 
@@ -108,7 +110,13 @@ str_enum!(Manager {
     Apt => "apt",
     Zypper => "zypper",
     Dnf => "dnf",
+    Pacman => "pacman",
+    Apk => "apk",
     Npm => "npm",
+    Pnpm => "pnpm",
+    Yarn => "yarn",
+    Bun => "bun",
+    Pipx => "pipx",
     Mise => "mise",
     Cargo => "cargo",
     Rustup => "rustup",
@@ -144,6 +152,17 @@ impl Manager {
     /// would ignore the package name entirely, reporting success.
     pub fn installs_packages(self) -> bool {
         !matches!(self, Self::Rustup)
+    }
+
+    /// Whether this manager can install a named version at all.
+    ///
+    /// Arch is the exception: its repositories carry only the current version
+    /// of a package, so there is no older one to ask for. Saying so is the
+    /// point -- `pinned` has a wildcard default that returns the bare name, so
+    /// without this a `version:` on a pacman package would be dropped in
+    /// silence and the install would report success.
+    pub fn pins_versions(self) -> bool {
+        !matches!(self, Self::Pacman)
     }
 
     /// Whether `installer:` may name this manager. Anything else would reach
@@ -265,6 +284,9 @@ pub fn distro_like_of(distro: Distro) -> DistroLike {
         Distro::Fedora => DistroLike::Rhel,
         Distro::Opensuse => DistroLike::Suse,
         Distro::ArchLinux => DistroLike::Arch,
+        // Alpine is its own family: musl, busybox, apk, and no ID_LIKE in
+        // /etc/os-release to borrow from.
+        Distro::Alpine => DistroLike::Alpine,
         Distro::Macos | Distro::Other => DistroLike::None,
     }
 }

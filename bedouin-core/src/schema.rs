@@ -654,6 +654,19 @@ pub fn resolve(raw: &RawConfig, vocab: &Vocabulary, facts: &Facts) -> Result<Con
             ),
             None => None,
         };
+        // Refused here rather than dropped at install time. A manager that
+        // cannot pin would otherwise install the current version and report
+        // success, which is the worst way to answer.
+        if version.is_some() {
+            if let Some(bad) = from.iter().find(|m| !m.pins_versions()) {
+                return Err(ConfigError::new(format!(
+                    "`{bad}` cannot install a named version: its repositories carry \
+                     only the current one\n  Drop `version:`, or install this package \
+                     from a manager that pins"
+                ))
+                .in_item(&item));
+            }
+        }
         let path = match &p.path {
             Some(v) => r.many(v, "path", &mut prov).map_err(|e| e.in_item(&item))?,
             None => Vec::new(),
