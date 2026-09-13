@@ -484,12 +484,14 @@ mod rhel_like {
     #[test]
     fn the_dnf_commands_are_what_dnf_expects() {
         use bedouin_core::recipe;
-        let install = recipe::install(Manager::Dnf, "jq", None);
+        // `install` is Option because github is a pipeline rather than a
+        // command; every other manager always answers.
+        let install = recipe::install(Manager::Dnf, "jq", None).expect("dnf is one command");
         assert_eq!(install.argv, ["dnf", "install", "-y", "jq"]);
         assert!(install.root, "dnf owns /usr, so it needs root");
 
         // dnf's exact-version spelling is name-version, not name=version.
-        let pinned = recipe::install(Manager::Dnf, "jq", Some("1.7"));
+        let pinned = recipe::install(Manager::Dnf, "jq", Some("1.7")).expect("dnf is one command");
         assert_eq!(pinned.argv, ["dnf", "install", "-y", "jq-1.7"]);
 
         assert_eq!(

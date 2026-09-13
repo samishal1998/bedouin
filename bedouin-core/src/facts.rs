@@ -117,6 +117,7 @@ str_enum!(Manager {
     Yarn => "yarn",
     Bun => "bun",
     Pipx => "pipx",
+    Github => "github",
     Mise => "mise",
     Cargo => "cargo",
     Rustup => "rustup",
@@ -144,6 +145,12 @@ impl Manager {
     pub fn probe_bin(self) -> &'static str {
         match self {
             Self::Apt => "apt-get",
+            // Not a program on this machine at all: `github` is a service, and
+            // what it needs locally is something to fetch with. A machine with
+            // curl can install from a release; one without cannot, and saying
+            // that here is what keeps `from: github` out of a plan that could
+            // not carry it out.
+            Self::Github => "curl",
             other => other.as_str(),
         }
     }

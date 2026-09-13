@@ -61,7 +61,16 @@ fn concrete(version: Option<&str>) -> Option<&str> {
     version.filter(|v| *v != "latest" && !v.is_empty())
 }
 
-pub fn install(m: Manager, pkg: &str, version: Option<&str>) -> Cmd {
+/// The single command that installs one package.
+///
+/// `None` for `github`, which is not one command: resolving a release,
+/// choosing a file, verifying it and unpacking it is a pipeline, and it lives
+/// in `forge`. The executor branches on that rather than this returning a
+/// command that would be a lie.
+pub fn install(m: Manager, pkg: &str, version: Option<&str>) -> Option<Cmd> {
+    if m == Manager::Github {
+        return None;
+    }
     let v = concrete(version);
     let mut cmd = match (m, v) {
         (Manager::Apt, _) => Cmd::new([
@@ -111,6 +120,7 @@ pub fn install(m: Manager, pkg: &str, version: Option<&str>) -> Cmd {
             "install".into(),
             v.map_or_else(|| pkg.to_string(), |ver| pinned(m, pkg, ver)),
         ]),
+        (Manager::Github, _) => unreachable!("handled above"),
         (Manager::Npm, _) => Cmd::new([
             "npm".into(),
             "install".into(),
@@ -144,7 +154,7 @@ pub fn install(m: Manager, pkg: &str, version: Option<&str>) -> Cmd {
         (Manager::Rustup, None) => Cmd::new(["rustup", "toolchain", "install", "stable"]),
     };
     cmd.root = needs_root(m);
-    cmd
+    Some(cmd)
 }
 
 /// Refresh a manager's package lists.
@@ -224,7 +234,7 @@ pub fn installed(m: Manager, pkg: &str) -> Option<Cmd> {
         )),
         // mise and rustup install toolchains rather than packages, and neither
         // reaches this arm today. Left unanswered rather than guessed at.
-        Manager::Mise | Manager::Rustup => return None,
+        Manager::Mise | Manager::Rustup | Manager::Github => return None,
     })
 }
 
@@ -254,6 +264,9 @@ pub fn remove(m: Manager, pkg: &str) -> Cmd {
         Manager::Bun => Cmd::new(["bun", "remove", "-g", pkg]),
         Manager::Yarn => Cmd::new(["yarn", "global", "remove", pkg]),
         Manager::Pipx => Cmd::new(["pipx", "uninstall", pkg]),
+        // Overridden by the executor, which knows the path that was recorded
+        // when it was installed. `sharkdp/fd` is not the name of a file.
+        Manager::Github => Cmd::new(["true"]),
         Manager::Brew => Cmd::new(["brew", "uninstall", pkg]),
         Manager::Cargo => Cmd::new(["cargo", "uninstall", pkg]),
         Manager::Mise => Cmd::new(["mise", "rm", "-g", pkg]),
@@ -343,7 +356,8 @@ pub fn bootstrap(m: Manager, facts: &Facts) -> Option<Vec<Cmd>> {
         | Manager::Pnpm
         | Manager::Yarn
         | Manager::Bun
-        | Manager::Pipx => {
+        | Manager::Pipx
+        | Manager::Github => {
             let _ = facts;
             None
         }
@@ -407,7 +421,9 @@ pub fn bin_dirs(name: &str, facts: &Facts) -> Vec<PathBuf> {
         "pnpm" => vec![home.join(".local/share/pnpm/bin")],
         "yarn" => vec![home.join(".yarn/bin")],
         // pipx installs its shims where pip's --user scripts go.
-        "pipx" => vec![home.join(".local/bin")],
+        // pipx installs its shims where pip's --user scripts go, and
+        // `bedouin install` puts GitHub binaries in the same place.
+        "pipx" | "github" => vec![home.join(".local/bin")],
         "brew" => vec![PathBuf::from(if facts.os == Os::Macos {
             "/opt/homebrew/bin"
         } else {
@@ -517,6 +533,9 @@ pub fn list_manual(m: Manager) -> Option<Cmd> {
         // with progress lines, and yarn 2+ has no globals to list at all.
         // Install and remove work; asking it what you installed does not.
         Manager::Yarn => return None,
+        // GitHub has no installed-set to query: a binary in ~/.local/bin
+        // could have come from anywhere. Presence is decided from state.
+        Manager::Github => return None,
         Manager::Dnf | Manager::Zypper | Manager::Mise | Manager::Rustup => return None,
     })
 }
@@ -615,14 +634,23 @@ mod tests {
             if !m.installs_packages() {
                 continue;
             }
-            // A package manager has to be able to install and remove by name.
-            assert!(!install(m, "x", None).argv.is_empty(), "{m} cannot install");
+            // github is the one manager that is not a single command:
+            // resolving a release and unpacking it is a pipeline in `forge`,
+            // and the executor branches on that rather than this returning a
+            // command that would be a lie.
+            let Some(one) = install(m, "x", None) else {
+                assert_eq!(m, Manager::Github, "{m} must install with one command");
+                continue;
+            };
+            assert!(!one.argv.is_empty(), "{m} cannot install");
             assert!(!remove(m, "x").argv.is_empty(), "{m} cannot remove");
             // And a pin has to reach the command. `pinned` has a wildcard
             // default returning the bare name, so a manager missing from it
             // silently installs latest and reports success.
             if m.pins_versions() {
-                let pinned_argv = install(m, "x", Some("9.9.9")).argv.join(" ");
+                let pinned_argv = install(m, "x", Some("9.9.9"))
+                    .map(|c| c.argv.join(" "))
+                    .unwrap_or_default();
                 assert!(
                     pinned_argv.contains("9.9.9"),
                     "{m} dropped the pinned version: {pinned_argv}"
@@ -645,6 +673,7 @@ mod tests {
             Manager::Pipx,
             Manager::Cargo,
             Manager::Mise,
+            Manager::Github,
         ] {
             assert!(
                 !bin_dirs(m.as_str(), &f).is_empty(),
@@ -676,6 +705,7 @@ mod tests {
             Manager::Yarn,
             Manager::Pipx,
             Manager::Cargo,
+            Manager::Github,
         ] {
             assert!(!needs_root(m), "{m} installs into the user's own prefix");
         }
@@ -704,7 +734,7 @@ mod tests {
         assert_eq!(provides_manager("python"), None);
 
         assert_eq!(
-            install(Manager::Npm, "is-odd", None).argv,
+            install(Manager::Npm, "is-odd", None).unwrap().argv,
             ["npm", "install", "-g", "is-odd"]
         );
         assert_eq!(
@@ -727,11 +757,11 @@ mod tests {
     #[test]
     fn each_manager_spells_a_pinned_version_its_own_way() {
         assert_eq!(
-            install(Manager::Apt, "jq", Some("1.7")).argv,
+            install(Manager::Apt, "jq", Some("1.7")).unwrap().argv,
             ["apt-get", "install", "-y", "jq=1.7"]
         );
         assert_eq!(
-            install(Manager::Brew, "jq", Some("1.7")).argv,
+            install(Manager::Brew, "jq", Some("1.7")).unwrap().argv,
             ["brew", "install", "jq@1.7"]
         );
         // npm spells it with @ as well. `pinned` has a wildcard default that
@@ -739,11 +769,13 @@ mod tests {
         // installs latest and reports success -- which is why this is asserted
         // rather than assumed.
         assert_eq!(
-            install(Manager::Npm, "eslint", Some("8.0.0")).argv,
+            install(Manager::Npm, "eslint", Some("8.0.0")).unwrap().argv,
             ["npm", "install", "-g", "eslint@8.0.0"]
         );
         assert_eq!(
-            install(Manager::Cargo, "zellij", Some("0.40.1")).argv,
+            install(Manager::Cargo, "zellij", Some("0.40.1"))
+                .unwrap()
+                .argv,
             [
                 "cargo",
                 "install",
@@ -754,7 +786,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            install(Manager::Zypper, "jq", Some("1.7")).argv,
+            install(Manager::Zypper, "jq", Some("1.7")).unwrap().argv,
             ["zypper", "--non-interactive", "install", "jq-1.7"]
         );
     }
@@ -765,27 +797,29 @@ mod tests {
         // through as a version string would ask apt for a package literally
         // called `jq=latest`.
         assert_eq!(
-            install(Manager::Apt, "jq", Some("latest")).argv,
+            install(Manager::Apt, "jq", Some("latest")).unwrap().argv,
             ["apt-get", "install", "-y", "jq"]
         );
         assert_eq!(
-            install(Manager::Cargo, "zellij", Some("latest")).argv,
+            install(Manager::Cargo, "zellij", Some("latest"))
+                .unwrap()
+                .argv,
             ["cargo", "install", "--locked", "zellij"]
         );
         assert_eq!(
-            install(Manager::Apt, "jq", None).argv,
-            install(Manager::Apt, "jq", Some("latest")).argv
+            install(Manager::Apt, "jq", None).unwrap().argv,
+            install(Manager::Apt, "jq", Some("latest")).unwrap().argv
         );
     }
 
     #[test]
     fn only_the_system_managers_ask_for_root() {
-        assert!(install(Manager::Apt, "jq", None).root);
-        assert!(install(Manager::Zypper, "jq", None).root);
+        assert!(install(Manager::Apt, "jq", None).unwrap().root);
+        assert!(install(Manager::Zypper, "jq", None).unwrap().root);
         // Running a per-user manager as root would put files in root's home.
-        assert!(!install(Manager::Brew, "jq", None).root);
-        assert!(!install(Manager::Cargo, "zellij", None).root);
-        assert!(!install(Manager::Mise, "node", None).root);
+        assert!(!install(Manager::Brew, "jq", None).unwrap().root);
+        assert!(!install(Manager::Cargo, "zellij", None).unwrap().root);
+        assert!(!install(Manager::Mise, "node", None).unwrap().root);
     }
 
     #[test]
@@ -815,7 +849,9 @@ mod tests {
         let f = Facts::fixture(Os::Linux, Distro::Ubuntu, Arch::X86_64);
         let mut all: Vec<Cmd> = Vec::new();
         for m in Manager::ALL {
-            all.push(install(*m, "pkg; rm -rf /", None));
+            // github has no single command; the pipeline is in `forge` and is
+            // argv-and-quoted the same way.
+            all.extend(install(*m, "pkg; rm -rf /", None));
             all.push(remove(*m, "pkg; rm -rf /"));
             all.extend(bootstrap(*m, &f).unwrap_or_default());
         }

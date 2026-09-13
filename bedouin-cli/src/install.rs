@@ -11,19 +11,6 @@ use bedouin_core::host::{Host, OsHost};
 use bedouin_core::style;
 use std::process::ExitCode;
 
-/// The triple a manifest's `assets:` map is keyed by.
-fn target_triple(facts: &Facts) -> String {
-    use bedouin_core::facts::{Arch, Os};
-    let arch = match facts.arch {
-        Arch::X86_64 => "x86_64",
-        Arch::Arm64 => "aarch64",
-    };
-    match facts.os {
-        Os::Macos => format!("{arch}-apple-darwin"),
-        Os::Linux => format!("{arch}-unknown-linux-musl"),
-    }
-}
-
 pub fn run(
     host: &OsHost,
     facts: &Facts,
@@ -57,7 +44,7 @@ pub fn run(
     }
 
     let man = forge::manifest(host, &org, &repo, &rel).unwrap_or_default();
-    let triple = target_triple(facts);
+    let triple = forge::triple(facts);
 
     // Named asset wins, then the manifest's map, then autodetect.
     let asset = if let Some(name) = asset_override {

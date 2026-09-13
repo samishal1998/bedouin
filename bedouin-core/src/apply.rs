@@ -242,6 +242,75 @@ impl Executor<'_> {
             .map_err(|(m, t)| (format!("hook `{name}`: {m}"), t))
     }
 
+    /// Install one GitHub release asset, returning where the binary landed.
+    fn github(
+        &mut self,
+        spec: &str,
+        version: Option<&str>,
+    ) -> std::result::Result<String, (String, Vec<String>)> {
+        use crate::forge;
+        let fail = |m: String| (m, Vec::new());
+        // A `version:` in the config is the tag. Without one, whatever is
+        // newest at first install -- and state records it, so the next plan
+        // compares against a fixed thing rather than the moving one.
+        let full = match version {
+            Some(v) => format!("{spec}@{v}"),
+            None => spec.to_string(),
+        };
+        let (org, repo, sel) = forge::parse_spec(&full).map_err(fail)?;
+        let rel = forge::resolve(self.host, self.facts, &org, &repo, &sel).map_err(fail)?;
+        let man = forge::manifest(self.host, &org, &repo, &rel).unwrap_or_default();
+        let triple = forge::triple(self.facts);
+        let asset = match man
+            .asset_for(&rel.tag, &triple)
+            .and_then(|n| rel.assets.iter().find(|a| a.name == n).cloned())
+        {
+            Some(a) => a,
+            None => {
+                let t = forge::Target::of(self.facts.os, self.facts.arch, self.facts.distro_like);
+                match forge::pick(&rel.assets, t, &repo) {
+                    forge::Pick::One(a) => a,
+                    forge::Pick::Ambiguous(names) => {
+                        return Err(fail(format!(
+                            "{org}/{repo} {} has {} files that fit equally well: {}\n  \
+                             Name one with `asset:` in the repository's bedouin.yaml",
+                            rel.tag,
+                            names.len(),
+                            names.join(", ")
+                        )));
+                    }
+                    forge::Pick::None => {
+                        return Err(fail(format!(
+                            "nothing in {org}/{repo} {} runs on this machine",
+                            rel.tag
+                        )));
+                    }
+                }
+            }
+        };
+        let checksum = man
+            .checksums
+            .as_ref()
+            .and_then(|w| rel.assets.iter().find(|a| &a.name == w).cloned())
+            .or_else(|| forge::checksum_for(&rel, &asset).cloned());
+        let plan = forge::Plan {
+            org,
+            repo,
+            tag: rel.tag.clone(),
+            asset,
+            checksum,
+            bin_name: man.name.clone(),
+            bin_path: man.bin_for(&rel.tag, &triple),
+        };
+        let env = step_env(&self.state, self.facts);
+        let out = &mut self.out;
+        forge::install(self.host, self.facts, &plan, &env, |m| {
+            out(Line::Out(format!("   {m}")))
+        })
+        .map(|p| p.display().to_string())
+        .map_err(fail)
+    }
+
     /// Run a question and keep the answer, not the noise. A probe that cannot
     /// run at all is a "no", which is the old behaviour: install and find out.
     fn quiet(&mut self, cmd: &Cmd) -> bool {
@@ -363,7 +432,18 @@ impl Executor<'_> {
 
                 if item.kind == ItemKind::Package {
                     if let Some(m) = prev.method.as_deref().and_then(Manager::parse) {
-                        let mut cmd = self.escalate(recipe::remove(m, &item.name));
+                        // A GitHub package is a file bedouin put somewhere, and
+                        // the place was recorded at install time -- `sharkdp/fd`
+                        // is not a name any uninstaller would recognise.
+                        let base = if m == crate::facts::Manager::Github {
+                            match prev.path.first() {
+                                Some(p) => Cmd::new(["rm", "-f", p]),
+                                None => return Ok(rec),
+                            }
+                        } else {
+                            recipe::remove(m, &item.name)
+                        };
+                        let mut cmd = self.escalate(base);
                         cmd.env = step_env(&self.state, self.facts);
                         // A package already gone by other means must not wedge
                         // every future apply: stop-on-first-failure plus "drop
@@ -497,8 +577,11 @@ impl Executor<'_> {
                     bin_dirs,
                 },
             ) => {
-                let mut cmd =
-                    self.escalate(recipe::install(*installer, &item.name, version.as_deref()));
+                // `installer:` is restricted to toolchain installers by the
+                // schema, and github is not one, so there is always a command.
+                let cmd = recipe::install(*installer, &item.name, version.as_deref())
+                    .expect("a toolchain installer is always one command");
+                let mut cmd = self.escalate(cmd);
                 cmd.env = step_env(&self.state, self.facts);
                 self.run(&cmd)?;
                 rec.version = version.clone();
@@ -559,10 +642,18 @@ impl Executor<'_> {
                     });
                 if already {
                     rec.owner = Owner::Preexisting;
+                } else if *manager == crate::facts::Manager::Github {
+                    // Not one command: resolve a release, choose the file that
+                    // runs here, verify it, unpack it, place one binary. The
+                    // path it landed at is recorded, because `sharkdp/fd` is
+                    // not the name of a file and removal will need to know.
+                    let placed = self.github(&item.name, version.as_deref())?;
+                    rec.path = vec![placed];
                 } else {
                     self.refresh(*manager)?;
-                    let mut cmd =
-                        self.escalate(recipe::install(*manager, &item.name, version.as_deref()));
+                    let cmd = recipe::install(*manager, &item.name, version.as_deref())
+                        .expect("every manager but github is one command");
+                    let mut cmd = self.escalate(cmd);
                     cmd.env = step_env(&self.state, self.facts);
                     self.run(&cmd)?;
                 }

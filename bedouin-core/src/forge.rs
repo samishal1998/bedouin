@@ -569,6 +569,18 @@ pub fn manifest(host: &dyn Host, org: &str, repo: &str, rel: &Release) -> Option
 
 use std::path::{Path, PathBuf};
 
+/// The triple a manifest's `assets:` map is keyed by.
+pub fn triple(facts: &crate::facts::Facts) -> String {
+    let arch = match facts.arch {
+        Arch::X86_64 => "x86_64",
+        Arch::Arm64 => "aarch64",
+    };
+    match facts.os {
+        Os::Macos => format!("{arch}-apple-darwin"),
+        Os::Linux => format!("{arch}-unknown-linux-musl"),
+    }
+}
+
 /// Where an installed tool lands. The user's own, so nothing here needs root.
 pub fn bin_dir(facts: &crate::facts::Facts) -> PathBuf {
     facts.home.join(".local/bin")
