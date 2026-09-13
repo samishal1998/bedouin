@@ -275,3 +275,84 @@ fn a_needs_cycle_is_reported_rather_than_looping() {
     );
     assert!(e.contains("cycle"), "{e}");
 }
+
+/// A package the manager already had must not become Bedouin's to remove.
+///
+/// `plan` decides presence by looking for a binary named after the package,
+/// which is simply wrong whenever they differ: `dnsutils` ships `dig`,
+/// `git-delta` ships `delta`. Those planned as Create, the manager turned the
+/// install into a no-op, and Bedouin wrote itself down as the owner. Dropping
+/// the line from the config then scheduled a remove of software Bedouin had
+/// never installed. Verified against a real apt in a container before the fix:
+/// `- package dnsutils  was: apt, owner: bedouin  /  1 to remove`.
+#[test]
+fn a_package_the_manager_already_had_is_adopted_not_claimed() {
+    use bedouin_core::apply;
+    use bedouin_core::host::Line;
+    use bedouin_core::state::Owner;
+
+    const CFG: &str = "version: 0\nshell: bash\npackages:\n  \
+                       - {name: dnsutils, from: apt}\n  - {name: jq, from: apt}\n";
+    // dnsutils answers the presence probe; jq does not. Neither has a binary
+    // of its own name, so `which` misses both and both plan as Create.
+    let h = machine(CFG)
+        .with_command(
+            "sh -c dpkg-query -W -f='${db:Status-Status}' 'dnsutils' 2>/dev/null | grep -qx installed",
+            FakeRun::ok(""),
+        )
+        // apt needs root on this fake machine, so the install half arrives
+        // escalated. The probe does not: asking whether a package is present
+        // is not a privileged question.
+        .with_command("sudo -n apt-get update", FakeRun::ok(""))
+        .with_command("sudo -n apt-get install -y jq", FakeRun::ok(""));
+
+    let o = run::plan_for(
+        &h,
+        Some(Path::new("/cfg/bedouin.yaml")),
+        Path::new("/cfg"),
+        Os::Linux,
+        Arch::X86_64,
+    )
+    .expect("plans");
+    let report = apply::apply(
+        &o.plan,
+        &o.config,
+        &o.facts,
+        o.state,
+        &h,
+        &Default::default(),
+        &mut |_: Line| {},
+    )
+    .expect("applies");
+    assert!(report.ok(), "apply failed: {:?}", report.failure);
+
+    let after = run::plan_for(
+        &h,
+        Some(Path::new("/cfg/bedouin.yaml")),
+        Path::new("/cfg"),
+        Os::Linux,
+        Arch::X86_64,
+    )
+    .expect("re-plans");
+
+    let dns = after
+        .state
+        .items
+        .get("package/dnsutils")
+        .expect("dnsutils was recorded");
+    assert_eq!(
+        dns.owner,
+        Owner::Preexisting,
+        "apt already had dnsutils, so Bedouin must not own it"
+    );
+    let jq = after
+        .state
+        .items
+        .get("package/jq")
+        .expect("jq was recorded");
+    assert_eq!(
+        jq.owner,
+        Owner::Bedouin,
+        "Bedouin did install jq, and must still be able to remove it"
+    );
+}

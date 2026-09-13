@@ -3,6 +3,44 @@
 Dates are release dates. Versions before 0.2.0 are omitted: they predate this
 file and nothing depended on them.
 
+## 0.16.3 — 2026-09-13
+
+**Bedouin could remove software it never installed.** Found while designing
+package discovery, reproduced against real apt and real dnf, fixed here rather
+than shipped alongside a feature that would have made it far more likely.
+
+`plan` decides whether a package is installed by looking for a binary named
+after it. That is simply wrong whenever the two differ, which is common:
+`dnsutils` ships `dig`, `bind-utils` ships `dig`, `git-delta` ships `delta`.
+For those, `which` said "not installed", `plan` said Create, the manager turned
+the install into a no-op because the package was already there — and Bedouin
+recorded itself as the owner. Dropping the line from the config later scheduled
+a remove:
+
+    - package   dnsutils    was: apt, owner: bedouin
+    Plan: 0 to add, 0 to change, 1 to remove.
+
+`apply` now asks the manager before it installs, through a new
+`recipe::installed`: `dpkg-query` for apt, `rpm -q` for dnf and zypper,
+`brew list --versions`, `cargo install --list`. A package that is already there
+is adopted as `Preexisting` and the install is skipped. A manager with no cheap
+way to answer returns `None` and installs exactly as before — not knowing is
+the old behaviour, not a new failure. The probe is deliberately not escalated:
+asking whether a package is present is not a privileged question.
+
+The question is asked in `apply` and not in `plan` on purpose. `plan` runs no
+commands at all, which is what makes it safe on the hot paths — every web API
+read, every TUI refresh, every reconcile tick — and it stays that way.
+
+The package match also gains the `Owner::Preexisting` guard that the repo match
+has had since 0.16.0. Without it a pinned `version:` fired the Upgrade arm
+against an adopted package, installing over somebody's own copy and claiming it
+on the way through.
+
+Verified end to end in containers on both families: a hand-installed package
+records `owner: preexisting`, one Bedouin installed records `owner: bedouin`,
+and dropping either from the config no longer touches the first.
+
 ## 0.16.2 — 2026-09-12
 
 **A twelve-distro container run found three bugs in provisioning, all of them

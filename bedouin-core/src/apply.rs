@@ -229,6 +229,14 @@ impl Executor<'_> {
             .map_err(|(m, t)| (format!("hook `{name}`: {m}"), t))
     }
 
+    /// Run a question and keep the answer, not the noise. A probe that cannot
+    /// run at all is a "no", which is the old behaviour: install and find out.
+    fn quiet(&mut self, cmd: &Cmd) -> bool {
+        self.host
+            .run(cmd, &mut |_| {})
+            .is_ok_and(|s| s.ok() && !s.timed_out)
+    }
+
     fn run(&mut self, cmd: &Cmd) -> std::result::Result<(), (String, Vec<String>)> {
         let mut tail: Vec<String> = Vec::new();
         let status = match self.host.run(cmd, &mut |l| {
@@ -519,11 +527,32 @@ impl Executor<'_> {
                     cmd.env = step_env(&self.state, self.facts);
                     self.run(&cmd)?;
                 }
-                self.refresh(*manager)?;
-                let mut cmd =
-                    self.escalate(recipe::install(*manager, &item.name, version.as_deref()));
-                cmd.env = step_env(&self.state, self.facts);
-                self.run(&cmd)?;
+                // Ask the manager before installing. `plan` decides presence
+                // from a binary on the search path, which is simply wrong when
+                // the package and the binary are not named the same thing --
+                // dnsutils ships dig, git-delta ships delta. Those planned as
+                // Create, the install turned into a no-op inside the manager,
+                // and Bedouin wrote itself down as the owner of a package it
+                // had not installed. Dropping the line from the config then
+                // scheduled a remove of somebody's own software.
+                //
+                // Only on a first install: an Upgrade or a Reinstall is a
+                // deliberate change to something already present, and asking
+                // "is it there" would answer yes and skip the work.
+                let already = action == &Action::Create
+                    && recipe::installed(*manager, &item.name).is_some_and(|mut c| {
+                        c.env = step_env(&self.state, self.facts);
+                        self.quiet(&c)
+                    });
+                if already {
+                    rec.owner = Owner::Preexisting;
+                } else {
+                    self.refresh(*manager)?;
+                    let mut cmd =
+                        self.escalate(recipe::install(*manager, &item.name, version.as_deref()));
+                    cmd.env = step_env(&self.state, self.facts);
+                    self.run(&cmd)?;
+                }
                 rec.version = version.clone();
                 rec.method = Some(manager.to_string());
             }

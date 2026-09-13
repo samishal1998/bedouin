@@ -82,6 +82,53 @@ pub fn install(m: Manager, pkg: &str, version: Option<&str>) -> Cmd {
 /// `None` where there is nothing to refresh. A freshly imaged machine has no
 /// apt lists at all, so without this the very first install on the very
 /// machine class Bedouin exists for fails with "Unable to locate package".
+/// Shell-quote, for the recipes that need a `sh -c` to express themselves.
+fn sq(s: &str) -> String {
+    format!("'{}'", s.replace('\'', r"'\''"))
+}
+
+/// Ask the manager whether it already has this package. Exit 0 means yes.
+///
+/// This exists because presence cannot be answered by looking for a binary.
+/// `dnsutils` installs `dig`, `git-delta` installs `delta`, `bind-utils`
+/// installs `dig` -- so `which(name)` says "not installed" and apply then runs
+/// an install that the manager turns into a no-op. The package was already
+/// there, but Bedouin recorded itself as the owner, and dropping the line from
+/// the config later removed software Bedouin never installed.
+///
+/// `None` for a manager with no cheap way to ask. The caller installs, exactly
+/// as before -- not knowing is the old behaviour, not a new failure.
+pub fn installed(m: Manager, pkg: &str) -> Option<Cmd> {
+    let sh = |script: String| Cmd::new(["sh".to_string(), "-c".into(), script]);
+    Some(match m {
+        // dpkg-query exits 0 for a package that is merely *known* -- removed
+        // but with config files left behind is still "known". Only the status
+        // field separates that from installed.
+        Manager::Apt => sh(format!(
+            "dpkg-query -W -f='${{db:Status-Status}}' {} 2>/dev/null | grep -qx installed",
+            sq(pkg)
+        )),
+        // Both rpm distros answer through rpm itself, which is faster than
+        // asking dnf or zypper and does not touch the network.
+        Manager::Dnf | Manager::Zypper => Cmd::new(["rpm".to_string(), "-q".into(), pkg.into()]),
+        Manager::Brew => Cmd::new([
+            "brew".to_string(),
+            "list".into(),
+            "--versions".into(),
+            pkg.into(),
+        ]),
+        // The header lines of `cargo install --list` are "name vX.Y.Z[ (src)]:"
+        // at column zero; the binaries it installed are indented beneath.
+        Manager::Cargo => sh(format!(
+            "cargo install --list | grep -q {}",
+            sq(&format!("^{pkg} v"))
+        )),
+        // mise and rustup install toolchains rather than packages, and neither
+        // reaches this arm today. Left unanswered rather than guessed at.
+        Manager::Mise | Manager::Rustup => return None,
+    })
+}
+
 pub fn refresh(m: Manager) -> Option<Cmd> {
     let mut cmd = match m {
         Manager::Apt => Cmd::new(["apt-get", "update"]),

@@ -665,6 +665,12 @@ pub fn build(
         let on_machine =
             !state.interrupted(&id) && (known.is_some() || host.which(&p.name, &search).is_some());
         let action = match (known, on_machine) {
+            // Adopted stays adopted, exactly as for repos. Bedouin did not
+            // install this, so no edit to the config makes replacing it fine --
+            // and a pinned `version:` would otherwise fire the Upgrade arm
+            // below, install over somebody's own copy, and claim it on the way
+            // through. Remove it yourself if you want Bedouin to take over.
+            (Some(st), true) if st.owner == crate::state::Owner::Preexisting => Action::NoOp,
             // The method moved, so the old install has to come out first --
             // installing twice would leave two copies and one unowned.
             (Some(s), _) if s.method.as_deref().is_some_and(|m| m != manager.as_str()) => {
