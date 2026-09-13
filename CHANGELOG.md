@@ -3,6 +3,47 @@
 Dates are release dates. Versions before 0.2.0 are omitted: they predate this
 file and nothing depended on them.
 
+## 0.17.0 — 2026-09-13
+
+**npm is a package manager now, and adding the next one is a shorter walk.**
+
+`from: npm` installs a global. npm is never bootstrapped: it arrives with node,
+so declaring node under `languages:` is what makes npm resolvable — and if the
+machine already has its own node, that is the npm Bedouin drives. Globals go
+where your npm puts them, not somewhere of Bedouin's choosing.
+
+    languages:
+      - {name: node, version: lts}
+    packages:
+      - {name: prettier, from: npm}
+
+Bedouin never runs `sudo npm`. Under a node it manages, the global prefix
+belongs to the user and root would be wrong — worse than wrong, since root has
+no mise and would resolve a different node, or none. A distro-packaged node
+puts globals under `/usr/local` and a non-root install fails loudly with
+`EACCES` naming the path. That is the safe half of a question whose honest
+answer depends on the machine; the ceiling is marked in `needs_root`.
+
+Verified on a bare Ubuntu image: no node, no npm, `apply`, and both the
+language and the npm package land and converge. A global installed by hand
+records `owner: preexisting`; one Bedouin installed records `owner: bedouin`.
+
+**The groundwork.** Adding a manager meant finding every place that knew
+something about managers. The exhaustive matches in `recipe.rs` were never the
+problem — the compiler names those, and for npm it named exactly four. The
+hazard was the matches with a default arm, where a new manager is silently
+wrong instead. Three of those are now `probe_bin`, `installs_packages` and
+`installs_toolchains` on `Manager`, beside `runs_on` and `is_bootstrappable`.
+
+One remained, and it bit during this very change: `pinned` has a `_` arm
+returning the bare package name, so npm would have accepted `version:` and
+installed latest, reporting success. It is asserted in a test now rather than
+assumed.
+
+`recipe::provides_manager` says which manager a language brings with it — node
+ships npm — which is the general form of the rule that already existed for
+rust and cargo.
+
 ## 0.16.3 — 2026-09-13
 
 **Bedouin could remove software it never installed.** Found while designing

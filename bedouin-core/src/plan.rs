@@ -573,6 +573,12 @@ pub fn build(
         if installer == Manager::Cargo || installer == Manager::Rustup {
             available.insert(Manager::Cargo);
         }
+        // And the general form of that: a language that ships a package
+        // manager makes it resolvable. Declaring node is what lets a package
+        // say `from: npm` on a machine that has no node yet.
+        if let Some(m) = crate::recipe::provides_manager(&l.name) {
+            available.insert(m);
+        }
         items.push(Item {
             id: id.clone(),
             kind: ItemKind::Language,

@@ -18,6 +18,18 @@ use std::path::PathBuf;
 /// per-user ones do not, and running them as root would put files in the wrong
 /// home.
 pub fn needs_root(m: Manager) -> bool {
+    // npm is deliberately absent, and it is the one manager where that is a
+    // judgement rather than a fact. Under a node Bedouin manages -- mise, or
+    // any per-user install -- the global prefix belongs to the user and root
+    // would be wrong. Under a distro node it is /usr/local and root is needed.
+    //
+    // False is the safe half of that. Escalating would run `sudo npm` on the
+    // setup Bedouin itself recommends, where root has no mise and resolves a
+    // different node, or none. Not escalating fails a system-wide install
+    // loudly, with EACCES naming the path.
+    //
+    // ponytail: static answer to an environment-dependent question. The fix is
+    // a probe-time fact recording whether `npm root -g` is writable.
     matches!(m, Manager::Apt | Manager::Zypper | Manager::Dnf)
 }
 
@@ -26,7 +38,7 @@ fn pinned(m: Manager, pkg: &str, version: &str) -> String {
     match m {
         Manager::Apt => format!("{pkg}={version}"),
         Manager::Zypper | Manager::Dnf => format!("{pkg}-{version}"),
-        Manager::Brew => format!("{pkg}@{version}"),
+        Manager::Brew | Manager::Npm => format!("{pkg}@{version}"),
         // cargo and mise take the version as a separate flag; see `install`.
         _ => pkg.to_string(),
     }
@@ -45,6 +57,12 @@ pub fn install(m: Manager, pkg: &str, version: Option<&str>) -> Cmd {
             "apt-get".into(),
             "install".into(),
             "-y".into(),
+            v.map_or_else(|| pkg.to_string(), |ver| pinned(m, pkg, ver)),
+        ]),
+        (Manager::Npm, _) => Cmd::new([
+            "npm".into(),
+            "install".into(),
+            "-g".into(),
             v.map_or_else(|| pkg.to_string(), |ver| pinned(m, pkg, ver)),
         ]),
         (Manager::Zypper, _) => Cmd::new([
@@ -117,6 +135,13 @@ pub fn installed(m: Manager, pkg: &str) -> Option<Cmd> {
             "--versions".into(),
             pkg.into(),
         ]),
+        Manager::Npm => Cmd::new([
+            "npm".to_string(),
+            "ls".into(),
+            "-g".into(),
+            "--depth=0".into(),
+            pkg.into(),
+        ]),
         // The header lines of `cargo install --list` are "name vX.Y.Z[ (src)]:"
         // at column zero; the binaries it installed are indented beneath.
         Manager::Cargo => sh(format!(
@@ -145,6 +170,7 @@ pub fn remove(m: Manager, pkg: &str) -> Cmd {
         Manager::Apt => Cmd::new(["apt-get", "remove", "-y", pkg]),
         Manager::Zypper => Cmd::new(["zypper", "--non-interactive", "remove", pkg]),
         Manager::Dnf => Cmd::new(["dnf", "remove", "-y", pkg]),
+        Manager::Npm => Cmd::new(["npm", "uninstall", "-g", pkg]),
         Manager::Brew => Cmd::new(["brew", "uninstall", pkg]),
         Manager::Cargo => Cmd::new(["cargo", "uninstall", pkg]),
         Manager::Mise => Cmd::new(["mise", "rm", "-g", pkg]),
@@ -222,7 +248,10 @@ pub fn bootstrap(m: Manager, facts: &Facts) -> Option<Vec<Cmd>> {
                 Cmd::new(["sh", &script]),
             ])
         }
-        Manager::Apt | Manager::Zypper | Manager::Dnf => {
+        // npm is not installed on its own: it arrives with node. Declare node
+        // under `languages:` and npm is simply there -- and if the machine
+        // already has its own node, that is the npm Bedouin uses.
+        Manager::Apt | Manager::Zypper | Manager::Dnf | Manager::Npm => {
             let _ = facts;
             None
         }
@@ -301,6 +330,20 @@ pub fn default_installer(language: &str) -> Manager {
 
 /// The binary that proves a toolchain is present. Not the language name:
 /// nothing on a machine with Rust is called `rust`.
+/// The package manager a language brings with it.
+///
+/// node ships npm, so declaring node under `languages:` is what makes
+/// `from: npm` resolvable -- the same relationship `rust` has with cargo,
+/// which `plan` spells out separately because it also has to reason about
+/// rustup. A language Bedouin does not install still counts: if the machine
+/// already has node, npm is already there, and that is the npm Bedouin uses.
+pub fn provides_manager(language: &str) -> Option<Manager> {
+    match language {
+        "node" => Some(Manager::Npm),
+        _ => None,
+    }
+}
+
 pub fn probe_bin(language: &str) -> &str {
     match language {
         "rust" => "cargo",
@@ -316,6 +359,49 @@ mod tests {
     use crate::facts::{Arch, Distro};
 
     #[test]
+    fn npm_is_the_users_own_npm() {
+        // It arrives with node and is never bootstrapped: a machine that has
+        // node has npm, and that is the one Bedouin drives.
+        assert!(!Manager::Npm.is_bootstrappable());
+        assert!(bootstrap(
+            Manager::Npm,
+            &Facts::fixture(Os::Linux, Distro::Ubuntu, Arch::X86_64)
+        )
+        .is_none());
+        assert!(Manager::Npm.runs_on(Os::Linux));
+        assert!(Manager::Npm.runs_on(Os::Macos));
+
+        // A package manager, not a toolchain installer.
+        assert!(Manager::Npm.installs_packages());
+        assert!(!Manager::Npm.installs_toolchains());
+        assert_eq!(Manager::Npm.probe_bin(), "npm");
+
+        // Declaring node is what makes `from: npm` resolvable.
+        assert_eq!(provides_manager("node"), Some(Manager::Npm));
+        assert_eq!(provides_manager("python"), None);
+
+        assert_eq!(
+            install(Manager::Npm, "is-odd", None).argv,
+            ["npm", "install", "-g", "is-odd"]
+        );
+        assert_eq!(
+            remove(Manager::Npm, "is-odd").argv,
+            ["npm", "uninstall", "-g", "is-odd"]
+        );
+        // Exit 0 when present, non-zero when absent -- verified against a real
+        // npm both ways.
+        assert_eq!(
+            installed(Manager::Npm, "is-odd")
+                .expect("npm can answer")
+                .argv,
+            ["npm", "ls", "-g", "--depth=0", "is-odd"]
+        );
+        // Not escalated: see `needs_root`.
+        assert!(!needs_root(Manager::Npm));
+        assert!(refresh(Manager::Npm).is_none());
+    }
+
+    #[test]
     fn each_manager_spells_a_pinned_version_its_own_way() {
         assert_eq!(
             install(Manager::Apt, "jq", Some("1.7")).argv,
@@ -324,6 +410,14 @@ mod tests {
         assert_eq!(
             install(Manager::Brew, "jq", Some("1.7")).argv,
             ["brew", "install", "jq@1.7"]
+        );
+        // npm spells it with @ as well. `pinned` has a wildcard default that
+        // returns the bare name, so a manager missing from that match silently
+        // installs latest and reports success -- which is why this is asserted
+        // rather than assumed.
+        assert_eq!(
+            install(Manager::Npm, "eslint", Some("8.0.0")).argv,
+            ["npm", "install", "-g", "eslint@8.0.0"]
         );
         assert_eq!(
             install(Manager::Cargo, "zellij", Some("0.40.1")).argv,

@@ -3,6 +3,8 @@ title: Packages & languages
 description: Where things come from, in what order, and what happens when they change.
 ---
 
+import { Aside } from '@astrojs/starlight/components';
+
 ## Packages
 
 ```yaml
@@ -117,11 +119,33 @@ On Linux, brew's bootstrap installs its own prerequisites first
 (`build-essential procps curl file git`, plus `unzip` for casks): Homebrew
 needs git to clone itself, and the package phase that would provide it runs
 later than the manager phase.
-It does **not** install apt, zypper or dnf — those are the distro's, and one
-that is merely *referenced* is never added implicitly for the same reason: a
-package asking for a manager this machine lacks already errors by name. A
-declared manager that cannot exist on this OS is dropped from the plan rather
-than attempted.
+It does **not** install apt, zypper, dnf or npm. The first three are the
+distro's. npm arrives with node, so declaring node is what makes it available:
+
+```yaml
+languages:
+  - name: node
+    version: lts
+packages:
+  - name: prettier
+    from: npm          # resolvable because node is declared above
+```
+
+If the machine already has its own node, that is the npm Bedouin drives — it
+installs globals where your npm puts them, not somewhere of its own.
+
+A manager that is merely *referenced* is never added implicitly, for the same
+reason: a package asking for a manager this machine lacks already errors by
+name. A declared manager that cannot exist on this OS is dropped from the plan
+rather than attempted.
+
+<Aside type="note" title="npm globals and root">
+Bedouin never runs `sudo npm`. Under a node it manages — or any per-user node
+— the global prefix is yours and root would be wrong. A distro-packaged node
+puts globals under `/usr/local`, where a non-root install fails with `EACCES`
+naming the path. Install node through `languages:` and the question does not
+arise.
+</Aside>
 
 ## What apply actually does
 

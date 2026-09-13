@@ -108,6 +108,7 @@ str_enum!(Manager {
     Apt => "apt",
     Zypper => "zypper",
     Dnf => "dnf",
+    Npm => "npm",
     Mise => "mise",
     Cargo => "cargo",
     Rustup => "rustup",
