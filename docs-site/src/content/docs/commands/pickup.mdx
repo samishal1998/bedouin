@@ -47,7 +47,7 @@ same idea applied to files.
 |---|---|---|
 | `apt` | manually-installed, priority `optional`/`extra` | `apt-mark showmanual` alone is 93 packages on a bare image, nearly all of it the base system |
 | `brew` | `brew leaves` | brew already means "installed on purpose, not as a dependency" |
-| `cargo` | `cargo install --list` | every entry is deliberate |
+| `cargo` | `cargo install --list`, registry crates only | every entry is deliberate, but one from a git URL cannot be written as `cargo:<name>` |
 | `npm` | global installs, minus `npm` and `corepack` | those two ship with node |
 
 `dnf` and `zypper` are **not** asked, and say so under `--verbose`. That is a
@@ -60,6 +60,15 @@ rather than reading a list.
 
 `mise` and `rustup` are not asked either: they install toolchains, which
 [`languages:`](/bedouin/config/packages/) already covers.
+
+<Aside type="caution" title="A crate from a git URL is not offered">
+`cargo install --git` records a source rather than a published version, and
+`from: cargo` has no way to say that. Such a crate is left out rather than
+suggested: adopting it would work on the machine you are standing at and fail
+on a fresh one, because the crate was never published. That is the one thing
+worth staying quiet about — a config that cannot rebuild the machine is worse
+than a config that is missing a line.
+</Aside>
 
 <Aside type="note" title="It only sees managers this machine has">
 Bedouin asks the managers it found. A crate installed with cargo is invisible

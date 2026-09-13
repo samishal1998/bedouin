@@ -363,7 +363,15 @@ pub fn list_manual(m: Manager) -> Option<Cmd> {
         Manager::Brew => Cmd::new(["brew".to_string(), "leaves".into()]),
         // Header lines are `name vX.Y.Z[ (source)]:` at column zero; the
         // binaries a crate installed are indented under it.
-        Manager::Cargo => sh("cargo install --list | sed -n 's/^\\([^ ]*\\) v.*:$/\\1/p'"),
+        //
+        // `v[^ ]*:` and not `v.*:` on purpose: that excludes any crate with a
+        // source in parentheses, which means anything installed from a git URL
+        // or a path. `recipe::install` has no `--git` form, so `cargo:<name>`
+        // cannot express one -- and offering it would hand somebody a config
+        // that adopts cleanly here and then fails on a fresh machine, because
+        // the crate was never published. Being unable to rebuild the machine
+        // is the one outcome worth hiding a row over.
+        Manager::Cargo => sh("cargo install --list | sed -n 's/^\\([^ ]*\\) v[^ ]*:$/\\1/p'"),
         // --parseable gives paths; the name is whatever follows node_modules,
         // which keeps @scope/name in one piece. npm and corepack ship with
         // node, so every machine would otherwise be told to adopt them.
@@ -431,6 +439,14 @@ mod tests {
         for p in ["required", "important", "standard"] {
             assert!(apt.contains(p), "apt filter lost {p}: {apt}");
         }
+        // A crate from a git URL prints a source before the colon and must
+        // not be offered: `cargo:<name>` cannot install it, so the config
+        // would adopt here and fail on a fresh machine.
+        let cargo = list_manual(Manager::Cargo).unwrap().argv.join(" ");
+        assert!(
+            cargo.contains("v[^ ]*:$"),
+            "cargo filter would offer git-source crates: {cargo}"
+        );
         let npm = list_manual(Manager::Npm).unwrap().argv.join(" ");
         assert!(npm.contains("--parseable"), "{npm}");
         // Both ship with node; every machine would otherwise be told to

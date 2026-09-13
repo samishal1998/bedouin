@@ -3,6 +3,22 @@
 Dates are release dates. Versions before 0.2.0 are omitted: they predate this
 file and nothing depended on them.
 
+## 0.18.1 — 2026-09-13
+
+pickup offered crates it cannot install. `cargo install --git` records a source
+rather than a published version, and `from: cargo` has no way to spell that, so
+`bedouin add cargo:<name>` for one of those adopts cleanly on the machine you
+are standing at — the manager has it, so nothing is installed — and then fails
+on a fresh machine, because the crate was never published.
+
+Found by running the real pipeline against a real crate list rather than the
+test's: one of the four crates on the development machine is installed from a
+git URL, and pickup was suggesting it.
+
+Registry crates only now. A config that cannot rebuild the machine is the one
+outcome worth leaving a row out over, and the docs say so rather than leaving
+it a silent omission.
+
 ## 0.18.0 — 2026-09-13
 
 **`bedouin pickup` finds what you installed without thinking about it.**
