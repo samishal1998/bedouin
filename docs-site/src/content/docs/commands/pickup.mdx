@@ -49,8 +49,14 @@ same idea applied to files.
 | `brew` | `brew leaves` | brew already means "installed on purpose, not as a dependency" |
 | `cargo` | `cargo install --list`, registry crates only | every entry is deliberate, but one from a git URL cannot be written as `cargo:<name>` |
 | `npm` | global installs, minus `npm` and `corepack` | those two ship with node |
+| `pnpm`, `bun` | global installs | both keep their own global list |
+| `pipx` | `pipx list --short` | pipx exists to install exactly this kind of thing |
+| `pacman` | `pacman -Qe` | Arch records what was asked for explicitly; on a bare image that is one package |
+| `apk` | `/etc/apk/world`, minus the base layer | apk keeps the same list as a plain file |
 
-`dnf` and `zypper` are **not** asked, and say so under `--verbose`. That is a
+`yarn`, `dnf` and `zypper` are **not** asked, and say so under `--verbose`.
+yarn classic prints `info "pkg@1.0.0" has binaries:` interleaved with progress
+output, and yarn 2+ has no globals to list at all. That is a
 gap rather than a decision in principle: `dnf repoquery --userinstalled` is
 right on a real install but returns the whole base system in a container,
 because the image build marked it user-installed, and rpm has no equivalent of

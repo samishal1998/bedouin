@@ -71,6 +71,18 @@ jobs:
             pre: "sh /bootstrap.sh"
             cfg: tests/docker/gitsub
             script: tests/docker/gitsub/smoke.sh
+          # Arch and Alpine had no package manager at all until 0.19.0: Arch
+          # had a Distro variant and no Manager, Alpine had neither, which is
+          # why the ssh bootstrap refused it by name. Both also exercise
+          # `pickup` and the adoption path end to end.
+          - image: archlinux:latest
+            pre: "true"
+            cfg: tests/docker/newdistro
+            script: tests/docker/newdistro/smoke.sh
+          - image: alpine:3
+            pre: "true"
+            cfg: tests/docker/newdistro
+            script: tests/docker/newdistro/smoke.sh
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

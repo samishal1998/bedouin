@@ -1537,6 +1537,24 @@ fn main() -> ExitCode {
             }
             if !outcome.plan.has_changes() {
                 println!("No changes. The machine already matches the config.");
+                // Nothing to do is not nothing to record. This is the only
+                // path a converged machine takes, so returning here left a
+                // package that `bedouin add` had just declared -- and that the
+                // machine already had -- permanently unknown to state.
+                let _lock = bedouin_core::host::StateLock::acquire(
+                    &bedouin_core::state::default_path(&outcome.facts.home),
+                );
+                if let Err(e) = bedouin_core::apply::adopt_only(
+                    &outcome.plan,
+                    &outcome.facts,
+                    outcome.state,
+                    &host,
+                ) {
+                    eprintln!(
+                        "bedouin: the machine matches, but the record could not be saved: {e}"
+                    );
+                    return ExitCode::FAILURE;
+                }
                 return ExitCode::SUCCESS;
             }
             print!("{}", outcome.plan.render(cli.verbose));

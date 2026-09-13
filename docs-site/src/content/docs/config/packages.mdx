@@ -119,8 +119,33 @@ On Linux, brew's bootstrap installs its own prerequisites first
 (`build-essential procps curl file git`, plus `unzip` for casks): Homebrew
 needs git to clone itself, and the package phase that would provide it runs
 later than the manager phase.
-It does **not** install apt, zypper, dnf or npm. The first three are the
-distro's. npm arrives with node, so declaring node is what makes it available:
+## The managers Bedouin drives
+
+| | |
+|---|---|
+| **System** | `apt`, `dnf`, `zypper`, `pacman`, `apk`, `brew` |
+| **Language** | `cargo`, `npm`, `pnpm`, `yarn`, `bun`, `pipx` |
+| **Toolchains** (`installer:`, not `from:`) | `rustup`, `mise` |
+
+System managers need root and Bedouin never installs them. Language managers
+install into your own prefix, so Bedouin never runs `sudo` for them.
+
+<Aside type="caution" title="pacman cannot pin a version">
+Arch repositories carry only the current version of a package, so there is no
+older one to ask for. A `version:` on a pacman package is refused when the
+config is read rather than dropped at install time, because installing the
+current version and reporting success is the worst available answer.
+</Aside>
+
+<Aside type="note" title="yarn means yarn 1">
+`yarn global add` exists only in yarn classic; yarn 2 removed it and points you
+at npm for globals. `from: yarn` therefore installs and removes, but
+[`pickup`](/bedouin/commands/pickup/) does not ask yarn what you installed.
+</Aside>
+
+It does **not** install apt, zypper, dnf, pacman, apk or npm. The first five
+are the distro's. npm arrives with node, so declaring node is what makes it
+available:
 
 ```yaml
 languages:
@@ -133,6 +158,10 @@ packages:
 
 If the machine already has its own node, that is the npm Bedouin drives — it
 installs globals where your npm puts them, not somewhere of its own.
+
+`bun` and `pnpm` work the same way: mise carries both as tools, so
+`languages: [bun]` is what makes `from: bun` resolvable on a machine that has
+neither yet.
 
 A manager that is merely *referenced* is never added implicitly, for the same
 reason: a package asking for a manager this machine lacks already errors by

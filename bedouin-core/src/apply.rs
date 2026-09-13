@@ -906,6 +906,55 @@ fn skips(skip: &std::collections::BTreeSet<String>, id: &str) -> bool {
     skip.contains(id) || id.split_once('/').is_some_and(|(_, n)| skip.contains(n))
 }
 
+/// Adopt without applying: the whole of what an apply does when there is
+/// nothing to do.
+///
+/// A converged machine is exactly where this matters. `bedouin add` on a
+/// package that is already installed produces a plan with no changes at all,
+/// so there is no step to run -- only a record to keep, and without it the
+/// package stays permanently unknown to state. Callers hold the state lock.
+pub fn adopt_only(
+    plan: &crate::plan::Plan,
+    facts: &Facts,
+    state: State,
+    host: &dyn Host,
+) -> Result<()> {
+    let mut state = state;
+    adopt_preexisting(&mut state, plan, facts);
+    let json = serde_json::to_string_pretty(&state)
+        .map_err(|e| ConfigError::new(format!("serialising state: {e}")))?;
+    host.write(&state::default_path(&facts.home), json.as_bytes(), 0o600)
+        .map_err(|e| ConfigError::new(e.to_string()))
+}
+
+/// Record what is already on the machine that Bedouin did not put there.
+///
+/// A NoOp item is one the plan found already satisfied. Writing it down as
+/// `Preexisting` is what makes it survive being dropped from the config later,
+/// and it is also the only way Bedouin ever learns that a hand-installed
+/// package exists.
+fn adopt_preexisting(state: &mut State, plan: &crate::plan::Plan, facts: &Facts) {
+    for item in &plan.items {
+        if item.action == Action::NoOp && !state.items.contains_key(&item.id) {
+            let mut rec = StateItem::new(item.kind, Owner::Preexisting);
+            // Adopt its bin directories as well as its existence: a toolchain
+            // that was already here must still reach later steps' PATH without
+            // re-probing the machine every run.
+            rec.bin_dirs = match &item.payload {
+                Payload::Language { bin_dirs, .. } => {
+                    bin_dirs.iter().map(|p| p.display().to_string()).collect()
+                }
+                Payload::Manager(m) => crate::recipe::bin_dirs(m.as_str(), facts)
+                    .iter()
+                    .map(|p| p.display().to_string())
+                    .collect(),
+                _ => Vec::new(),
+            };
+            state.items.insert(item.id.clone(), rec);
+        }
+    }
+}
+
 pub fn apply(
     plan: &Plan,
     cfg: &Config,
@@ -922,6 +971,13 @@ pub fn apply(
         all.into_iter().partition(|i| skips(skip, &i.id));
     let skipped: Vec<String> = skipped.iter().map(|i| i.id.clone()).collect();
     if changes.is_empty() {
+        // Nothing to do is not nothing to record. Every item here is a NoOp,
+        // which means the machine already satisfies it -- and on a converged
+        // machine this is the ONLY path, so returning early left a
+        // hand-installed package that `bedouin add` had just declared
+        // permanently unknown to state. That is the half of "Bedouin never
+        // learns about it" that adding the line did not fix.
+        let _ = adopt_only(plan, facts, state, host);
         return Ok(Report {
             skipped,
             ..Default::default()
@@ -1143,27 +1199,7 @@ pub fn apply(
         }
     }
 
-    // Anything already on the machine that Bedouin did not install is adopted
-    // rather than claimed: it must survive being dropped from the config.
-    for item in &plan.items {
-        if item.action == Action::NoOp && !ex.state.items.contains_key(&item.id) {
-            let mut rec = StateItem::new(item.kind, Owner::Preexisting);
-            // Adopt its bin directories as well as its existence: a toolchain
-            // that was already here must still reach later steps' PATH without
-            // re-probing the machine every run.
-            rec.bin_dirs = match &item.payload {
-                Payload::Language { bin_dirs, .. } => {
-                    bin_dirs.iter().map(|p| p.display().to_string()).collect()
-                }
-                Payload::Manager(m) => crate::recipe::bin_dirs(m.as_str(), facts)
-                    .iter()
-                    .map(|p| p.display().to_string())
-                    .collect(),
-                _ => Vec::new(),
-            };
-            ex.state.items.insert(item.id.clone(), rec);
-        }
-    }
+    adopt_preexisting(&mut ex.state, plan, facts);
     // The adoption sweep. Everything ran by now, so a failure here costs the
     // record rather than the work -- but it still has to be said.
     if let Err(e) = ex.flush() {

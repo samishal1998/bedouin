@@ -3,6 +3,59 @@
 Dates are release dates. Versions before 0.2.0 are omitted: they predate this
 file and nothing depended on them.
 
+## 0.19.0 — 2026-09-13
+
+**Six more package managers, and two platforms Bedouin could not manage at
+all.**
+
+    pacman  pnpm
+    apk     bun
+            yarn
+            pipx
+
+pacman and apk were missing rather than merely absent. Bedouin already knew
+`Distro::ArchLinux` and `DistroLike::Arch`, and the ssh bootstrap already had a
+pacman branch — but there was no `Manager::Pacman`, so an Arch user could match
+on their own distro and then had nothing to install packages with. Alpine was
+not a distro at all, which is why the bootstrap refused it by name. Alpine now
+brings `Distro::Alpine`, `DistroLike::Alpine`, the `alpine` and `alpine-like`
+arms, and an apk branch in the bootstrap, so `bedouin ssh` reaches it.
+
+**Nothing to do was not nothing to record.** A package whose name matches its
+binary — `tree`, `jq`, most things — planned as a NoOp, and a plan with no
+changes returned before the adoption sweep ever ran. So `bedouin add apt:tree`
+for a package you already had declared it in the config and then never wrote it
+down, which is precisely the "Bedouin never learns about it" that `pickup`
+exists to answer. `apply::adopt_only` runs on that path now, under the state
+lock. This is the second half of 0.16.3: that release stopped Bedouin claiming
+what it had not installed, and this one starts it recording what it adopted.
+
+**Three measurements changed the code rather than confirming it:**
+
+  - `pnpm add -g` refuses outright unless `$PNPM_HOME/bin` is on PATH, and pnpm
+    reads the variable rather than inferring it. `step_env` sets it — the first
+    per-manager environment variable, with a comment saying a second one wants
+    a table.
+  - pnpm puts binaries in `$PNPM_HOME/bin`, not `$PNPM_HOME`.
+  - `yarn@4` does not exist on npm at all (ETARGET). The npm `yarn` package is
+    classic, which is the only yarn with globals; yarn 2 removed them. Install
+    and remove work; `pickup` does not ask yarn anything.
+
+`pickup` learns pacman, apk, pnpm, bun and pipx. Arch and Alpine are better
+signals than apt: `pacman -Qe` is what was asked for explicitly, and
+`/etc/apk/world` is the same list kept as a plain file.
+
+**Three tests now loop over `Manager::ALL`** rather than checking one manager,
+because the matches that bite are the ones with a wildcard arm where the
+compiler stays quiet. One immediately caught `pinned` dropping pacman's
+version. Arch repositories carry only the current version of a package, so a
+pin cannot be satisfied — it is refused when the config is read now, via
+`Manager::pins_versions`, rather than silently installing the current one and
+reporting success.
+
+CI gains an Arch row and an Alpine row that install a package, converge, and
+run the whole pickup-and-adopt loop.
+
 ## 0.18.1 — 2026-09-13
 
 pickup offered crates it cannot install. `cargo install --git` records a source
