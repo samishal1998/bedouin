@@ -583,7 +583,7 @@ pub fn resolve(raw: &RawConfig, vocab: &Vocabulary, facts: &Facts) -> Result<Con
                 // Only these two install toolchains. Accepting any known
                 // manager would let `installer: apt` reach an executor path
                 // that does not exist, and fail at apply rather than at parse.
-                if !matches!(m, Manager::Rustup | Manager::Mise) {
+                if !m.installs_toolchains() {
                     return Err(ConfigError::new(format!(
                         "`installer: {m}` is not a toolchain installer\n  supported: rustup, mise"
                     ))
@@ -641,7 +641,7 @@ pub fn resolve(raw: &RawConfig, vocab: &Vocabulary, facts: &Facts) -> Result<Con
         // rustup installs toolchains, not packages: `from: rustup` would have
         // run `rustup toolchain install`, ignoring the package name entirely
         // and reporting success.
-        if let Some(bad) = from.iter().find(|m| **m == Manager::Rustup) {
+        if let Some(bad) = from.iter().find(|m| !m.installs_packages()) {
             return Err(ConfigError::new(format!(
                 "`from: {bad}` installs toolchains, not packages\n  For a Rust toolchain use `languages:`; for a crate use `from: cargo`"
             ))

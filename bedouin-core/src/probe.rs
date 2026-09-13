@@ -55,13 +55,7 @@ fn managers(host: &dyn Host, path: &[PathBuf]) -> Vec<Manager> {
     Manager::ALL
         .iter()
         .copied()
-        .filter(|m| {
-            let bin = match m {
-                Manager::Apt => "apt-get",
-                other => other.as_str(),
-            };
-            host.which(bin, path).is_some()
-        })
+        .filter(|m| host.which(m.probe_bin(), path).is_some())
         .collect()
 }
 

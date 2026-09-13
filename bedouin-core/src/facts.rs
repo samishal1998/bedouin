@@ -96,6 +96,13 @@ str_enum!(Privilege {
 });
 
 // Package managers and toolchain installers Bedouin knows how to drive.
+//
+// Adding one: put the variant here (`ALL` is derived from this list, so it
+// extends itself), then answer the five questions below as methods, then fill
+// in the arms `recipe.rs` asks for. Every site in `recipe.rs` is an exhaustive
+// match, so the compiler names each one that is missing -- the methods here
+// exist because their callers are NOT exhaustive and would silently take a
+// default instead.
 str_enum!(Manager {
     Brew => "brew",
     Apt => "apt",
@@ -120,6 +127,28 @@ impl Manager {
             Self::Apt | Self::Zypper | Self::Dnf => os == Os::Linux,
             _ => true,
         }
+    }
+
+    /// The binary whose presence proves the manager is here. Almost always the
+    /// manager's own name -- apt is the exception, because the tool Bedouin
+    /// drives is `apt-get` and `apt` is a different, interactive front end.
+    pub fn probe_bin(self) -> &'static str {
+        match self {
+            Self::Apt => "apt-get",
+            other => other.as_str(),
+        }
+    }
+
+    /// Whether `from:` may name this manager. rustup installs toolchains and
+    /// would ignore the package name entirely, reporting success.
+    pub fn installs_packages(self) -> bool {
+        !matches!(self, Self::Rustup)
+    }
+
+    /// Whether `installer:` may name this manager. Anything else would reach
+    /// an executor path that does not exist and fail at apply, not at parse.
+    pub fn installs_toolchains(self) -> bool {
+        matches!(self, Self::Rustup | Self::Mise)
     }
 }
 
