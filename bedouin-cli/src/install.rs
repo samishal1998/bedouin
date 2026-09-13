@@ -137,7 +137,7 @@ pub fn run(
         bin_path: man.bin_for(&rel.tag, &triple),
     };
     let env: std::collections::BTreeMap<String, String> = host.env().clone();
-    match forge::install(host, facts, &plan, &env, |m| {
+    match forge::install(host, facts, &forge::bin_dir(facts), &plan, &env, |m| {
         println!("  {}", style::dim(m))
     }) {
         Ok(path) => {
@@ -172,4 +172,46 @@ fn list_assets(rel: &forge::Release) {
     for a in &rel.assets {
         eprintln!("    {}", a.name);
     }
+}
+
+/// `bedouin install generate org/repo[@tag]` -- a `curl … | sh` installer for
+/// one release, for people who do not have bedouin.
+pub fn generate(host: &OsHost, facts: &Facts, spec: &str, bin_override: Option<&str>) -> ExitCode {
+    let (org, repo, sel) = match forge::parse_spec(spec) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("bedouin: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let rel = match forge::resolve(host, facts, &org, &repo, &sel) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("bedouin: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let man = forge::manifest(host, &org, &repo, &rel).unwrap_or_default();
+    let bin = bin_override
+        .map(str::to_string)
+        .or_else(|| man.name.clone())
+        .unwrap_or_else(|| repo.clone());
+
+    let (rows, missing) = forge::script_rows(host, &rel, &repo);
+    if rows.is_empty() {
+        eprintln!(
+            "bedouin: {org}/{repo} {} has no assets this can install",
+            rel.tag
+        );
+        return ExitCode::FAILURE;
+    }
+    if !missing.is_empty() {
+        eprintln!(
+            "bedouin: no build for {} in {}; the script will say so",
+            missing.join(", "),
+            rel.tag
+        );
+    }
+    print!("{}", forge::generate(&org, &repo, &rel, &rows, &bin));
+    ExitCode::SUCCESS
 }

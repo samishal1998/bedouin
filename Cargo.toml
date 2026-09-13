@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["bedouin-core", "bedouin-cli", "bedouin-ui"]
+members = ["bedouin-core", "bedouin-cli", "bedouin-ui", "bedouin-installer"]
 # The bootstrap binary is `bedouin` alone. `bedouin-ui` is built and released
 # beside it, never into it: it carries an HTTP stack and the built web assets,
 # and the whole point of the sidecar is that neither reaches the static musl

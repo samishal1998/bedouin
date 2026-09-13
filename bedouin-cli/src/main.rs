@@ -151,6 +151,10 @@ enum Command {
         /// Install without asking.
         #[arg(short = 'y', long)]
         yes: bool,
+        /// Write a `curl … | sh` installer for this release to stdout instead
+        /// of installing. Pinned to the release it was generated from.
+        #[arg(long)]
+        generate: bool,
     },
     /// Find packages installed by hand that the config does not declare.
     Pickup,
@@ -1390,9 +1394,17 @@ fn main() -> ExitCode {
 
         Command::Install {
             spec,
+            bin,
+            generate,
+            ..
+        } if generate => install::generate(&host, &outcome.facts, &spec, bin.as_deref()),
+
+        Command::Install {
+            spec,
             asset,
             bin,
             yes,
+            generate: _,
         } => install::run(
             &host,
             &outcome.facts,

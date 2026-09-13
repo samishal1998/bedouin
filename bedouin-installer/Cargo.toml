@@ -1,0 +1,18 @@
+[package]
+name = "bedouin-installer"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# The same engine as `bedouin install`, in a binary that does not need a
+# config. Built on bedouin-core rather than carrying its own copy of the asset
+# matcher: two implementations of the subtlest code in this feature would drift
+# apart, and the bug would get fixed in one of them.
+[dependencies]
+bedouin-core = { workspace = true }
+clap = { version = "4", features = ["derive"] }
+
+[[bin]]
+name = "bedouin-installer"
+path = "src/main.rs"

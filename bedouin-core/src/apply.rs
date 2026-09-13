@@ -304,7 +304,8 @@ impl Executor<'_> {
         };
         let env = step_env(&self.state, self.facts);
         let out = &mut self.out;
-        forge::install(self.host, self.facts, &plan, &env, |m| {
+        let dest = forge::bin_dir(self.facts);
+        forge::install(self.host, self.facts, &dest, &plan, &env, |m| {
             out(Line::Out(format!("   {m}")))
         })
         .map(|p| p.display().to_string())
