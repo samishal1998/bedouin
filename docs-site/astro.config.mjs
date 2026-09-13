@@ -53,6 +53,7 @@ export default defineConfig({
             { label: 'env', slug: 'commands/env' },
             { label: 'doctor & absorb', slug: 'commands/doctor-absorb' },
             { label: 'pickup', slug: 'commands/pickup' },
+            { label: 'install', slug: 'commands/install' },
             { label: 'add, remove & sync', slug: 'commands/manage' },
             { label: 'reconcile & daemon', slug: 'commands/daemon' },
           ],

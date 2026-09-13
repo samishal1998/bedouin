@@ -1,0 +1,135 @@
+---
+title: install
+description: Packages from GitHub releases, without the curl-pipe-sh.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+A lot of good software is published only as a GitHub release: a tarball per
+platform, a tag, and a README that says `curl … | sh`. None of it is in apt.
+
+```
+bedouin install sharkdp/fd
+```
+
+That resolves the newest release, chooses the file that runs on this machine,
+verifies it against whatever checksum the project published, unpacks it, and
+puts one binary in `~/.local/bin`.
+
+## Choosing a version
+
+| | |
+|---|---|
+| `org/repo` | newest stable release |
+| `org/repo@v1.2.3` | that tag exactly |
+| `org/repo@prerelease` | newest release, prereleases included |
+| `org/repo@/^tui-/` | newest tag matching a pattern |
+
+The last one is for repositories that publish several products from one place —
+`tui-0.1.0` beside `cli-0.1.0`. There is only one "latest release" in such a
+repo and it is whichever was cut last, which may be the wrong product entirely.
+Patterns support `^` and `$` anchors and literal text.
+
+## Choosing a file
+
+Release naming is not standardised and four projects will use four schemes, so
+bedouin scores what it finds: the architecture, the operating system, and — on
+Linux — a preference for `musl` over `gnu`, because a static build is the safer
+thing to drop onto a machine whose glibc you have not looked at. On Alpine a
+`gnu` build is refused outright rather than ranked lower; there is no glibc
+there at all.
+
+Signatures, checksums, source archives, debug symbols and `.deb`/`.rpm`
+packages are excluded before any of that. A `.deb` is apt's job.
+
+<Aside type="caution" title="It refuses rather than guesses">
+If two files fit equally well, or none does, bedouin prints the whole asset
+list and stops. helix publishes `helix-25.07.1-source.tar.xz` in the same
+release as its binaries, and a matcher that always produces an answer installs
+it. Name one yourself with `--asset`.
+</Aside>
+
+**The archive decides what the binary is called.** `BurntSushi/ripgrep` ships a
+program called `rg`, and installing it as `ripgrep` would be a working binary
+under a name nobody types. `--bin` overrides it.
+
+## Checksums
+
+Verified whenever the release publishes them, in either of the two shapes that
+exist in the wild: a `.sha256` beside each asset, or one `checksums.txt` for
+the release. **A mismatch discards the download.** A release with no checksums
+at all says so and continues — fd and helix publish none, and refusing would
+rule out much of the ecosystem.
+
+## Keeping it
+
+`bedouin install` is the one-off. To make it survive a fresh machine, declare
+it:
+
+```yaml
+packages:
+  - name: BurntSushi/ripgrep
+    from: github
+    version: 15.2.0        # optional; absent means "newest at first install"
+```
+
+Then `plan`, `apply`, pinning a different tag, and dropping the line all behave
+like any other package — removal deletes the binary bedouin put there, by the
+path it recorded, not by guessing at the name.
+
+<Aside type="note" title="pickup cannot see these">
+Every other manager can be asked what is installed. GitHub cannot: a binary in
+`~/.local/bin` could have come from anywhere. [`pickup`](/bedouin/commands/pickup/)
+will not find tools installed this way.
+</Aside>
+
+## Rate limits
+
+GitHub allows 60 anonymous API requests an hour, shared by everyone behind your
+address. If `gh` is installed and logged in, bedouin borrows its token and the
+limit becomes 5000. When anonymous requests run out, the error says so and
+names the fix.
+
+## A script for people without bedouin
+
+```
+bedouin install --generate BurntSushi/ripgrep@15.2.0 > install-rg.sh
+```
+
+writes a POSIX `sh` installer for that release: a `case "$(uname -s)-$(uname -m)"`
+table of direct download URLs and the checksum each one published, resolved
+when you generate it. No API calls, so no rate limit and no token.
+
+It is pinned to that release — regenerating is how you publish a new one, which
+is exactly what bedouin's own `install.sh` is.
+
+## Without the rest of bedouin
+
+`bedouin-installer` is the same engine as a standalone binary: no config, no
+state file, about 1.9 MB. It is released beside `bedouin` for every platform.
+
+```
+bedouin-installer sharkdp/fd
+bedouin-installer sharkdp/fd --bin-dir /usr/local/bin
+```
+
+## For maintainers
+
+Autodetect works without your help, and a manifest is only ever an improvement
+on it. Put `bedouin.yaml` at the root of your repository:
+
+```yaml
+name: fd                     # what to call the installed binary
+description: A fast find
+homepage: https://github.com/sharkdp/fd
+bin: fd-{version}-{target}/fd     # where it is inside the archive
+assets:                           # overrides autodetect entirely
+  x86_64-unknown-linux-musl: fd-{version}-x86_64-unknown-linux-musl.tar.gz
+checksums: SHA256SUMS             # if it is not a name bedouin recognises
+```
+
+Every field is optional. `assets:` is the escape hatch for naming that no
+scoring can rank — it turns "bedouin guesses" into "the maintainer said".
+
+A `manifest.yaml` attached to the release works too, and is read if the
+repository has no `bedouin.yaml`.

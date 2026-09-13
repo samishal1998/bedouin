@@ -3,6 +3,71 @@
 Dates are release dates. Versions before 0.2.0 are omitted: they predate this
 file and nothing depended on them.
 
+## 0.20.0 — 2026-09-13
+
+**`bedouin install org/repo` — packages from GitHub releases.**
+
+    bedouin install sharkdp/fd
+    bedouin install helix-editor/helix@prerelease
+    bedouin install foo/bar@/^tui-/        # one product out of a shared repo
+
+and declaratively, so it survives a fresh machine:
+
+    packages:
+      - name: BurntSushi/ripgrep
+        from: github
+        version: 15.2.0
+
+Resolve a release, choose the file that runs here, verify it, unpack it, place
+one binary in ~/.local/bin. Plan, apply, pinning an older tag and dropping the
+line all behave like any other package.
+
+**Choosing refuses rather than guesses.** Release naming is not standardised
+and the four projects this was built against use four schemes. helix publishes
+`helix-25.07.1-source.tar.xz` in the same release as its binaries, and it
+scores like a real asset until the filter throws it out. A tie at the top, or
+nothing that fits, prints the whole asset list and stops. On Alpine a `gnu`
+build is rejected outright rather than ranked below musl: there is no glibc
+there, so it is not a worse answer, it is not an answer.
+
+**The archive decides what the binary is called.** `BurntSushi/ripgrep` ships
+`rg`, and the first real run installed it as `ripgrep` — a working binary under
+a name nobody types.
+
+**Every archive shape names the program that opens it**, checked before the
+download. `tar -xJf` does not decompress xz itself, it execs `xz`, and the
+first helix install failed on `tar (child): xz: Cannot exec` after fetching
+40MB.
+
+Checksums are verified in both shapes that exist — a `.sha256` beside each
+asset, and one `checksums.txt` for the release — and a mismatch discards the
+download. A release with none says so: fd and helix publish none, and refusing
+would rule out much of the ecosystem.
+
+`gh auth token` is borrowed when present, as `gitcmd` borrows its credential
+helper: 60 anonymous requests an hour against 5000.
+
+**`--generate`** writes a `curl … | sh` installer for one release: a
+`case "$(uname -s)-$(uname -m)"` table of direct URLs and the checksums the
+project published, resolved at generate time. Verified by running the output
+with no bedouin present. Deliberately not a general asset matcher in shell —
+that is the subtlest code here and a second copy would drift.
+
+**`bedouin-installer`** is the same engine standalone: no config, no state,
+1.9MB against the main binary's 7MB, released for every platform. A workspace
+member over bedouin-core rather than a second implementation.
+
+Three things this manager does not share with the others. `recipe::install`
+returns `Option<Cmd>` now, because installing from a release is a pipeline and
+returning a command for it would be a lie the executor had to work around.
+Removal uses the path recorded at install time, since `sharkdp/fd` is not the
+name of a file. And `probe_bin` for github is `curl`: it is not a program on
+this machine, it is a service, and what it needs locally is something to fetch
+with.
+
+`pickup` cannot see tools installed this way, and that is not closeable: every
+other manager has an installed set to ask for, and GitHub has none.
+
 ## 0.19.0 — 2026-09-13
 
 **Six more package managers, and two platforms Bedouin could not manage at

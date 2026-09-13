@@ -62,6 +62,10 @@ jobs:
       # carry an HTTP stack -- so it is built by name, and shipped beside.
       - run: cargo build --release --target ${{ matrix.target }} -p bedouin-ui
 
+      # Same engine as `bedouin install`, for people who want the installer
+      # without the rest. Built by name for the same reason as the sidecar.
+      - run: cargo build --release --target ${{ matrix.target }} -p bedouin-installer
+
       - name: Check it is actually static
         if: matrix.target == 'x86_64-unknown-linux-musl'
         run: |
@@ -69,15 +73,22 @@ jobs:
           # The whole promise: runs on a bare image with nothing installed.
           docker run --rm -v "$PWD/target/${{ matrix.target }}/release/bedouin:/bedouin:ro" \
             alpine:3 /bedouin --version
+          # The installer makes the same promise and is the one people will
+          # reach for on a machine with nothing on it.
+          docker run --rm \
+            -v "$PWD/target/${{ matrix.target }}/release/bedouin-installer:/i:ro" \
+            alpine:3 /i --version
 
       - name: Package
         run: |
           cd target/${{ matrix.target }}/release
           tar czf "$GITHUB_WORKSPACE/bedouin-${{ matrix.target }}.tar.gz" bedouin
           tar czf "$GITHUB_WORKSPACE/bedouin-ui-${{ matrix.target }}.tar.gz" bedouin-ui
+          tar czf "$GITHUB_WORKSPACE/bedouin-installer-${{ matrix.target }}.tar.gz" bedouin-installer
           cd "$GITHUB_WORKSPACE"
-          shasum -a 256 "bedouin-${{ matrix.target }}.tar.gz" > "bedouin-${{ matrix.target }}.tar.gz.sha256"
-          shasum -a 256 "bedouin-ui-${{ matrix.target }}.tar.gz" > "bedouin-ui-${{ matrix.target }}.tar.gz.sha256"
+          for n in bedouin bedouin-ui bedouin-installer; do
+            shasum -a 256 "$n-${{ matrix.target }}.tar.gz" > "$n-${{ matrix.target }}.tar.gz.sha256"
+          done
 
       - uses: actions/upload-artifact@v4
         with:
@@ -87,6 +98,8 @@ jobs:
             bedouin-${{ matrix.target }}.tar.gz.sha256
             bedouin-ui-${{ matrix.target }}.tar.gz
             bedouin-ui-${{ matrix.target }}.tar.gz.sha256
+            bedouin-installer-${{ matrix.target }}.tar.gz
+            bedouin-installer-${{ matrix.target }}.tar.gz.sha256
 
   publish:
     needs: build

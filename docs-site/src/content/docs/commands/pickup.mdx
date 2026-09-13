@@ -65,7 +65,10 @@ transaction is the image, later ones are you — which means parsing transaction
 rather than reading a list.
 
 `mise` and `rustup` are not asked either: they install toolchains, which
-[`languages:`](/bedouin/config/packages/) already covers.
+[`languages:`](/bedouin/config/packages/) already covers. Nor is `github`, and
+that one cannot be fixed by trying harder: every other manager has an installed
+set to query, and GitHub does not. A binary in `~/.local/bin` could have come
+from anywhere.
 
 <Aside type="caution" title="A crate from a git URL is not offered">
 `cargo install --git` records a source rather than a published version, and
