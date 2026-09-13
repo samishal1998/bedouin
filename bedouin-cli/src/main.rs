@@ -135,6 +135,8 @@ enum Command {
         #[arg(short = 'y', long)]
         yes: bool,
     },
+    /// Find packages installed by hand that the config does not declare.
+    Pickup,
     /// List the environment variables this config reads.
     Env {
         /// Write a commented .env.bedouin beside the config.
@@ -1368,6 +1370,67 @@ fn main() -> ExitCode {
             |text| set_completions(text, &package, &generate),
             &format!("Set completions for `{package}`: `{}`.", generate.join(" ")),
         ),
+
+        Command::Pickup => {
+            let declared: std::collections::BTreeSet<&str> = outcome
+                .config
+                .packages
+                .iter()
+                .map(|p| p.name.as_str())
+                .collect();
+            let mut rows: Vec<(bedouin_core::facts::Manager, Vec<String>)> = Vec::new();
+            let mut silent: Vec<bedouin_core::facts::Manager> = Vec::new();
+            for m in &outcome.facts.managers {
+                let Some(mut cmd) = bedouin_core::recipe::list_manual(*m) else {
+                    silent.push(*m);
+                    continue;
+                };
+                // The same environment apply gives a step. Without it the PATH
+                // is whatever the ambient shell had, which finds apt-get in
+                // /usr/bin and misses npm in mise's shims and cargo in
+                // ~/.cargo/bin -- silently, as an empty answer.
+                cmd.env = bedouin_core::apply::step_env(&outcome.state, &outcome.facts);
+                let mut found: Vec<String> = Vec::new();
+                // A manager that cannot answer right now is not a failure:
+                // pickup is a question, and a partial answer beats an error.
+                let _ = bedouin_core::host::Host::run(&host, &cmd, &mut |l| {
+                    // stdout only: a manager warning on stderr is not a package.
+                    if let bedouin_core::host::Line::Out(text) = l {
+                        let name = text.trim();
+                        if !name.is_empty() && !declared.contains(name) {
+                            found.push(name.to_string());
+                        }
+                    }
+                });
+                found.sort();
+                found.dedup();
+                if !found.is_empty() {
+                    rows.push((*m, found));
+                }
+            }
+            if rows.is_empty() {
+                println!("Nothing installed by hand that the config does not already declare.");
+            } else {
+                let total: usize = rows.iter().map(|(_, v)| v.len()).sum();
+                println!("{total} installed by hand, not in the config:\n");
+                for (m, names) in &rows {
+                    for n in names {
+                        println!("  {n:<28}  bedouin add {m}:{n}");
+                    }
+                }
+                println!("\nAdding one records what is already there; it does not reinstall it.");
+            }
+            if !silent.is_empty() && cli.verbose {
+                let list: Vec<String> = silent.iter().map(|m| m.to_string()).collect();
+                println!(
+                    "\nNot asked: {}. See `bedouin help pickup`.",
+                    list.join(", ")
+                );
+            }
+            // Always 0. This is information, not drift: a status that never
+            // returns to zero tells you nothing the second time.
+            ExitCode::SUCCESS
+        }
 
         Command::Doctor => {
             let report = match bedouin_core::doctor::check(

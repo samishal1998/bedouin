@@ -114,7 +114,12 @@ impl Report {
 ///
 /// Constructed from the state manifest plus a minimal system base -- never the
 /// parent shell's, which is the entire point.
-fn step_env(state: &State, facts: &Facts) -> BTreeMap<String, String> {
+/// The environment every command Bedouin runs gets: a PATH built from the
+/// directories its managers install into, rather than whatever the ambient
+/// shell happens to have. Public because `pickup` asks managers questions and
+/// needs to find them the same way apply does -- npm lives in mise's shims and
+/// cargo in ~/.cargo/bin, and neither is on a login PATH on a fresh machine.
+pub fn step_env(state: &State, facts: &Facts) -> BTreeMap<String, String> {
     let mut path: Vec<String> = state
         .bin_dirs()
         .into_iter()

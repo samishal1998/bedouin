@@ -3,6 +3,49 @@
 Dates are release dates. Versions before 0.2.0 are omitted: they predate this
 file and nothing depended on them.
 
+## 0.18.0 — 2026-09-13
+
+**`bedouin pickup` finds what you installed without thinking about it.**
+
+You need ripgrep, you type `apt install ripgrep`, and the config that is
+supposed to rebuild this machine never hears about it. pickup asks each manager
+what a person installed on purpose, subtracts what the config declares, and
+prints the difference with the line that adopts it:
+
+    3 installed by hand, not in the config:
+
+      ripgrep                       bedouin add apt:ripgrep
+      is-odd                        bedouin add npm:is-odd
+      eza                           bedouin add cargo:eza
+
+It reads, never writes, and always exits 0. This is information, not drift, and
+a status that never returns to zero says nothing the second time.
+
+Adopting is the printed line and nothing more. The first `apply` after it asks
+the manager whether the package is already there, finds that it is, installs
+nothing and records the package as yours — which is 0.16.3's work paying for
+itself: without it, adopting a package Bedouin had not installed was how you
+got it uninstalled later.
+
+**What each manager is asked**, because "what did someone install" is a
+different question in each one. apt: manually-installed filtered to priority
+`optional`/`extra` — `apt-mark showmanual` alone is 93 packages on a bare
+image, and the filter cuts that to 3, which on debian:12 is exactly the three
+that were installed by hand. brew: `leaves`, which already means this. cargo:
+`install --list`. npm: globals minus `npm` and `corepack`, which ship with node.
+
+dnf and zypper are not asked, and say so under `--verbose`. `dnf
+repoquery --userinstalled` is right on a real install and returns the whole base
+system in a container, because the image build marked it user-installed; rpm has
+no `Priority` to filter on. The clean signal is `dnf history`, where the first
+transaction is the image and later ones are the user — which means parsing
+transactions rather than reading a list. Marked, not guessed at.
+
+`apply::step_env` is public now. pickup asks managers questions and has to find
+them the way apply does: npm lives in mise's shims and cargo in `~/.cargo/bin`,
+neither of which is on a login PATH. Caught in a container, where pickup found
+every apt package and silently no npm ones.
+
 ## 0.17.0 — 2026-09-13
 
 **npm is a package manager now, and adding the next one is a shorter walk.**

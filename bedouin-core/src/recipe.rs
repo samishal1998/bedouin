@@ -330,6 +330,51 @@ pub fn default_installer(language: &str) -> Manager {
 
 /// The binary that proves a toolchain is present. Not the language name:
 /// nothing on a machine with Rust is called `rust`.
+/// What a person installed on purpose, one name per line.
+///
+/// Not "everything installed" -- that is thousands of packages and useless.
+/// Each manager is asked for the subset a human chose, which every manager
+/// spells differently and two cannot usefully answer at all.
+///
+/// `None` means Bedouin will not guess. dnf and zypper are the interesting
+/// refusal: `dnf repoquery --userinstalled` is accurate on a real install but
+/// returns the whole base system in a container, because the image build
+/// marked it user-installed. rpm has no equivalent of Debian's `Priority`
+/// field to filter on. The clean signal is `dnf history` -- transaction 1 is
+/// the image, later ones are the user -- and reading it means parsing
+/// transactions rather than a list.
+///
+/// ponytail: apt, brew, cargo and npm only. Add dnf when the history-parsing
+/// is worth it; until then it is honest to say nothing.
+pub fn list_manual(m: Manager) -> Option<Cmd> {
+    let sh = |script: &str| Cmd::new(["sh".to_string(), "-c".into(), script.to_string()]);
+    Some(match m {
+        // `apt-mark showmanual` is 93 packages on a bare image, nearly all of
+        // it the base system. Priority is what separates them: required,
+        // important and standard are the distro's, optional and extra are
+        // things somebody asked for. One apt-cache call, not one per package.
+        Manager::Apt => sh(
+            "apt-mark showmanual 2>/dev/null | xargs -r apt-cache --no-all-versions show 2>/dev/null \
+             | awk '/^Package:/{p=$2} /^Priority:/{if($2!=\"required\"&&$2!=\"important\"&&$2!=\"standard\")print p}' \
+             | sort -u",
+        ),
+        // brew already draws this distinction: leaves are the formulae nothing
+        // else depends on.
+        Manager::Brew => Cmd::new(["brew".to_string(), "leaves".into()]),
+        // Header lines are `name vX.Y.Z[ (source)]:` at column zero; the
+        // binaries a crate installed are indented under it.
+        Manager::Cargo => sh("cargo install --list | sed -n 's/^\\([^ ]*\\) v.*:$/\\1/p'"),
+        // --parseable gives paths; the name is whatever follows node_modules,
+        // which keeps @scope/name in one piece. npm and corepack ship with
+        // node, so every machine would otherwise be told to adopt them.
+        Manager::Npm => sh(
+            "npm ls -g --depth=0 --parseable 2>/dev/null | grep '/node_modules/' \
+             | sed 's|.*/node_modules/||' | grep -vx 'npm' | grep -vx 'corepack' | sort -u",
+        ),
+        Manager::Dnf | Manager::Zypper | Manager::Mise | Manager::Rustup => return None,
+    })
+}
+
 /// The package manager a language brings with it.
 ///
 /// node ships npm, so declaring node under `languages:` is what makes
@@ -357,6 +402,42 @@ pub fn probe_bin(language: &str) -> &str {
 mod tests {
     use super::*;
     use crate::facts::{Arch, Distro};
+
+    #[test]
+    fn only_the_managers_that_can_answer_are_asked_what_was_installed_by_hand() {
+        // Silence is the deliberate answer for these. dnf's own
+        // `--userinstalled` returns the whole base system in a container, and
+        // rpm has no Priority field to filter on; mise and rustup install
+        // toolchains, which `languages:` already covers.
+        for m in [
+            Manager::Dnf,
+            Manager::Zypper,
+            Manager::Mise,
+            Manager::Rustup,
+        ] {
+            assert!(list_manual(m).is_none(), "{m} must not guess");
+        }
+        for m in [Manager::Apt, Manager::Brew, Manager::Cargo, Manager::Npm] {
+            assert!(list_manual(m).is_some(), "{m} can answer");
+        }
+        // brew already means "installed on purpose, not as a dependency".
+        assert_eq!(list_manual(Manager::Brew).unwrap().argv, ["brew", "leaves"]);
+
+        // The shell ones are pipelines, so assert the parts that carry the
+        // meaning rather than the whole string.
+        let apt = list_manual(Manager::Apt).unwrap().argv.join(" ");
+        assert!(apt.contains("apt-mark showmanual"), "{apt}");
+        // Priority is what separates the distro's packages from a person's.
+        for p in ["required", "important", "standard"] {
+            assert!(apt.contains(p), "apt filter lost {p}: {apt}");
+        }
+        let npm = list_manual(Manager::Npm).unwrap().argv.join(" ");
+        assert!(npm.contains("--parseable"), "{npm}");
+        // Both ship with node; every machine would otherwise be told to
+        // adopt them.
+        assert!(npm.contains("grep -vx 'npm'"), "{npm}");
+        assert!(npm.contains("grep -vx 'corepack'"), "{npm}");
+    }
 
     #[test]
     fn npm_is_the_users_own_npm() {

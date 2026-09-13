@@ -1,0 +1,68 @@
+---
+title: pickup
+description: Find the things you installed without thinking about it.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Most software arrives on a machine without ceremony. You need `ripgrep`, you
+type `apt install ripgrep`, and you carry on. Six months later the config that
+is supposed to rebuild this machine has never heard of it.
+
+`bedouin pickup` asks each package manager what a person installed on purpose,
+subtracts what the config already declares, and shows you the difference.
+
+```
+$ bedouin pickup
+3 installed by hand, not in the config:
+
+  ripgrep                       bedouin add apt:ripgrep
+  is-odd                        bedouin add npm:is-odd
+  eza                           bedouin add cargo:eza
+
+Adding one records what is already there; it does not reinstall it.
+```
+
+It reads. It never writes, never installs, never removes, and **always exits
+0** — this is information, not drift, and a status that never returns to zero
+tells you nothing the second time you look.
+
+## Adopting one
+
+The printed line is the whole mechanism; there is no separate confirm step:
+
+```
+bedouin add apt:ripgrep
+```
+
+The first `apply` after that asks the manager whether it already has the
+package. It does, so nothing is installed and the package is recorded as
+**yours** rather than Bedouin's — dropping it from the config later will not
+uninstall it. See [doctor & absorb](/bedouin/commands/doctor-absorb/) for the
+same idea applied to files.
+
+## What each manager is asked
+
+| Manager | Question | Why that one |
+|---|---|---|
+| `apt` | manually-installed, priority `optional`/`extra` | `apt-mark showmanual` alone is 93 packages on a bare image, nearly all of it the base system |
+| `brew` | `brew leaves` | brew already means "installed on purpose, not as a dependency" |
+| `cargo` | `cargo install --list` | every entry is deliberate |
+| `npm` | global installs, minus `npm` and `corepack` | those two ship with node |
+
+`dnf` and `zypper` are **not** asked, and say so under `--verbose`. That is a
+gap rather than a decision in principle: `dnf repoquery --userinstalled` is
+right on a real install but returns the whole base system in a container,
+because the image build marked it user-installed, and rpm has no equivalent of
+Debian's `Priority` to filter on. The clean signal is `dnf history` — the first
+transaction is the image, later ones are you — which means parsing transactions
+rather than reading a list.
+
+`mise` and `rustup` are not asked either: they install toolchains, which
+[`languages:`](/bedouin/config/packages/) already covers.
+
+<Aside type="note" title="It only sees managers this machine has">
+Bedouin asks the managers it found. A crate installed with cargo is invisible
+until cargo is on the machine, and npm globals are invisible until node is —
+which is also why `pickup` on a fresh machine is quiet.
+</Aside>
