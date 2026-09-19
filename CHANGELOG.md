@@ -3,6 +3,35 @@
 Dates are release dates. Versions before 0.2.0 are omitted: they predate this
 file and nothing depended on them.
 
+## 0.20.1 — 2026-09-19
+
+Two bugs found by pointing 0.20.0 at a real config.
+
+**A package name with a slash became a directory.** `from: github` names a
+package `org/repo`, and every filename bedouin derives from a package name
+took the slash with it: `eza-community/eza` wanted to write
+`~/.zshrc.d/30-eza-community/eza-aliases.zsh`, which is two path components.
+Derived filenames use the last segment now.
+
+Completion files are named for the *command*, not the package. zsh loads `_gh`
+to complete `gh`; a file called `_cli` (from `cli/cli`) would sit in the
+directory doing nothing. `generate:` already names the command as its first
+word, so that is what the file is called — reduced to a basename, because
+bedouin's own generator names itself by full path.
+
+**A renamed package deleted the file it had just written.** Removals are
+planned last, so `gh` becoming `cli/cli` wrote `_gh` under the new item and
+then unlinked it under the old one. A removal now skips any file another item
+already owns: the record is dropped, the file stays. This is only reachable
+because the fix above makes two different package names produce one filename,
+which is the point of it.
+
+**The matcher prefers a tarball to a zip.** eza publishes
+`eza_x86_64-unknown-linux-musl.tar.gz` beside a `.zip` of the same build, and
+with no preference the two tied and the whole release was refused as
+ambiguous. zip stays a candidate — some projects ship nothing else — it just
+loses to a tarball on a system that does not run Windows.
+
 ## 0.20.0 — 2026-09-13
 
 **`bedouin install org/repo` — packages from GitHub releases.**

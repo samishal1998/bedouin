@@ -1168,11 +1168,11 @@ pub fn build(
             if p.aliases.is_empty() {
                 continue;
             }
-            let file =
-                facts
-                    .shell
-                    .rc_dir
-                    .join(format!("30-{}-aliases.{}", p.name, facts.shell.rc_ext()));
+            let file = facts.shell.rc_dir.join(format!(
+                "30-{}-aliases.{}",
+                crate::writers::file_stem(&p.name),
+                facts.shell.rc_ext()
+            ));
             let content = crate::writers::alias_lines(&p.aliases, cfg.shell);
             let id = format!("rc/{}/aliases", p.name);
             let want = crate::writers::block_digest(&content);
@@ -1227,7 +1227,10 @@ pub fn build(
         }
 
         for (comp_name, argv, pkg_changing) in &wanted {
-            let dest = crate::writers::completions_file(cfg.shell, &comp_dir, comp_name);
+            // The id stays the package -- that is the state identity -- while
+            // the file is named for the command the shell will complete.
+            let file_name = crate::writers::completion_name(comp_name, argv);
+            let dest = crate::writers::completions_file(cfg.shell, &comp_dir, file_name);
             let id = format!("completion/{comp_name}");
             // Content-addressed on the COMMAND, not on its output: the output
             // cannot be known until it runs, and plan does not run it. Editing

@@ -288,6 +288,30 @@ pub fn completions_dir(
 }
 
 /// The file one tool's completions are written to.
+/// A package name reduced to something that can be part of a filename.
+///
+/// `from: github` names a package `org/repo`, and every file bedouin derives
+/// from a package name would otherwise gain a directory separator --
+/// `30-eza-community/eza-aliases.zsh` is two path components, not one.
+/// The last segment is both safe and the part anyone would recognise.
+pub fn file_stem(package: &str) -> &str {
+    package.rsplit('/').next().unwrap_or(package)
+}
+
+/// What a completion file must be called for the shell to find it.
+///
+/// The command being completed, not the package providing it: zsh loads
+/// `_gh` to complete `gh`, and a file named after the package would sit in
+/// the directory doing nothing. `generate:` already names the command as its
+/// first word -- `gh completion -s zsh` -- and for bedouin's own completions
+/// that word is a path, so it is reduced to its basename.
+pub fn completion_name<'a>(package: &'a str, argv: &'a [String]) -> &'a str {
+    argv.first()
+        .map(|a| a.rsplit('/').next().unwrap_or(a))
+        .filter(|a| !a.is_empty())
+        .unwrap_or_else(|| file_stem(package))
+}
+
 pub fn completions_file(shell: Shell, dir: &std::path::Path, name: &str) -> std::path::PathBuf {
     match shell {
         Shell::Zsh => dir.join(format!("_{name}")),

@@ -206,7 +206,15 @@ fn score(name_lc: &str, t: Target, repo: &str) -> i32 {
             s += 10;
         }
     }
-    if ARCHIVE_EXTS.iter().any(|e| name_lc.ends_with(e)) {
+    // A tarball beats a zip of the same build. Projects commonly publish both
+    // -- eza ships `eza_x86_64-unknown-linux-musl.tar.gz` beside a `.zip` of
+    // the identical binary -- and without a preference the two tie and the
+    // whole release is refused as ambiguous. zip is the Windows-shaped choice,
+    // and bedouin does not install on Windows; it stays a candidate because
+    // some projects publish nothing else.
+    if name_lc.ends_with(".zip") {
+        s += 3;
+    } else if ARCHIVE_EXTS.iter().any(|e| name_lc.ends_with(e)) {
         s += 5;
     }
     if t.os == Os::Linux && name_lc.ends_with(".appimage") {
@@ -1209,6 +1217,28 @@ mod tests {
         assert_eq!(
             picked(&both, alpine, "tool"),
             "tool-1.0-x86_64-unknown-linux-musl.tar.gz"
+        );
+    }
+
+    #[test]
+    fn the_same_build_as_tarball_and_zip_is_not_a_tie() {
+        // eza publishes both, and before there was a preference this refused
+        // the whole release as ambiguous. A zip is the Windows-shaped choice
+        // and bedouin does not install on Windows.
+        let a = assets(&[
+            "eza_x86_64-unknown-linux-musl.tar.gz",
+            "eza_x86_64-unknown-linux-musl.zip",
+        ]);
+        assert_eq!(
+            picked(&a, linux64(), "eza"),
+            "eza_x86_64-unknown-linux-musl.tar.gz"
+        );
+        // But a zip on its own is still installable: some projects ship
+        // nothing else.
+        let only_zip = assets(&["tool-1.0-linux-x86_64.zip"]);
+        assert_eq!(
+            picked(&only_zip, linux64(), "tool"),
+            "tool-1.0-linux-x86_64.zip"
         );
     }
 

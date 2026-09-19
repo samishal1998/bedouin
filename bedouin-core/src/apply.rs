@@ -492,6 +492,20 @@ impl Executor<'_> {
                 // Files Bedouin created outright -- or, for a repo, the whole
                 // clone.
                 for f in &prev.owned_files {
+                    // Unless something else now owns it. Removals are planned
+                    // last, so by the time one runs every surviving item has
+                    // recorded what it wrote -- and renaming a package
+                    // (`gh` to `cli/cli`) means the new item has already
+                    // written the very file the old item is being dropped for.
+                    // Deleting it here would undo the write that just happened.
+                    if self
+                        .state
+                        .items
+                        .iter()
+                        .any(|(id, it)| id != &item.id && it.owned_files.contains(f))
+                    {
+                        continue;
+                    }
                     let p = Path::new(f);
                     // A symlink is removed as a link. Following it would delete
                     // what it points at, which bedouin does not own.
