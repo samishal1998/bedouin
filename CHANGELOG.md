@@ -3,6 +3,27 @@
 Dates are release dates. Versions before 0.2.0 are omitted: they predate this
 file and nothing depended on them.
 
+## 0.20.2 — 2026-09-20
+
+`bedouin install` had no container coverage, which is the same gap 0.16.2
+found for `subdir:` and hooks: the feature was verified by hand and then the
+verification was thrown away. There is a fixture now, and a CI row, covering
+both checksum shapes, the refusal path, that the archive names the binary,
+that the tag is recorded, and the 0.20.1 case where a rename must not delete
+the file it just wrote.
+
+**A token can come from the environment.** `$GH_TOKEN` and `$GITHUB_TOKEN` are
+read before `gh auth token` is asked — CI has no `gh` to ask, and 60 anonymous
+requests an hour shared across every runner behind one address is not a budget
+a test can rely on. `step_env` carries both through, so `from: github` resolves
+with the same token during apply.
+
+**Two errors that said nothing useful.** A 401 now says the token was rejected
+and where to look for it, rather than `curl: (22) ... error: 401`. A 404 now
+says the repository may be private and invisible to this token, because GitHub
+answers 404 rather than 403 to someone who cannot see a repository — so "it
+does not exist" and "you cannot read it" are the same reply.
+
 ## 0.20.1 — 2026-09-19
 
 Two bugs found by pointing 0.20.0 at a real config.

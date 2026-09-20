@@ -1,0 +1,16 @@
+# `from: github`, which had no container coverage at all until this fixture.
+# Two entries on purpose: one pinned to a tag, one following latest, because
+# they take different code paths through `resolve`.
+version: 0
+shell: bash
+packages:
+  # Pinned, and it publishes a .sha256 beside every asset -- so this is also
+  # the checksum path.
+  - name: BurntSushi/ripgrep
+    from: github
+    version: 15.2.0
+  # Unpinned, and its binary is not named after the repository: the archive
+  # contains `lazygit`, which is the same name, but the checksum is a single
+  # shared checksums.txt rather than a sidecar.
+  - name: jesseduffield/lazygit
+    from: github

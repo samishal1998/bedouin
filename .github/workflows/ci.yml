@@ -83,6 +83,15 @@ jobs:
             pre: "true"
             cfg: tests/docker/newdistro
             script: tests/docker/newdistro/smoke.sh
+          # `from: github` and `bedouin install`. The only smoke row that needs
+          # the network, which is why it is its own fixture -- the others have
+          # to work on a machine with none. GITHUB_TOKEN is passed in below:
+          # 60 anonymous requests an hour, shared across every runner behind
+          # one address, is not a budget this can rely on.
+          - image: ubuntu:24.04
+            pre: "sh /bootstrap.sh"
+            cfg: tests/docker/install
+            script: tests/docker/install/smoke.sh
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -104,4 +113,6 @@ jobs:
             -v "$PWD/${{ matrix.cfg }}:/cfg:ro" \
             -v "$PWD/${{ matrix.script }}:/smoke.sh:ro" \
             -v "$PWD/bootstrap.sh:/bootstrap.sh:ro" \
-            -e HOME=/root ${{ matrix.image }} sh -c '${{ matrix.pre }} && /smoke.sh'
+            -e HOME=/root -e GITHUB_TOKEN ${{ matrix.image }} sh -c '${{ matrix.pre }} && /smoke.sh'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}

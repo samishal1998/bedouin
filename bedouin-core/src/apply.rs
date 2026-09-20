@@ -167,6 +167,11 @@ pub fn step_env(state: &State, facts: &Facts) -> BTreeMap<String, String> {
         // "keys forwarded for the clone" true for the config repo and false
         // for every repo the config declares.
         "SSH_AUTH_SOCK",
+        // `from: github` resolves releases during apply, and the token that
+        // lifts the anonymous rate limit is no use if it does not survive the
+        // constructed environment.
+        "GH_TOKEN",
+        "GITHUB_TOKEN",
     ] {
         if let Some(v) = facts.env.get(keep) {
             env.insert(keep.into(), v.clone());

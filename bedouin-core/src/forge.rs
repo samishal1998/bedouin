@@ -368,6 +368,20 @@ impl From<ApiRelease> for Release {
 /// against 5000, which is the difference between "works" and "works until you
 /// install a third thing".
 pub fn token(host: &dyn Host, facts: &crate::facts::Facts) -> Option<String> {
+    // The environment first: CI sets one of these and has no `gh` to ask, and
+    // a machine behind a shared address burns through 60 anonymous requests
+    // between one person and the next. Checked before the subprocess because
+    // it is also simply cheaper.
+    for k in ["GH_TOKEN", "GITHUB_TOKEN"] {
+        if let Some(t) = host
+            .env()
+            .get(k)
+            .map(|v| v.trim())
+            .filter(|v| !v.is_empty())
+        {
+            return Some(t.to_string());
+        }
+    }
     host.which("gh", &crate::plan::system_path(facts))?;
     let mut out = String::new();
     let mut cmd = Cmd::new(["gh", "auth", "token"]);
@@ -419,8 +433,21 @@ fn api(host: &dyn Host, url: &str, token: Option<&str>) -> Result<String, String
                     .into(),
             );
         }
+        if err.contains("401") {
+            return Err(
+                "GitHub rejected the token (401)\n  Check $GH_TOKEN and $GITHUB_TOKEN, \
+                 or `gh auth status` if the token came from gh. Unset them to fall \
+                 back to anonymous requests"
+                    .into(),
+            );
+        }
         if err.contains("404") {
-            return Err(format!("no such repository or release: {url}"));
+            // A private repository answers 404 to someone who cannot see it,
+            // so "it does not exist" and "you cannot read it" look identical.
+            return Err(format!(
+                "no such repository or release, or it is private and this token \
+                 cannot see it: {url}"
+            ));
         }
         return Err(format!("GitHub request failed: {}", err.trim()));
     }
