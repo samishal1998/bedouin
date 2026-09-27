@@ -3,6 +3,23 @@
 Dates are release dates. Versions before 0.2.0 are omitted: they predate this
 file and nothing depended on them.
 
+## 0.21.0 — 2026-09-27
+
+**Edits to the config are committed and pushed.** `add`, `remove`, `alias`,
+`completions`, `absorb` and the web UI each commit their edit and push it when
+the branch has an upstream. Before, the edit sat uncommitted, the next machine
+never saw it, and `bedouin sync` then refused the dirty tree it had left.
+
+On by default, and a no-op when the config is not a git repository. To batch
+edits, `bedouin sync --auto off`, make them, then `bedouin sync` once. The
+setting is the clone's own `git config bedouin.autosync`, not a line in
+bedouin.yaml, so each machine has its own and turning it off is not itself a
+change to commit.
+
+**`bedouin sync` pushes as well as pulls.** It commits local changes rather
+than refusing them, pulls with `--rebase` so those commits land on top of the
+remote, and pushes. A conflict undoes the pull and stops.
+
 ## 0.20.2 — 2026-09-20
 
 `bedouin install` had no container coverage, which is the same gap 0.16.2

@@ -8,6 +8,7 @@ pub mod envfile;
 pub mod facts;
 pub mod forge;
 pub mod gitcmd;
+pub mod gitsync;
 pub mod host;
 pub mod loader;
 pub mod plan;

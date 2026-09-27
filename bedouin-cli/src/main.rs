@@ -73,6 +73,11 @@ enum Command {
     Sync {
         #[arg(short = 'y', long)]
         yes: bool,
+        /// Turn committing and pushing after each edit on or off for this
+        /// clone, then exit. Off is for batching edits: make them, then run
+        /// `bedouin sync` once.
+        #[arg(long, value_name = "on|off")]
+        auto: Option<String>,
     },
     /// Set an alias in the config, then apply.
     Alias {
@@ -575,6 +580,7 @@ fn edit_then_apply(
         }
     };
     println!("{done}");
+    autosync(host, entry, done);
     if no_apply {
         return ExitCode::SUCCESS;
     }
@@ -588,6 +594,25 @@ fn edit_then_apply(
         return ExitCode::SUCCESS;
     }
     run_apply(host, after, verbose, &Default::default())
+}
+
+/// Commit (and push) an edit bedouin just made to the config, and say so in
+/// one line. Never fails the command: the edit is on disk either way.
+fn autosync(host: &OsHost, entry: &std::path::Path, msg: &str) {
+    use bedouin_core::gitsync::Synced;
+    let root = entry.parent().unwrap_or(std::path::Path::new("."));
+    match bedouin_core::gitsync::after_edit(host, root, msg) {
+        Synced::NotARepo => {}
+        Synced::Off => println!(
+            "  git sync is off for this config; `bedouin sync` commits and pushes"
+        ),
+        Synced::Committed => println!("  committed"),
+        Synced::Pushed => println!("  committed and pushed"),
+        Synced::PushFailed(e) => eprintln!(
+            "bedouin: committed, but the push failed: {e}\n  `bedouin sync` pulls and pushes again"
+        ),
+        Synced::Failed(e) => eprintln!("bedouin: the edit is saved but was not committed: {e}"),
+    }
 }
 
 /// Applying changes a machine, so say so and wait.
@@ -869,32 +894,60 @@ fn main() -> ExitCode {
     };
 
     match cli.command {
-        Command::Sync { yes } => {
+        Command::Sync { yes, auto } => {
+            use bedouin_core::gitsync;
             let root = &outcome.loaded.root;
-            // A dirty tree means uncommitted local edits; a pull would either
-            // fail or bury them. Neither is ours to decide.
-            match git(root, &["status", "--porcelain"]) {
-                Err(e) => {
-                    eprintln!(
-                        "bedouin: {} is not a git repository, or git failed: {e}",
-                        root.display()
-                    );
-                    return ExitCode::FAILURE;
-                }
-                Ok(s) if !s.is_empty() => {
-                    eprintln!("bedouin: {} has uncommitted changes:", root.display());
-                    eprintln!("{s}");
-                    eprintln!("  Commit or stash them first -- sync will not decide what happens to your edits");
-                    return ExitCode::FAILURE;
-                }
-                Ok(_) => {}
+            if !gitsync::is_repo(&host, root) {
+                eprintln!("bedouin: {} is not a git repository", root.display());
+                return ExitCode::FAILURE;
             }
-            // --ff-only: sync pulls, it does not merge. A divergence is a
-            // decision for the user.
-            match git(root, &["pull", "--ff-only"]) {
-                Ok(out) => println!("{out}"),
+            if let Some(v) = auto {
+                let on = match v.as_str() {
+                    "on" | "true" => true,
+                    "off" | "false" => false,
+                    other => {
+                        eprintln!("bedouin: --auto takes on or off, not `{other}`");
+                        return ExitCode::FAILURE;
+                    }
+                };
+                return match gitsync::set_enabled(&host, root, on) {
+                    Ok(()) => {
+                        println!(
+                            "git sync {} for {}",
+                            if on { "on" } else { "off" },
+                            root.display()
+                        );
+                        ExitCode::SUCCESS
+                    }
+                    Err(e) => {
+                        eprintln!("bedouin: {e}");
+                        ExitCode::FAILURE
+                    }
+                };
+            }
+            // Local edits are committed rather than refused: with git sync off
+            // this is where a batch of them lands, and with it on it catches
+            // edits made by hand.
+            match gitsync::commit_all(&host, root, "bedouin sync: local changes") {
+                Ok(true) => println!("committed local changes"),
+                Ok(false) => {}
                 Err(e) => {
-                    eprintln!("bedouin: git pull failed: {e}");
+                    eprintln!("bedouin: could not commit local changes: {e}");
+                    return ExitCode::FAILURE;
+                }
+            }
+            // Rebase rather than --ff-only: with local commits a fast-forward
+            // is impossible, and replaying them on top is what anyone wants
+            // from a config repo. A conflict undoes the pull and stops here.
+            if let Err(e) = gitsync::pull(&host, root) {
+                eprintln!("bedouin: git pull failed: {e}");
+                return ExitCode::FAILURE;
+            }
+            match gitsync::push(&host, root) {
+                Ok(true) => println!("pushed"),
+                Ok(false) => {}
+                Err(e) => {
+                    eprintln!("bedouin: git push failed: {e}");
                     return ExitCode::FAILURE;
                 }
             }
@@ -1118,6 +1171,7 @@ fn main() -> ExitCode {
                     }
                 };
             println!("Added `{name}` from `{manager}` to {}.", entry.display());
+            autosync(&host, entry, &format!("Add {manager}:{name}"));
             if no_apply {
                 return ExitCode::SUCCESS;
             }
@@ -1340,6 +1394,7 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             }
             println!("\nAbsorbed {absorbed} edit(s) into {}.", entry.display());
+            autosync(&host, &entry, &format!("Absorb {absorbed} hand edit(s)"));
             // The config now matches the disk, but state still records the old
             // hash, so doctor keeps reporting drift until apply re-records it.
             // Applying writes the same bytes back -- it is the bookkeeping that
@@ -1553,6 +1608,7 @@ fn main() -> ExitCode {
                 section.label(),
                 entry.display()
             );
+            autosync(&host, entry, &format!("Remove {} {name}", section.label()));
             if no_apply {
                 println!("Config edited only. Run `bedouin apply` when ready.");
                 return ExitCode::SUCCESS;

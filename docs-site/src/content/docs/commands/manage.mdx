@@ -78,13 +78,34 @@ real shell syntax, use the `--` form and skip the guessing.
 bedouin sync
 ```
 
-Pulls the config repository and applies what changed:
+Brings the config repository and this machine in step:
 
-1. **Refuses a dirty tree.** Uncommitted edits are yours; sync will not decide
-   what happens to them.
-2. `git pull --ff-only` — a divergence is your call, not a merge Bedouin
-   invents.
-3. Re-plans and shows it. **The plan is the diff.**
-4. Asks before applying.
+1. **Commits local changes** — a batch of edits made with git sync off, or
+   anything edited by hand. `.gitignore` is what keeps `.env.bedouin` out.
+2. `git pull --rebase`, so your commits land on top of whatever the remote
+   gained. A conflict undoes the pull and stops: that one is yours to resolve.
+3. Pushes, when the branch has an upstream.
+4. Re-plans and shows it. **The plan is the diff.**
+5. Asks before applying.
+
+## Git sync after every edit
+
+`add`, `remove`, `alias`, `completions`, `absorb` and the web UI each commit
+their edit to the config repository and push it. That is on by default, and
+does nothing if the config is not a git repository.
+
+To batch several edits into one commit, turn it off, make them, and sync once:
+
+```sh
+bedouin sync --auto off
+bedouin add apt:jq --no-apply
+bedouin add apt:htop --no-apply
+bedouin sync                  # one commit, one push, then apply
+bedouin sync --auto on
+```
+
+The setting lives in the clone's own git config (`bedouin.autosync`), not in
+`bedouin.yaml`, so each machine has its own and switching it is not itself a
+change to commit.
 
 No credential handling: it uses whatever git setup you already have.

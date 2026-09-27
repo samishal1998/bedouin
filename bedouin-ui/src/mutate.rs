@@ -155,6 +155,11 @@ fn apply_edit(
     let after = edit(&text).map_err(|e| problem(StatusCode::CONFLICT, &e.to_string()))?;
     run::write_verified(&host, &entry, &after, ctx.config.as_deref(), &ctx.cwd)
         .map_err(|e| problem(StatusCode::CONFLICT, &e.to_string()))?;
+    // Same as the CLI edits: committed and pushed unless this clone turned it
+    // off. Best effort -- the edit is saved either way.
+    if let Some(root) = entry.parent() {
+        let _ = bedouin_core::gitsync::after_edit(&host, root, "Edit config from bedouin ui");
+    }
 
     // The page redraws from the snapshot, so hand it back rather than making
     // it ask again and race the next edit.
