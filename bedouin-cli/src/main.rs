@@ -603,9 +603,9 @@ fn autosync(host: &OsHost, entry: &std::path::Path, msg: &str) {
     let root = entry.parent().unwrap_or(std::path::Path::new("."));
     match bedouin_core::gitsync::after_edit(host, root, msg) {
         Synced::NotARepo => {}
-        Synced::Off => println!(
-            "  git sync is off for this config; `bedouin sync` commits and pushes"
-        ),
+        Synced::Off => {
+            println!("  git sync is off for this config; `bedouin sync` commits and pushes")
+        }
         Synced::Committed => println!("  committed"),
         Synced::Pushed => println!("  committed and pushed"),
         Synced::PushFailed(e) => eprintln!(
