@@ -112,6 +112,11 @@ impl Mux {
             // forgotten master does not outlive the afternoon.
             "-o".into(),
             "ControlPersist=120".into(),
+            // "Shared connection to host closed." is logged at INFO each time
+            // a stage ends, and says nothing a person needs. Errors and host
+            // key warnings are above it and still shown.
+            "-o".into(),
+            "LogLevel=ERROR".into(),
         ]
     }
 }
@@ -130,13 +135,23 @@ impl Drop for Mux {
     }
 }
 
-/// The install stage. `assignments` go in front of `sh`, not `curl`:
-/// `A=1 curl url | sh` sets A for curl alone, and the script that reads
-/// BEDOUIN_VERSION is the one on the other side of the pipe.
-fn install_script(assignments: Option<&str>) -> String {
+/// The install stage: make sure the machine has a bedouin at least as new as
+/// the one doing the driving.
+///
+/// "Already installed" used to be enough, and it let a machine provisioned last
+/// month reject `--skip` because that flag arrived this month. What this run
+/// passes to the remote bedouin was written for THIS version, so an older one
+/// is replaced by it and a newer one is left alone (`sort -V` picks the older).
+///
+/// `assignments` go in front of `sh`, not `curl`: `A=1 curl url | sh` sets A for
+/// curl alone, and the script that reads BEDOUIN_VERSION is on the other side
+/// of the pipe. They come after ours, so a person's own BEDOUIN_VERSION wins.
+fn install_script(want: &str, assignments: Option<&str>) -> String {
     format!(
-        "command -v bedouin >/dev/null 2>&1 || [ -x \"$HOME/.local/bin/bedouin\" ] || \
-         curl -fsSL {INSTALL_URL} | {}sh",
+        r#"want='{want}'
+have=$( {{ bedouin --version || "$HOME/.local/bin/bedouin" --version; }} 2>/dev/null | awk '{{print $2}}' | head -n1)
+if [ -n "$have" ] && [ "$(printf '%s\n%s\n' "$want" "$have" | sort -V | head -n1)" = "$want" ]; then exit 0; fi
+curl -fsSL {INSTALL_URL} | BEDOUIN_VERSION="v$want" {}sh"#,
         assignments.map(|o| format!("{o} ")).unwrap_or_default()
     )
 }
@@ -214,7 +229,10 @@ pub fn ssh(
     // person watching sees the walk rather than one long silence.
     let stages: [(&str, String); 4] = [
         ("tools", BOOTSTRAP_TOOLS.to_string()),
-        ("install bedouin", install_script(opts.install.as_deref())),
+        (
+            "install bedouin",
+            install_script(env!("CARGO_PKG_VERSION"), opts.install.as_deref()),
+        ),
         (
             "clone config",
             format!(
@@ -571,18 +589,75 @@ mod tests {
 
     #[test]
     fn install_assignments_reach_the_script_not_curl() {
-        let s = install_script(Some("BEDOUIN_VERSION=0.21.0 BEDOUIN_BIN_DIR=/opt/b"));
-        let (fetch, run) = s.rsplit_once('|').expect("a pipe");
+        let s = install_script("0.22.0", Some("BEDOUIN_BIN_DIR=/opt/b"));
+        let (fetch, run) = s.rsplit_once("| ").expect("a pipe");
         assert!(
-            !fetch.contains("BEDOUIN_VERSION"),
+            !fetch.contains("BEDOUIN_BIN_DIR"),
             "set for curl, not sh: {s}"
         );
+        // After ours, so a person's own BEDOUIN_VERSION wins.
         assert!(
-            run.contains("BEDOUIN_VERSION=0.21.0 BEDOUIN_BIN_DIR=/opt/b sh"),
+            run.contains("BEDOUIN_VERSION=\"v$want\" BEDOUIN_BIN_DIR=/opt/b sh"),
             "{s}"
         );
-        // And with none, nothing changes.
-        assert!(install_script(None).ends_with("| sh"));
+    }
+
+    /// Runs the real stage in a sandbox: a fake `bedouin` that reports a chosen
+    /// version, and a fake `curl` that records that the installer was fetched.
+    fn reinstalls(remote: Option<&str>, local: &str) -> bool {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!(
+            "bedouin-install-guard-{}-{}-{}",
+            std::process::id(),
+            local,
+            remote.unwrap_or("none")
+        ));
+        let bin = dir.join("bin");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&bin).unwrap();
+        let script = |name: &str, body: &str| {
+            let p = bin.join(name);
+            std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        };
+        if let Some(v) = remote {
+            script("bedouin", &format!("echo 'bedouin {v}'"));
+        }
+        // The installer, as `curl url | sh` would run it.
+        script("curl", &format!("echo 'touch {}/fetched'", dir.display()));
+        let status = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(install_script(local, None))
+            .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+            .env("HOME", &dir)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let fetched = dir.join("fetched").exists();
+        let _ = std::fs::remove_dir_all(&dir);
+        fetched
+    }
+
+    #[test]
+    fn the_machine_is_brought_up_to_this_version_and_never_down() {
+        // The bug: bedouin 0.21 on the machine, `--skip` passed by 0.22.
+        assert!(
+            reinstalls(Some("0.21.0"), "0.22.0"),
+            "an older bedouin must be replaced"
+        );
+        assert!(
+            reinstalls(Some("0.9.0"), "0.10.0"),
+            "numeric, not alphabetic: 0.9 < 0.10"
+        );
+        assert!(
+            !reinstalls(Some("0.22.0"), "0.22.0"),
+            "the same version needs nothing"
+        );
+        assert!(
+            !reinstalls(Some("0.23.1"), "0.22.0"),
+            "a newer one must not be downgraded"
+        );
+        assert!(reinstalls(None, "0.22.0"), "none at all is installed");
     }
 
     #[test]

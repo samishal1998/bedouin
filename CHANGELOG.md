@@ -3,6 +3,26 @@
 Dates are release dates. Versions before 0.2.0 are omitted: they predate this
 file and nothing depended on them.
 
+## 0.22.1 — 2026-10-02
+
+**`bedouin ssh` brings the machine's bedouin up to the one driving it.** The
+install stage skipped whenever a bedouin was present, so a machine provisioned
+before 0.22.0 answered `--apply-options "--skip language/go"` with
+`error: unexpected argument '--skip'`: the options were written for this
+version and handed to an older one. The stage now compares versions with
+`sort -V` and installs the matching release when the machine's is older. Equal
+or newer is left alone, so it never downgrades. The comparison is numeric (0.9
+is older than 0.10), and the test runs the real shell in a sandbox with a fake
+`bedouin` and `curl` rather than checking the string.
+
+If you drive `bedouin ssh` from a build that has not been released, a machine
+with an older bedouin will fail the install stage with a 404 for that tag. Use
+a released build, or `--install-options BEDOUIN_VERSION=v0.22.0` to say which.
+
+`Shared connection to host closed.` is gone. It was ssh logging at INFO each
+time a stage ended on the shared connection; errors and host-key warnings are
+still shown.
+
 ## 0.22.0 — 2026-10-02
 
 **A language download can fall back to a mirror.** `go@1.23.12` was a 404 from
