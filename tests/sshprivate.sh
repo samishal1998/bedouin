@@ -6,6 +6,7 @@
 set -eu
 B=$(realpath "$1"); T=$(mktemp -d); N=bedsshtest$$
 cleanup() { docker rm -f $N-git $N-tgt >/dev/null 2>&1; docker network rm $N >/dev/null 2>&1
+            docker rmi -f $N-git $N-tgt >/dev/null 2>&1
             [ -n "${SSH_AGENT_PID:-}" ] && ssh-agent -k >/dev/null 2>&1; rm -rf "$T"; }
 trap cleanup EXIT
 cd "$T"
