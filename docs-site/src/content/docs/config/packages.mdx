@@ -90,6 +90,40 @@ languages:
 `rustup component add` and toolchain pinning expect. Anything else uses mise,
 which fetches upstream builds too — the source, just not a first-party script.
 
+### When the download fails
+
+A toolchain comes from a download, and downloads fail for reasons that are
+about the machine: a proxy that answers 404 for one host, a region where it is
+blocked. `mirrors:` lists other places to fetch from, tried in order **after**
+the default fails:
+
+```yaml
+languages:
+  - name: go
+    version: "1.23"
+    installer: mise
+    mirrors: ["https://golang.google.cn/dl"]
+```
+
+It works for `go` and `node` (through mise) and `rust` (through rustup).
+Anything else is refused when the config is read, because a mirror that is
+accepted and never used looks exactly like a mirror that failed.
+
+<Aside type="caution" title="Not every mirror works">
+mise checks each Go download against a `.sha256` file served beside it, so the
+mirror must serve that too. Of the Go mirrors tried while writing this, aliyun
+and nju serve the tarball and return 404 for the checksum, and others do not
+carry the version at all. The checksum comes from the mirror as well, so a
+mirror is trusted for integrity as well as for the bytes. Try one with
+`curl -I <mirror>/go1.23.12.linux-amd64.tar.gz.sha256` before relying on it.
+Note too that `golang.google.cn` redirects to `dl.google.com` outside China, so
+it helps only where that host is the one being blocked.
+</Aside>
+
+If every source fails, the error names the mirrors that were tried, and
+`bedouin apply --skip language/go` leaves it out so the rest of the run
+continues.
+
 A package with `from: cargo` and no `rust` language gets one added implicitly,
 with a warning. The implication is stated, never silent.
 

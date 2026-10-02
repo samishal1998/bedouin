@@ -3,6 +3,46 @@
 Dates are release dates. Versions before 0.2.0 are omitted: they predate this
 file and nothing depended on them.
 
+## 0.22.0 — 2026-10-02
+
+**A language download can fall back to a mirror.** `go@1.23.12` was a 404 from
+one machine's network while `dl.google.com` served it fine from another, and the
+whole `bedouin ssh` stopped at `language/go`. A language now takes `mirrors:`,
+tried in order after the default source fails:
+
+    languages:
+      - {name: go, version: "1.23", installer: mise, mirrors: ["https://golang.google.cn/dl"]}
+
+Works for go and node through mise and rust through rustup. Anything else is
+refused when the config is read, since a mirror that is accepted and never used
+looks exactly like one that failed. If every source fails, the error names the
+mirrors that were tried.
+
+Verified for real, not just against a fake: with `dl.google.com` made
+unreachable, a plain config fails at `language/go` and the same config with a
+mirror installs go 1.23.12. It is also worth knowing what did **not** work. mise
+checks every Go download against a `.sha256` served beside it, and the popular
+third-party mirrors (aliyun, nju) serve the tarball but 404 on that file, so
+they fail; others do not carry the version. `golang.google.cn` serves both but
+redirects to `dl.google.com` outside China. There is no built-in default
+mirror, because the one I would have shipped does not help where it matters.
+
+**`bedouin ssh` takes options for each stage it runs on the machine.**
+`--install-options`, `--clone-options` and `--apply-options`, with
+`$BEDOUIN_INSTALL_OPTIONS`, `$BEDOUIN_CLONE_OPTIONS` and `$BEDOUIN_APPLY_OPTIONS`
+as the fallback; a flag wins. The apply options go to `bedouin sync`, so
+`--apply-options "--skip language/go"` gets a provisioning past a step that
+cannot work yet. They are handed to the remote shell as written. The install
+options are assignments for the install script and are placed after the pipe,
+since `A=1 curl url | sh` sets A for curl alone.
+
+**`bedouin sync` has `--skip`**, as `apply` always did. It is what the last
+stage runs.
+
+`tests/sshprivate.sh` now preloads the binary under test onto the target, so the
+remote half of a run is the build being tested rather than the last release. It
+covers the options, and that a flag beats the environment.
+
 ## 0.21.1 — 2026-10-02
 
 **`bedouin ssh` can clone a private repository.** It failed with

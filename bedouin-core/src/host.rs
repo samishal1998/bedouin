@@ -436,6 +436,10 @@ pub struct FakeHost {
     pub symlinks: std::cell::RefCell<BTreeMap<PathBuf, PathBuf>>,
     /// argv joined by a space -> what running it does.
     pub commands: BTreeMap<String, FakeRun>,
+    /// (argv, variable, value) -> what running it does when that variable is
+    /// set that way. Consulted before `commands`: a mirror is the same command
+    /// with a different environment, and argv alone cannot tell them apart.
+    pub env_commands: Vec<(String, String, String, FakeRun)>,
     pub binaries: Vec<PathBuf>,
     pub env: BTreeMap<String, String>,
     /// Every command actually run, in order, for assertions.
@@ -495,6 +499,12 @@ impl FakeHost {
         self
     }
 
+    pub fn with_command_env(mut self, argv: &str, var: &str, value: &str, run: FakeRun) -> Self {
+        self.env_commands
+            .push((argv.into(), var.into(), value.into(), run));
+        self
+    }
+
     pub fn with_binary(mut self, p: impl Into<PathBuf>) -> Self {
         self.binaries.push(p.into());
         self
@@ -519,10 +529,13 @@ impl Host for FakeHost {
         let Some(program) = cmd.argv.first() else {
             return Err(HostError::new("empty command"));
         };
-        let run = self
-            .commands
-            .get(&cmd.display())
-            .cloned()
+        let by_env = self
+            .env_commands
+            .iter()
+            .find(|(a, v, val, _)| *a == cmd.display() && cmd.env.get(v) == Some(val))
+            .map(|(_, _, _, r)| r.clone());
+        let run = by_env
+            .or_else(|| self.commands.get(&cmd.display()).cloned())
             .unwrap_or(FakeRun {
                 code: 127,
                 stderr: vec![format!("{program}: command not found")],

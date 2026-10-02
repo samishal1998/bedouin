@@ -79,6 +79,9 @@ pub enum Payload {
         installer: Manager,
         version: Option<String>,
         bin_dirs: Vec<PathBuf>,
+        /// Absent in plan artifacts written before mirrors existed.
+        #[serde(default)]
+        mirrors: Vec<String>,
     },
     Package {
         manager: Manager,
@@ -479,6 +482,7 @@ pub fn build(
             name: "rust".into(),
             version: None,
             installer: Some(Manager::Rustup),
+            mirrors: Vec::new(),
             resolved_from: Default::default(),
         });
     }
@@ -599,6 +603,7 @@ pub fn build(
                 installer,
                 version: l.version.clone(),
                 bin_dirs: bin_dirs.clone(),
+                mirrors: l.mirrors.clone(),
             },
         });
         declared_ids.insert(id);

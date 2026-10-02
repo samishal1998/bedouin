@@ -540,6 +540,22 @@ pub fn list_manual(m: Manager) -> Option<Cmd> {
     })
 }
 
+/// The environment variable that points a language's downloads somewhere else.
+///
+/// Verified against mise rather than assumed: with the variable set the
+/// download URL changes to the mirror, and mise fetches the checksum from the
+/// same place -- so a mirror is trusted for integrity as well as for bytes.
+/// `None` means bedouin does not know how to redirect that language, which is
+/// reported when the config is read rather than ignored at install time.
+pub fn mirror_env(language: &str, installer: Manager) -> Option<&'static str> {
+    match (installer, language) {
+        (Manager::Mise, "go") => Some("MISE_GO_DOWNLOAD_MIRROR"),
+        (Manager::Mise, "node") => Some("MISE_NODE_MIRROR_URL"),
+        (Manager::Rustup, "rust") => Some("RUSTUP_DIST_SERVER"),
+        _ => None,
+    }
+}
+
 /// The package manager a language brings with it.
 ///
 /// node ships npm, so declaring node under `languages:` is what makes

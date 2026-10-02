@@ -28,6 +28,30 @@ the only credential the machine gets is your ssh agent.
 All four stages share **one connection**, so a password or key passphrase is
 asked for once, not four times. It closes when the run ends.
 
+### Options for each stage
+
+`bedouin ssh` runs bedouin on the machine for you, so the options you would pass
+to those commands need a way in. Each stage takes a flag, with an environment
+variable as the fallback; a flag wins:
+
+| Stage | Flag | Environment | Goes to |
+|---|---|---|---|
+| install bedouin | `--install-options` | `BEDOUIN_INSTALL_OPTIONS` | assignments in front of the install script, e.g. `BEDOUIN_VERSION=0.21.1` |
+| clone config | `--clone-options` | `BEDOUIN_CLONE_OPTIONS` | `git clone`, e.g. `--branch dev --depth 1` |
+| apply | `--apply-options` | `BEDOUIN_APPLY_OPTIONS` | `bedouin sync -y`, e.g. `--skip language/go` |
+
+```sh
+bedouin ssh you@host --apply-options "--skip language/go"
+BEDOUIN_APPLY_OPTIONS="--skip language/go,package/caddy" bedouin ssh you@host
+```
+
+Each string is handed to the remote shell as you wrote it. It is your command on
+your machine, and quoting it for you would break the cases it exists for.
+Options for ssh itself still go after `--`.
+
+`bedouin sync` takes `--skip` for this reason: it is what the last stage runs,
+and a step the machine cannot do yet should not strand the other seventy-seven.
+
 ### A private repository
 
 The machine clones with a key *lent* by your ssh agent for the length of the

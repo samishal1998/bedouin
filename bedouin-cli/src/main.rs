@@ -78,6 +78,11 @@ enum Command {
         /// `bedouin sync` once.
         #[arg(long, value_name = "on|off")]
         auto: Option<String>,
+        /// Steps not to run, by id or name, comma separated. The same as on
+        /// `apply`: for the one step this machine cannot do yet, so it does
+        /// not strand the rest.
+        #[arg(long, value_name = "STEP", value_delimiter = ',')]
+        skip: Vec<String>,
     },
     /// Set an alias in the config, then apply.
     Alias {
@@ -232,6 +237,18 @@ enum Command {
         /// Provision without asking.
         #[arg(short = 'y', long)]
         yes: bool,
+        /// Environment assignments for the install script, e.g.
+        /// `BEDOUIN_VERSION=0.21.1`. Else $BEDOUIN_INSTALL_OPTIONS.
+        #[arg(long, value_name = "VAR=VALUE ...")]
+        install_options: Option<String>,
+        /// Extra arguments for `git clone` of the config, e.g. `--branch dev`.
+        /// Else $BEDOUIN_CLONE_OPTIONS.
+        #[arg(long, value_name = "ARGS")]
+        clone_options: Option<String>,
+        /// Extra arguments for `bedouin sync` on the machine, e.g.
+        /// `--skip language/go`. Else $BEDOUIN_APPLY_OPTIONS.
+        #[arg(long, value_name = "ARGS")]
+        apply_options: Option<String>,
         /// Extra arguments handed to ssh verbatim, e.g. `-- -p 2222 -i key`.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         ssh_args: Vec<String>,
@@ -804,9 +821,23 @@ fn main() -> ExitCode {
         ref target,
         ref repo,
         yes,
+        ref install_options,
+        ref clone_options,
+        ref apply_options,
         ref ssh_args,
     } = cli.command
     {
+        // A flag wins over the environment, and the environment over nothing.
+        let pick = |flag: &Option<String>, var: &str| {
+            flag.clone()
+                .or_else(|| std::env::var(var).ok())
+                .filter(|v| !v.trim().is_empty())
+        };
+        let opts = provision::StageOptions {
+            install: pick(install_options, "BEDOUIN_INSTALL_OPTIONS"),
+            clone: pick(clone_options, "BEDOUIN_CLONE_OPTIONS"),
+            apply: pick(apply_options, "BEDOUIN_APPLY_OPTIONS"),
+        };
         return provision::ssh(
             &host,
             cli.config.as_deref(),
@@ -814,6 +845,7 @@ fn main() -> ExitCode {
             target,
             repo.clone(),
             yes,
+            opts,
             ssh_args,
         );
     }
@@ -894,7 +926,7 @@ fn main() -> ExitCode {
     };
 
     match cli.command {
-        Command::Sync { yes, auto } => {
+        Command::Sync { yes, auto, skip } => {
             use bedouin_core::gitsync;
             let root = &outcome.loaded.root;
             if !gitsync::is_repo(&host, root) {
@@ -1065,7 +1097,8 @@ fn main() -> ExitCode {
                 println!("Pulled, nothing applied.");
                 return repos_code();
             }
-            let applied = run_apply(&host, after, cli.verbose, &Default::default());
+            let skip: std::collections::BTreeSet<String> = skip.into_iter().collect();
+            let applied = run_apply(&host, after, cli.verbose, &skip);
             if repo_failed {
                 repos_code()
             } else {

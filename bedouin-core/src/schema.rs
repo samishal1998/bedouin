@@ -289,6 +289,9 @@ pub struct RawLanguage {
     pub version: Option<Val>,
     #[serde(default)]
     pub installer: Option<Val>,
+    /// Other places to download from, tried in order when the default fails.
+    #[serde(default)]
+    pub mirrors: Option<ValList>,
     #[serde(default)]
     pub only: Option<OneOrMany<String>>,
 }
@@ -337,6 +340,7 @@ pub struct Language {
     pub name: String,
     pub version: Option<String>,
     pub installer: Option<Manager>,
+    pub mirrors: Vec<String>,
     pub resolved_from: Provenance,
 }
 
@@ -593,10 +597,30 @@ pub fn resolve(raw: &RawConfig, vocab: &Vocabulary, facts: &Facts) -> Result<Con
             }
             None => None,
         };
+        let mirrors = match &l.mirrors {
+            Some(v) => r
+                .many(v, "mirrors", &mut prov)
+                .map_err(|e| e.in_item(&item))?,
+            None => Vec::new(),
+        };
+        // A mirror for a language bedouin cannot redirect would be accepted
+        // and then never used, which looks exactly like a mirror that failed.
+        if !mirrors.is_empty() {
+            let who = installer.unwrap_or_else(|| crate::recipe::default_installer(&l.name));
+            if crate::recipe::mirror_env(&l.name, who).is_none() {
+                return Err(ConfigError::new(format!(
+                    "`mirrors:` does not work for `{}` installed by {who}\n  \
+                     bedouin can redirect: go and node (via mise), rust (via rustup)",
+                    l.name
+                ))
+                .in_item(&item));
+            }
+        }
         languages.push(Language {
             name: l.name.clone(),
             version,
             installer,
+            mirrors,
             resolved_from: prov,
         });
     }

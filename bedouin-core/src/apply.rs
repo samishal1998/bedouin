@@ -595,6 +595,7 @@ impl Executor<'_> {
                     installer,
                     version,
                     bin_dirs,
+                    mirrors,
                 },
             ) => {
                 // `installer:` is restricted to toolchain installers by the
@@ -603,7 +604,40 @@ impl Executor<'_> {
                     .expect("a toolchain installer is always one command");
                 let mut cmd = self.escalate(cmd);
                 cmd.env = step_env(&self.state, self.facts);
-                self.run(&cmd)?;
+                // The default source first, then each mirror in the order the
+                // config gives them. Only the first failure is reported: later
+                // ones are usually the same error against a worse host.
+                let mut first_err = None;
+                let mut sources: Vec<Option<&String>> = vec![None];
+                sources.extend(mirrors.iter().map(Some));
+                for (i, mirror) in sources.iter().enumerate() {
+                    let mut attempt = cmd.clone();
+                    if let (Some(url), Some(var)) =
+                        (mirror, recipe::mirror_env(&item.name, *installer))
+                    {
+                        attempt.env.insert(var.to_string(), (*url).clone());
+                        (self.out)(Line::Out(format!("   retrying from mirror {url}")));
+                    }
+                    match self.run(&attempt) {
+                        Ok(()) => {
+                            first_err = None;
+                            break;
+                        }
+                        Err(e) => {
+                            if i == 0 {
+                                first_err = Some(e);
+                            }
+                        }
+                    }
+                }
+                if let Some((msg, tail)) = first_err {
+                    let tried = if mirrors.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" (and {} mirror(s): {})", mirrors.len(), mirrors.join(", "))
+                    };
+                    return Err((format!("{msg}{tried}"), tail));
+                }
                 rec.version = version.clone();
                 rec.method = Some(installer.to_string());
                 rec.bin_dirs = bin_dirs.iter().map(|p| p.display().to_string()).collect();

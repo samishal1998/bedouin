@@ -356,3 +356,126 @@ fn a_package_the_manager_already_had_is_adopted_not_claimed() {
         "Bedouin did install jq, and must still be able to remove it"
     );
 }
+
+/// A language download that fails from its default source is retried from each
+/// mirror in turn. A machine that cannot reach dl.google.com -- or reaches a
+/// proxy that answers 404 for it -- should not be unable to install go.
+mod mirrors {
+    use super::*;
+    use bedouin_core::apply;
+    use bedouin_core::host::Line;
+
+    const GO: &str = "mise use -g go@1.23";
+    const VAR: &str = "MISE_GO_DOWNLOAD_MIRROR";
+
+    fn cfg(mirrors: &str) -> String {
+        format!(
+            "version: 0\nshell: bash\nlanguages:\n  - {{name: go, version: \"1.23\", installer: mise{mirrors}}}\n"
+        )
+    }
+
+    fn run(config: &str, h: &bedouin_core::host::FakeHost) -> Result<apply::Report, String> {
+        let o = run::plan_for(
+            h,
+            Some(Path::new("/cfg/bedouin.yaml")),
+            Path::new("/cfg"),
+            Os::Linux,
+            Arch::X86_64,
+        )
+        .map_err(|e| e.to_string())?;
+        let _ = config;
+        apply::apply(
+            &o.plan,
+            &o.config,
+            &o.facts,
+            o.state,
+            h,
+            &Default::default(),
+            &mut |_: Line| {},
+        )
+        .map_err(|e| e.to_string())
+    }
+
+    fn machine_with(config: &str) -> bedouin_core::host::FakeHost {
+        // mise present, so there is nothing to bootstrap before the language.
+        machine(config).with_binary("/usr/bin/mise")
+    }
+
+    #[test]
+    fn the_second_mirror_rescues_a_failed_default() {
+        let h = machine_with(&cfg(
+            ", mirrors: [\"https://bad.example/go\", \"https://good.example/go\"]",
+        ))
+        .with_command(
+            GO,
+            FakeRun {
+                code: 1,
+                stderr: vec!["404".into()],
+                ..Default::default()
+            },
+        )
+        .with_command_env(GO, VAR, "https://good.example/go", FakeRun::ok(""));
+        let report = run("", &h).expect("applies");
+        assert!(report.ok(), "{:?}", report.failure);
+        let tries: Vec<_> = h
+            .ran
+            .borrow()
+            .iter()
+            .filter(|c| c.display() == GO)
+            .map(|c| c.env.get(VAR).cloned())
+            .collect();
+        // default, then the first mirror, then the one that worked -- in the
+        // order the config gave them.
+        assert_eq!(
+            tries,
+            vec![
+                None,
+                Some("https://bad.example/go".to_string()),
+                Some("https://good.example/go".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn the_default_is_tried_first_and_a_working_one_is_not_retried() {
+        let h = machine_with(&cfg(", mirrors: [\"https://m.example/go\"]"))
+            .with_command(GO, FakeRun::ok(""));
+        run("", &h).expect("applies");
+        let n = h.ran.borrow().iter().filter(|c| c.display() == GO).count();
+        assert_eq!(n, 1, "a mirror was tried although the default worked");
+    }
+
+    #[test]
+    fn when_every_source_fails_the_error_names_the_mirrors() {
+        let h = machine_with(&cfg(", mirrors: [\"https://m.example/go\"]")).with_command(
+            GO,
+            FakeRun {
+                code: 1,
+                stderr: vec!["404 Not Found".into()],
+                ..Default::default()
+            },
+        );
+        let report = run("", &h).expect("apply returns a report");
+        let f = report.failure.expect("fails");
+        // The command's own output is the tail, as for any failed step.
+        assert!(
+            f.output_tail.iter().any(|l| l.contains("404 Not Found")),
+            "{:?}",
+            f.output_tail
+        );
+        assert!(
+            f.message.contains("https://m.example/go"),
+            "the mirror is not named: {}",
+            f.message
+        );
+    }
+
+    #[test]
+    fn a_mirror_for_a_language_bedouin_cannot_redirect_is_refused_when_read() {
+        let e = err(
+            "version: 0\nlanguages:\n  - {name: ruby, installer: mise, mirrors: [\"https://x\"]}\n",
+        );
+        assert!(e.contains("mirrors"), "{e}");
+        assert!(e.contains("go and node"), "should say what does work: {e}");
+    }
+}

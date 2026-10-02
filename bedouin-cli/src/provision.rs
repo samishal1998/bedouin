@@ -130,8 +130,33 @@ impl Drop for Mux {
     }
 }
 
+/// The install stage. `assignments` go in front of `sh`, not `curl`:
+/// `A=1 curl url | sh` sets A for curl alone, and the script that reads
+/// BEDOUIN_VERSION is the one on the other side of the pipe.
+fn install_script(assignments: Option<&str>) -> String {
+    format!(
+        "command -v bedouin >/dev/null 2>&1 || [ -x \"$HOME/.local/bin/bedouin\" ] || \
+         curl -fsSL {INSTALL_URL} | {}sh",
+        assignments.map(|o| format!("{o} ")).unwrap_or_default()
+    )
+}
+
+/// What a person adds to each remote stage. Spliced into the remote shell as
+/// written: it is their own command on their own machine, and quoting it for
+/// them would break exactly the cases (`--skip a,b`, `VAR=1 OTHER=2`) it is for.
+#[derive(Default)]
+pub struct StageOptions {
+    /// Environment assignments in front of the install script's `sh`.
+    pub install: Option<String>,
+    /// Arguments to `git clone`.
+    pub clone: Option<String>,
+    /// Arguments to `bedouin sync -y`.
+    pub apply: Option<String>,
+}
+
 /// `bedouin ssh user@host` -- install, clone, apply, over one forwarded
 /// agent. Nothing credential-shaped lands on the machine.
+#[allow(clippy::too_many_arguments)]
 pub fn ssh(
     host: &OsHost,
     config: Option<&Path>,
@@ -139,6 +164,7 @@ pub fn ssh(
     target: &str,
     repo: Option<String>,
     yes: bool,
+    opts: StageOptions,
     ssh_args: &[String],
 ) -> ExitCode {
     let repo = match repo
@@ -166,9 +192,19 @@ pub fn ssh(
     println!("  {} {target}", style::dim("target"));
     println!("  {} {repo}", style::dim("repo  "));
     println!(
-        "  {} forwarded for the clone, stored nowhere\n",
+        "  {} forwarded for the clone, stored nowhere",
         style::dim("keys  ")
     );
+    for (label, v) in [
+        ("install", &opts.install),
+        ("clone  ", &opts.clone),
+        ("apply  ", &opts.apply),
+    ] {
+        if let Some(v) = v {
+            println!("  {} {v}", style::dim(&format!("{label} +")));
+        }
+    }
+    println!();
     if !yes && !crate::release::confirm("Provision it?") {
         println!("Nothing done.");
         return ExitCode::SUCCESS;
@@ -178,13 +214,7 @@ pub fn ssh(
     // person watching sees the walk rather than one long silence.
     let stages: [(&str, String); 4] = [
         ("tools", BOOTSTRAP_TOOLS.to_string()),
-        (
-            "install bedouin",
-            format!(
-                "command -v bedouin >/dev/null 2>&1 || [ -x \"$HOME/.local/bin/bedouin\" ] || \
-                 curl -fsSL {INSTALL_URL} | sh"
-            ),
-        ),
+        ("install bedouin", install_script(opts.install.as_deref())),
         (
             "clone config",
             format!(
@@ -208,8 +238,9 @@ esac
 # CHANGED. A fresh machine has never seen the git host, and GIT_TERMINAL_PROMPT
 # only silences git: ssh would stop and wait for a typed "yes".
 GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND='ssh -o StrictHostKeyChecking=accept-new' \
-  git clone {q} "$HOME/.config/bedouin""#,
+  git clone {extra} {q} "$HOME/.config/bedouin""#,
                 repo = repo.replace('"', ""),
+                extra = opts.clone.as_deref().unwrap_or(""),
                 q = sh_quote(&repo)
             ),
         ),
@@ -220,7 +251,10 @@ GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND='ssh -o StrictHostKeyChecking=accept-new' 
             // rather than apply-the-clone-from-last-time. On a fresh clone
             // the pull is a no-op. PATH: a non-interactive shell has not
             // read the rc files the install just wrote; the tty is for sudo.
-            "export PATH=\"$HOME/.local/bin:$PATH\"; bedouin sync -y".to_string(),
+            format!(
+                "export PATH=\"$HOME/.local/bin:$PATH\"; bedouin sync -y {}",
+                opts.apply.as_deref().unwrap_or("")
+            ),
         ),
     ];
 
@@ -533,6 +567,22 @@ mod tests {
         // An https remote to a forge this cannot rewrite is refused rather
         // than emitted as a clone that will hang asking for a password.
         assert_eq!(to_ssh_remote("https://gitlab.com/o/r"), None);
+    }
+
+    #[test]
+    fn install_assignments_reach_the_script_not_curl() {
+        let s = install_script(Some("BEDOUIN_VERSION=0.21.0 BEDOUIN_BIN_DIR=/opt/b"));
+        let (fetch, run) = s.rsplit_once('|').expect("a pipe");
+        assert!(
+            !fetch.contains("BEDOUIN_VERSION"),
+            "set for curl, not sh: {s}"
+        );
+        assert!(
+            run.contains("BEDOUIN_VERSION=0.21.0 BEDOUIN_BIN_DIR=/opt/b sh"),
+            "{s}"
+        );
+        // And with none, nothing changes.
+        assert!(install_script(None).ends_with("| sh"));
     }
 
     #[test]
