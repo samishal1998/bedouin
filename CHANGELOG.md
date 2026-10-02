@@ -3,6 +3,36 @@
 Dates are release dates. Versions before 0.2.0 are omitted: they predate this
 file and nothing depended on them.
 
+## 0.21.1 — 2026-10-02
+
+**`bedouin ssh` can clone a private repository.** It failed with
+`Host key verification failed`, and it failed even with exactly the right key
+in the agent: a fresh machine has never seen the git host, `GIT_TERMINAL_PROMPT=0`
+silences git but not ssh, and ssh stopped to ask for a typed `yes`. The clone
+now uses `StrictHostKeyChecking=accept-new`, which trusts a new host and still
+refuses one whose key changed.
+
+The agent is checked on the machine before cloning, so the failure says which
+of three things is wrong — no agent reached it, the agent is empty, or the
+key is not allowed to read the repository — instead of
+`Could not read from remote repository`. It is asked of the machine rather
+than inferred from `$SSH_AUTH_SOCK` here, because `IdentityAgent` and
+`ForwardAgent <path>` in an ssh config make that variable the wrong thing to
+look at.
+
+**The stages share one connection.** Four stages were four logins, so a
+password or passphrase was asked for four times. They ride on ssh's own
+`ControlMaster` now (verified: one sshd login for a whole run), and the
+stages stay separate commands so a failure still names the one that failed.
+The socket is under /tmp, since macOS's per-user temp directory leaves no
+room for it inside the 104-byte limit on a unix socket path.
+
+**Colour.** Stage headers, `✓` with timings, `✗` and the summary are styled,
+and `NO_COLOR` and non-terminals still get plain text.
+
+`tests/sshprivate.sh` runs this against a git server that accepts one key and
+a machine that receives it only through the forwarded agent. It fails on 0.21.0.
+
 ## 0.21.0 — 2026-09-27
 
 **Edits to the config are committed and pushed.** `add`, `remove`, `alias`,

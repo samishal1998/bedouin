@@ -30,6 +30,8 @@ jobs:
       - run: cargo test --all
       # git sync against a local bare remote; no network.
       - run: cargo build -p bedouin-cli && sh tests/gitsync.sh target/debug/bedouin
+      # bedouin ssh into a machine, cloning a private repo through the forwarded agent.
+      - run: sh tests/sshprivate.sh target/debug/bedouin
 
   # Layer 3 of the test strategy: a real apply against a real package manager.
   # It exists to catch the lies in the in-memory fakes -- a fresh Ubuntu image

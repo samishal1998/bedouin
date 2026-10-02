@@ -22,9 +22,36 @@ four stages, each its own ssh so a failure names the one that failed:
 4. **apply** — `bedouin sync -y`, so running it again pulls and re-applies.
 
 `--repo <url>` names the repository; by default it is this machine's config
-repo `origin`. Your ssh agent is forwarded for the clone and nothing
-credential-shaped is stored on the machine. An https remote on GitHub is
-rewritten to its ssh form for that reason.
+repo `origin`. An https remote on GitHub is rewritten to its ssh form, because
+the only credential the machine gets is your ssh agent.
+
+All four stages share **one connection**, so a password or key passphrase is
+asked for once, not four times. It closes when the run ends.
+
+### A private repository
+
+The machine clones with a key *lent* by your ssh agent for the length of the
+run. Nothing is copied to it. That needs two things on your side:
+
+```sh
+eval "$(ssh-agent)"     # if no agent is running
+ssh-add                 # or ssh-add ~/.ssh/the_key_github_knows
+bedouin ssh you@host
+```
+
+and the key in the agent has to be allowed to read the repository. Bedouin asks
+the *machine* what it received before cloning, so the failures are named:
+
+- `no ssh agent reached this machine` — nothing was forwarded. Start an agent,
+  or set `ForwardAgent yes` for that host in `~/.ssh/config`.
+- `the forwarded ssh agent holds no keys` — run `ssh-add`.
+- `Permission denied (publickey)` — the agent has keys, but not one the
+  repository accepts. `ssh-add -l` lists what was lent.
+
+A host the machine has never seen is trusted on first use
+(`StrictHostKeyChecking=accept-new`) and a host whose key later *changes* is
+still refused. Without this a fresh machine stops and waits for you to type
+`yes` to a prompt that is easy to miss.
 
 <Aside type="note" title="It configures the user you log in as">
 `bedouin ssh` never creates a user. It provisions whoever `you@host` is, so

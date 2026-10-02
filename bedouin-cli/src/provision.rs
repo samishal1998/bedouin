@@ -12,6 +12,7 @@
 
 use bedouin_core::host::{Host, OsHost};
 use bedouin_core::run;
+use bedouin_core::style;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 
@@ -66,6 +67,69 @@ if [ -n "$need" ]; then
 fi
 "#;
 
+/// One authenticated connection for the whole walk.
+///
+/// Four stages used to be four logins, so a password or key passphrase was
+/// asked for four times and every stage paid for a handshake. ssh can share
+/// one: the first run becomes the master and the rest ride on it. This is
+/// ssh's own feature rather than a second transport, so the stages stay
+/// separate commands -- a failure still names the one that failed.
+///
+/// The socket lives in /tmp, not `temp_dir()`: a unix socket path is capped at
+/// about 104 bytes, and macOS's per-user temp directory alone is over half
+/// of that before `%C` (a 40-character hash) is added.
+struct Mux {
+    dir: PathBuf,
+    target: String,
+    user_args: Vec<String>,
+}
+
+impl Mux {
+    fn open(target: &str, user_args: &[String]) -> Option<Mux> {
+        let dir = PathBuf::from(format!("/tmp/bedouin-ssh-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).ok()?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).ok()?;
+        }
+        Some(Mux {
+            dir,
+            target: target.to_string(),
+            user_args: user_args.to_vec(),
+        })
+    }
+
+    /// After the user's own options: ssh takes the first value it is given for
+    /// an option, so anyone who set a ControlPath themselves keeps it.
+    fn opts(&self) -> Vec<String> {
+        vec![
+            "-o".into(),
+            "ControlMaster=auto".into(),
+            "-o".into(),
+            format!("ControlPath={}/%C", self.dir.display()),
+            // Long enough to span a slow install, short enough that a
+            // forgotten master does not outlive the afternoon.
+            "-o".into(),
+            "ControlPersist=120".into(),
+        ]
+    }
+}
+
+impl Drop for Mux {
+    fn drop(&mut self) {
+        let _ = Command::new("ssh")
+            .args(["-O", "exit"])
+            .args(&self.user_args)
+            .args(self.opts())
+            .arg(&self.target)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
 /// `bedouin ssh user@host` -- install, clone, apply, over one forwarded
 /// agent. Nothing credential-shaped lands on the machine.
 pub fn ssh(
@@ -99,9 +163,12 @@ pub fn ssh(
             repo
         }
     };
-    println!("  target  {target}");
-    println!("  repo    {repo}");
-    println!("  keys    forwarded for the clone, stored nowhere\n");
+    println!("  {} {target}", style::dim("target"));
+    println!("  {} {repo}", style::dim("repo  "));
+    println!(
+        "  {} forwarded for the clone, stored nowhere\n",
+        style::dim("keys  ")
+    );
     if !yes && !crate::release::confirm("Provision it?") {
         println!("Nothing done.");
         return ExitCode::SUCCESS;
@@ -121,9 +188,29 @@ pub fn ssh(
         (
             "clone config",
             format!(
-                "[ -e \"$HOME/.config/bedouin/bedouin.yaml\" ] || \
-                 GIT_TERMINAL_PROMPT=0 git clone {} \"$HOME/.config/bedouin\"",
-                sh_quote(&repo)
+                r#"if [ -e "$HOME/.config/bedouin/bedouin.yaml" ]; then exit 0; fi
+# Asked of the machine itself, because what matters is what actually reached
+# it: a local check of SSH_AUTH_SOCK is wrong for anyone whose agent comes from
+# `IdentityAgent` or `ForwardAgent <path>` in their ssh config.
+case "{repo}" in
+  git@*|ssh://*)
+    ssh-add -l >/dev/null 2>&1; rc=$?
+    if [ $rc -ge 2 ]; then
+      echo "no ssh agent reached this machine, so there is nothing to clone a private repository with." >&2
+      echo "  Here: start one and add your key (eval \"\$(ssh-agent)\" && ssh-add), or set ForwardAgent yes for this host." >&2
+      exit 1
+    elif [ $rc -eq 1 ]; then
+      echo "the forwarded ssh agent holds no keys. Here: ssh-add" >&2
+      exit 1
+    fi ;;
+esac
+# accept-new trusts a host it has never seen and still refuses one whose key
+# CHANGED. A fresh machine has never seen the git host, and GIT_TERMINAL_PROMPT
+# only silences git: ssh would stop and wait for a typed "yes".
+GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND='ssh -o StrictHostKeyChecking=accept-new' \
+  git clone {q} "$HOME/.config/bedouin""#,
+                repo = repo.replace('"', ""),
+                q = sh_quote(&repo)
             ),
         ),
         (
@@ -137,34 +224,61 @@ pub fn ssh(
         ),
     ];
 
+    let mux = Mux::open(target, ssh_args);
     for (name, script) in &stages {
-        println!(":: {name}");
+        println!("{} {}", style::cyan("::"), style::bold(name));
+        let started = std::time::Instant::now();
         // -A: the machine borrows this terminal's agent for exactly this
         // long. -t: sudo and git may need to ask a human something.
-        let status = Command::new("ssh")
-            .args(["-A", "-t"])
-            .args(ssh_args)
+        let mut cmd = Command::new("ssh");
+        cmd.args(["-A", "-t"]).args(ssh_args);
+        if let Some(m) = &mux {
+            cmd.args(m.opts());
+        }
+        let status = cmd
             .args([target, script.as_str()])
             .stdin(Stdio::inherit())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())
             .status();
         match status {
-            Ok(s) if s.success() => {}
+            Ok(s) if s.success() => println!(
+                "{} {} {}",
+                style::green("✓"),
+                name,
+                style::dim(&format!("{:.1}s", started.elapsed().as_secs_f32()))
+            ),
             Ok(s) => {
                 eprintln!(
-                    "bedouin: stage `{name}` failed on {target} (exit {})",
+                    "{} stage `{name}` failed on {target} (exit {})",
+                    style::red("✗"),
                     s.code().unwrap_or(-1)
                 );
+                if *name == "clone config" {
+                    eprintln!(
+                        "  {}",
+                        style::dim(
+                            "A private repository is cloned with the key in your agent, so that \
+                             key has to be allowed to read it: `ssh-add -l` here lists what the \
+                             machine was lent."
+                        )
+                    );
+                }
                 return ExitCode::FAILURE;
             }
             Err(e) => {
-                eprintln!("bedouin: could not run ssh: {e}");
+                eprintln!("{} could not run ssh: {e}", style::red("✗"));
                 return ExitCode::FAILURE;
             }
         }
     }
-    println!("\nProvisioned. `bedouin ssh {target}` again is a re-apply; `bedouin sync` on the machine pulls.");
+    println!(
+        "\n{} {}",
+        style::green(&style::bold("Provisioned.")),
+        style::dim(&format!(
+            "`bedouin ssh {target}` again is a re-apply; `bedouin sync` on the machine pulls."
+        ))
+    );
     ExitCode::SUCCESS
 }
 
