@@ -1,0 +1,83 @@
+---
+title: ssh, cloudinit & self
+description: Put bedouin and your config on a machine you are not sitting at, and keep bedouin itself current.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+## `bedouin ssh`
+
+```sh
+bedouin ssh you@host
+bedouin ssh myserver -- -p 2222 -i ~/.ssh/key     # anything after -- goes to ssh
+```
+
+Installs bedouin on the machine, clones your config, and applies it. It runs
+four stages, each its own ssh so a failure names the one that failed:
+
+1. **tools** — git, curl and tar, using whichever of apt, dnf, pacman, zypper or
+   apk is there. Only what is missing is requested.
+2. **install bedouin** — skipped if it is already there.
+3. **clone config** — into `~/.config/bedouin` on the machine.
+4. **apply** — `bedouin sync -y`, so running it again pulls and re-applies.
+
+`--repo <url>` names the repository; by default it is this machine's config
+repo `origin`. Your ssh agent is forwarded for the clone and nothing
+credential-shaped is stored on the machine. An https remote on GitHub is
+rewritten to its ssh form for that reason.
+
+<Aside type="note" title="It configures the user you log in as">
+`bedouin ssh` never creates a user. It provisions whoever `you@host` is, so
+that account has to exist already.
+</Aside>
+
+## `bedouin cloudinit`
+
+```sh
+bedouin cloudinit --repo git@github.com:you/bedouin-config.git -o user-data.age
+```
+
+Writes a cloud-init user-data file for a machine that boots unattended. It
+generates a **read-only deploy key**, puts the private half in the file, and
+prints the public half for you to add to the repository as a read-only deploy
+key. On first boot the machine installs bedouin, clones the config with that
+key, and applies it.
+
+Because the file holds a private key it is **age-encrypted** by default
+(`age -p`, so it asks for a passphrase). Decrypt it on the way in:
+
+```sh
+age -d user-data.age | <your cloud's create command> --user-data -
+```
+
+`--plain` skips the encryption and writes a file holding an unprotected private
+key. Delete it once the machine is up, and do not commit it.
+
+The remote must be ssh-cloneable. A deploy key cannot authenticate over https,
+so bedouin refuses one rather than writing a file that would hang on boot.
+
+<Aside type="caution" title="It configures root">
+The generated user-data runs as root and clones into `/root/.config/bedouin`,
+so the machine is set up for root rather than for the account you will log in
+as. Bedouin creates no users. To end up with a configured non-root account,
+create it through your cloud's own `users:` key, then use `bedouin ssh` as that
+user.
+</Aside>
+
+## `bedouin self`
+
+```sh
+bedouin self upgrade            # check, then install
+bedouin self upgrade --check    # report only; exit 2 means an update exists
+bedouin self version            # what is installed; needs no network
+```
+
+Upgrades bedouin and the pieces released with it that are already installed
+(`bedouin-ui`). The newest version is read from GitHub's release redirect, not
+its API, so there is no rate limit to run into. The download is checked
+against the published checksum, and the running binary is replaced
+atomically.
+
+It is `self upgrade` and not `upgrade` on purpose: `bedouin upgrade` would read
+as upgrading the packages bedouin manages, which it deliberately never does.
+Packages move when you change `version:` in the config.

@@ -1,0 +1,83 @@
+---
+title: Keep your config in git
+description: One repository, every machine. Where bedouin looks, how edits reach the remote, and setting up the next machine.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Your config is the one file that makes a machine yours, so it belongs in a
+repository. Bedouin does not need one, but with one it commits its own edits,
+pushes them, and a new machine is a clone and an `apply` away.
+
+## Where the config lives
+
+Bedouin looks in this order and uses the first that exists:
+
+1. `--config <path>`
+2. `$BEDOUIN_CONFIG`
+3. `./bedouin.yaml`
+4. `~/.config/bedouin/bedouin.yaml`
+
+If you name one with `--config` or `$BEDOUIN_CONFIG`, that is the only place it
+looks. It does not fall through to the others.
+
+Put the repository at **`~/.config/bedouin`**. It is the last place checked,
+which is exactly why it is the right one: it works from any directory. A copy
+in a project folder is read only when you run bedouin from inside that folder,
+so running it from anywhere else quietly uses a different file.
+
+## First time
+
+```sh
+mkdir -p ~/.config/bedouin && cd ~/.config/bedouin
+bedouin init                      # a starter bedouin.yaml
+git init -b main
+printf '.env.bedouin\n' > .gitignore
+git add -A && git commit -m "First config"
+gh repo create you/bedouin-config --private --source . --push
+```
+
+`.env.bedouin` holds real values (it is read before facts resolve) and must
+never be committed. Keep the repository **private**.
+
+## Every edit is committed and pushed
+
+`add`, `remove`, `alias`, `completions`, `absorb` and the web UI each commit
+their change and push it when the branch has an upstream. On by default. See
+[git sync after every edit](/bedouin/commands/manage/#git-sync-after-every-edit)
+for switching it off to batch a group of changes.
+
+If the config is not a git repository, none of this happens and nothing fails.
+
+## Pulling changes in
+
+```sh
+bedouin sync
+```
+
+commits anything local, pulls with `--rebase` so your commits land on top, pushes,
+then shows the plan and asks before applying. A conflict undoes the pull and
+stops. That one is yours to resolve in the repository.
+
+## The next machine
+
+```sh
+git clone git@github.com:you/bedouin-config.git ~/.config/bedouin
+cp /somewhere/.env.bedouin ~/.config/bedouin/    # the one file git does not carry
+bedouin apply
+```
+
+Or from the machine you already have, without logging in yourself:
+
+```sh
+bedouin ssh you@new-host
+```
+
+which installs bedouin there, clones this repo, and applies it. See
+[ssh, cloudinit & self](/bedouin/commands/provision/).
+
+<Aside type="caution" title="Two copies of the config">
+If you also keep a clone somewhere else, such as a project folder, edit in one
+place. Bedouin reads `~/.config/bedouin`, so changes made in the other copy
+never reach the machine until they are pushed and pulled across.
+</Aside>

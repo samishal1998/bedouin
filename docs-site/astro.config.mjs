@@ -31,6 +31,7 @@ export default defineConfig({
             { label: 'Why Bedouin', slug: 'guides/why' },
             { label: 'Install', slug: 'guides/install' },
             { label: 'Your first config', slug: 'guides/first-config' },
+            { label: 'Keep your config in git', slug: 'guides/config-repo' },
           ],
         },
         {
@@ -54,6 +55,7 @@ export default defineConfig({
             { label: 'doctor & absorb', slug: 'commands/doctor-absorb' },
             { label: 'pickup', slug: 'commands/pickup' },
             { label: 'install', slug: 'commands/install' },
+            { label: 'ssh, cloudinit & self', slug: 'commands/provision' },
             { label: 'add, remove & sync', slug: 'commands/manage' },
             { label: 'reconcile & daemon', slug: 'commands/daemon' },
           ],
