@@ -322,6 +322,39 @@ impl Executor<'_> {
         &mut self,
         n: &recipe::Native,
     ) -> std::result::Result<(), (String, Vec<String>)> {
+        // This is the one place bedouin discovers it needs root halfway
+        // through: the plan said "mise, no root", the download failed, and now
+        // the system's manager is the way out. So the question that is
+        // normally asked up front is asked here, at the moment it matters.
+        if recipe::needs_root(n.manager) {
+            match self.facts.privilege {
+                Privilege::Unavailable => {
+                    return Err((
+                        format!(
+                            "{} needs root, and this user has no sudo rights, so there is \
+                             nothing to fall back to. Install {} as root, or fix the \
+                             download",
+                            n.manager,
+                            n.packages.join(" ")
+                        ),
+                        Vec::new(),
+                    ));
+                }
+                Privilege::Password => {
+                    (self.out)(Line::Out(format!(
+                        "   {} needs root; asking sudo once",
+                        n.manager
+                    )));
+                    // `sudo -n` below never asks, so a password has to be
+                    // given now or not at all. sudo reads it from the terminal,
+                    // which is there under `bedouin ssh` because of -t.
+                    let mut v = Cmd::new(["sudo", "-v"]);
+                    v.env = step_env(&self.state, self.facts);
+                    self.run(&v)?;
+                }
+                Privilege::Root | Privilege::Passwordless => {}
+            }
+        }
         self.refresh(n.manager)?;
         for pkg in &n.packages {
             let cmd = recipe::install(n.manager, pkg, None)

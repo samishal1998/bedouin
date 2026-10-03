@@ -527,6 +527,76 @@ mod mirrors {
         assert_eq!(ran(&h, "sudo -n apt-get install -y golang-1.23-go"), 0);
     }
 
+    /// A machine whose user has sudo but needs a password for it.
+    fn needs_a_sudo_password(h: bedouin_core::host::FakeHost) -> bedouin_core::host::FakeHost {
+        h.with_command(
+            "sudo -n true",
+            FakeRun {
+                code: 1,
+                ..Default::default()
+            },
+        )
+        .with_command("id -nG", FakeRun::ok("t sudo"))
+    }
+
+    #[test]
+    fn a_fallback_that_needs_root_asks_for_the_password_when_it_needs_it() {
+        // The plan said "mise, no root", so nothing primed sudo up front -- and
+        // `sudo -n` never asks. Seen on a real machine: "sudo: a password is
+        // required", with the fallback chosen correctly and then unable to run.
+        let h = needs_a_sudo_password(machine_with(&cfg("")))
+            .with_command("sudo -v", FakeRun::ok(""))
+            .with_command("sudo -n apt-get update", FakeRun::ok(""))
+            .with_command("sudo -n apt-get install -y golang-1.23-go", FakeRun::ok(""));
+        let report = run("", &h).expect("applies");
+        assert!(report.ok(), "{:?}", report.failure);
+        let order: Vec<String> = h.ran.borrow().iter().map(|c| c.display()).collect();
+        let at = |needle: &str| order.iter().position(|c| c == needle).expect(needle);
+        assert!(
+            at("sudo -v") < at("sudo -n apt-get update"),
+            "sudo must be primed before the first command that cannot ask: {order:?}"
+        );
+    }
+
+    #[test]
+    fn a_wrong_sudo_password_stops_the_fallback_and_says_why() {
+        let h = needs_a_sudo_password(machine_with(&cfg(""))).with_command(
+            "sudo -v",
+            FakeRun {
+                code: 1,
+                ..Default::default()
+            },
+        );
+        let report = run("", &h).expect("apply returns a report");
+        let msg = report.failure.expect("fails").message;
+        assert!(
+            msg.contains("falling back to apt golang-1.23-go failed too"),
+            "{msg}"
+        );
+        assert_eq!(ran(&h, "sudo -n apt-get install -y golang-1.23-go"), 0);
+    }
+
+    #[test]
+    fn a_user_with_no_sudo_rights_is_told_so_rather_than_failing_on_sudo() {
+        let h = machine_with(&cfg(""))
+            .with_command(
+                "sudo -n true",
+                FakeRun {
+                    code: 1,
+                    ..Default::default()
+                },
+            )
+            .with_command("id -nG", FakeRun::ok("t"));
+        let report = run("", &h).expect("apply returns a report");
+        let msg = report.failure.expect("fails").message;
+        assert!(msg.contains("no sudo rights"), "{msg}");
+        assert_eq!(
+            ran(&h, "sudo -v"),
+            0,
+            "asked for a password it could never use"
+        );
+    }
+
     #[test]
     fn a_fallback_that_also_fails_says_so_and_keeps_the_first_error() {
         let h = machine_with(&cfg("")).with_command("sudo -n apt-get update", FakeRun::ok(""));

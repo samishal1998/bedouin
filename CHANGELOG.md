@@ -3,6 +3,23 @@
 Dates are release dates. Versions before 0.2.0 are omitted: they predate this
 file and nothing depended on them.
 
+## 0.23.1 — 2026-10-03
+
+**The system-package fallback can ask for a sudo password.** It chose
+`apt golang-1.23-go` correctly and then died on `sudo: a password is required`.
+Bedouin asks for the password up front only when the *plan* has a step that
+needs root, and a language is planned as a mise install, which does not. The
+need appears halfway through, after the download fails, and every apt command
+runs as `sudo -n`, which never asks.
+
+The question is asked where the need appears: `sudo -v` first, on the same
+terminal, with a line saying why. A user with no sudo rights at all is told
+that, rather than being sent into `sudo: a password is required`. Verified for
+real with a non-root user whose sudo needs a password, on a pty that answers the
+prompt when it shows up: the prompt appears, apt runs, `go1.23.1` is installed.
+
+Under `bedouin ssh` there is a terminal (`-t`), so the prompt reaches you.
+
 ## 0.23.0 — 2026-10-03
 
 **A language falls back to the system's package manager.** When every download
