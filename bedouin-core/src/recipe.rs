@@ -556,6 +556,110 @@ pub fn mirror_env(language: &str, installer: Manager) -> Option<&'static str> {
     }
 }
 
+/// Mirrors bedouin tries without being asked, after the default source fails.
+///
+/// Only hosts run by the same publisher as the default. A mirror is trusted for
+/// the checksum as well as the bytes -- mise verifies a download against a file
+/// served from the same place -- so a third-party default would quietly widen
+/// who can put a toolchain on your machine the moment the first host hiccups.
+/// Those belong in a config's own `mirrors:`, chosen by the person who trusts
+/// them. What is here was checked to serve both the tarball and its `.sha256`.
+///
+/// `golang.google.cn` is Google's own, and outside China it redirects back to
+/// `dl.google.com`: it rescues the case where that one hostname is blocked, and
+/// costs one extra failed request where the whole network is down.
+pub fn default_mirrors(language: &str, installer: Manager) -> &'static [&'static str] {
+    match (installer, language) {
+        (Manager::Mise, "go") => &["https://golang.google.cn/dl"],
+        _ => &[],
+    }
+}
+
+/// What a system package manager would install in place of a toolchain
+/// download that failed.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Native {
+    pub manager: Manager,
+    pub packages: Vec<String>,
+    /// Where the toolchain's binaries land when that is not already on PATH.
+    pub bin_dir: Option<PathBuf>,
+}
+
+/// The system manager to fall back to, and what to ask it for.
+///
+/// A fallback may not quietly install something other than what was asked
+/// for. A bare or `latest`/`lts` version takes whatever the system has. A
+/// `major.minor` pin is honoured only where the version is part of the package
+/// name (Debian and Ubuntu's `golang-1.23-go`). Anything else -- `1.23.4`, or a
+/// pin on a distro that ships one version -- returns `None`, because installing
+/// 1.27 for a config that said 1.23 is a wrong answer, not a degraded one.
+pub fn native_fallback(
+    language: &str,
+    version: Option<&str>,
+    available: &[Manager],
+) -> Option<Native> {
+    let unpinned = matches!(
+        version,
+        None | Some("latest") | Some("lts") | Some("stable")
+    );
+    let minor = version.filter(|v| {
+        let parts: Vec<&str> = v.split('.').collect();
+        parts.len() == 2
+            && parts
+                .iter()
+                .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+    });
+    // The order a machine that somehow has several should prefer.
+    for m in [
+        Manager::Apt,
+        Manager::Dnf,
+        Manager::Zypper,
+        Manager::Pacman,
+        Manager::Apk,
+        Manager::Brew,
+    ] {
+        if !available.contains(&m) {
+            continue;
+        }
+        let one = |p: &str| Native {
+            manager: m,
+            packages: vec![p.to_string()],
+            bin_dir: None,
+        };
+        let found = match (language, m) {
+            ("go", Manager::Apt) => match (minor, unpinned) {
+                (Some(v), _) => Some(Native {
+                    manager: m,
+                    packages: vec![format!("golang-{v}-go")],
+                    bin_dir: Some(PathBuf::from(format!("/usr/lib/go-{v}/bin"))),
+                }),
+                (None, true) => Some(one("golang-go")),
+                _ => None,
+            },
+            ("go", Manager::Dnf) if unpinned => Some(one("golang")),
+            ("go", Manager::Zypper | Manager::Pacman | Manager::Apk | Manager::Brew)
+                if unpinned =>
+            {
+                Some(one("go"))
+            }
+            // Debian splits npm from nodejs; node without npm would leave
+            // `from: npm` declared and unusable.
+            ("node", Manager::Apt | Manager::Pacman | Manager::Apk) if unpinned => Some(Native {
+                manager: m,
+                packages: vec!["nodejs".into(), "npm".into()],
+                bin_dir: None,
+            }),
+            ("node", Manager::Dnf) if unpinned => Some(one("nodejs")),
+            ("node", Manager::Brew) if unpinned => Some(one("node")),
+            _ => None,
+        };
+        if found.is_some() {
+            return found;
+        }
+    }
+    None
+}
+
 /// The package manager a language brings with it.
 ///
 /// node ships npm, so declaring node under `languages:` is what makes
@@ -725,6 +829,52 @@ mod tests {
         ] {
             assert!(!needs_root(m), "{m} installs into the user's own prefix");
         }
+    }
+
+    #[test]
+    fn a_failed_toolchain_download_falls_back_to_the_system_without_changing_the_version() {
+        let apt = [Manager::Apt, Manager::Mise];
+        // The case that prompted this: go 1.23, Ubuntu 24.04.
+        let n = native_fallback("go", Some("1.23"), &apt).expect("apt has golang-1.23-go");
+        assert_eq!(n.manager, Manager::Apt);
+        assert_eq!(n.packages, ["golang-1.23-go"]);
+        // Versioned Debian packages do not put `go` on PATH.
+        assert_eq!(
+            n.bin_dir.as_deref(),
+            Some(std::path::Path::new("/usr/lib/go-1.23/bin"))
+        );
+        // No pin: whatever the system calls go, already on PATH.
+        let n = native_fallback("go", None, &apt).unwrap();
+        assert_eq!(
+            (n.packages, n.bin_dir),
+            (vec!["golang-go".to_string()], None)
+        );
+        // A patch pin cannot be met by a package named for the minor version.
+        assert_eq!(native_fallback("go", Some("1.23.4"), &apt), None);
+        // And a pin on a distro that ships one version is refused rather than
+        // answered with a different one: Arch has 1.27, the config said 1.23.
+        assert_eq!(
+            native_fallback("go", Some("1.23"), &[Manager::Pacman]),
+            None
+        );
+        assert!(native_fallback("go", Some("latest"), &[Manager::Pacman]).is_some());
+        // node brings npm with it, since Debian splits them.
+        let n = native_fallback("node", Some("lts"), &apt).unwrap();
+        assert_eq!(n.packages, ["nodejs", "npm"]);
+        // Nothing to fall back to, or nothing known for the language.
+        assert_eq!(native_fallback("go", None, &[Manager::Mise]), None);
+        assert_eq!(native_fallback("ruby", None, &apt), None);
+    }
+
+    #[test]
+    fn built_in_mirrors_are_only_hosts_run_by_the_default_publisher() {
+        for m in default_mirrors("go", Manager::Mise) {
+            assert!(
+                m.contains("google"),
+                "{m} is not Google's: a third-party default widens trust"
+            );
+        }
+        assert!(default_mirrors("node", Manager::Mise).is_empty());
     }
 
     #[test]

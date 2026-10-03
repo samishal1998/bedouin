@@ -120,7 +120,43 @@ Note too that `golang.google.cn` redirects to `dl.google.com` outside China, so
 it helps only where that host is the one being blocked.
 </Aside>
 
-If every source fails, the error names the mirrors that were tried, and
+A few mirrors are built in and tried without being asked, but only hosts run
+by the **same publisher** as the default (`golang.google.cn` for Go). A mirror
+is trusted for the checksum as well as the bytes, so a third-party default would
+widen who can put a toolchain on your machine the first time one host hiccups.
+Third-party ones belong in your own `mirrors:`, chosen by whoever trusts them. For
+node, Tsinghua's `https://mirrors.tuna.tsinghua.edu.cn/nodejs-release` and
+`https://registry.npmmirror.com/-/binary/node` both served the tarball and its
+`SHASUMS256.txt` when tried.
+
+### Then the system's package manager
+
+When every download fails, a language falls back to the machine's own package
+manager, whose packages are signed by the distro and come from a different host
+than the one that just failed. You will see it say so:
+
+```
+   falling back to apt: golang-1.23-go
+   run `bedouin apply` once more to put it on your shell's PATH
+```
+
+It never installs a *different version* than the config asked for:
+
+| You wrote | apt | dnf, zypper, pacman, apk, brew |
+|---|---|---|
+| no version, `latest`, `lts` | the system's | the system's |
+| `"1.23"` (major.minor) | `golang-1.23-go` where it exists | refused: those ship one version |
+| `"1.23.4"` | refused | refused |
+
+A refusal means the original error is reported unchanged, because installing Go
+1.27 for a config that said 1.23 is a wrong answer, not a degraded one. It covers
+`go` and `node` (with `npm`, which Debian splits off). Versioned Debian packages
+do not put `go` on `PATH`, so bedouin records where it landed and the next
+`apply` adds that directory to your shell. The system manager needs root, so
+this step runs through `sudo` like any apt step.
+
+If everything fails, the error leads with the original failure, names the
+mirrors tried and says the fallback failed too, and
 `bedouin apply --skip language/go` leaves it out so the rest of the run
 continues.
 

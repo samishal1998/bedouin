@@ -3,6 +3,36 @@
 Dates are release dates. Versions before 0.2.0 are omitted: they predate this
 file and nothing depended on them.
 
+## 0.23.0 — 2026-10-03
+
+**A language falls back to the system's package manager.** When every download
+of a toolchain fails, `go` and `node` now try the machine's own package manager
+before giving up: apt, dnf, zypper, pacman, apk or brew. Reproduced end to end:
+Ubuntu 24.04 with `dl.google.com` unreachable and no mirror configured installs
+Go 1.23.1 from apt, a fresh shell finds it, and the plan converges.
+
+It never installs a different version than the config asked for. No version,
+`latest` and `lts` take whatever the system has. A `major.minor` pin is met only
+where the version is in the package name (Debian and Ubuntu's `golang-1.23-go`).
+A patch pin, or a pin on a distro that ships one version, is refused and the
+original error reported, since 1.27 for a config that said 1.23 is a wrong
+answer rather than a degraded one. node brings `npm` with it, because Debian
+splits them.
+
+Versioned Debian packages do not put `go` on PATH. Where the toolchain landed is
+recorded, steps later in the run see it, and the next `apply` adds it to the
+generated PATH file (the plan is made before the fallback is known, so that one
+needs a second run, which the output says).
+
+**Built-in mirrors, for same-publisher hosts only.** Go tries `golang.google.cn`
+after `dl.google.com`. I looked for more and there are not any to ship: Google
+has no second Go host (`storage.googleapis.com/golang` is a 403), and the
+popular third-party mirrors fail mise's `.sha256` check or lack the version.
+Node has two that work (Tsinghua's and npmmirror), but a mirror is trusted for
+the checksum as well as the bytes, so a third-party default would widen who can
+put a toolchain on your machine whenever nodejs.org has a bad minute. They are
+documented for `mirrors:` instead, chosen by whoever trusts them.
+
 ## 0.22.1 — 2026-10-02
 
 **`bedouin ssh` brings the machine's bedouin up to the one driving it.** The

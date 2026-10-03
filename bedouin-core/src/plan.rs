@@ -1340,6 +1340,17 @@ pub fn build(
                     path_entries.push((key, l.name.clone()));
                 }
             }
+            // And wherever it actually landed. A toolchain that fell back to
+            // the system's package manager is not where its installer would
+            // have put it, and only the run that did it knows -- so the record
+            // is what puts it on the user's own PATH, one apply later.
+            if let Some(st) = state.done(&format!("language/{}", l.name)) {
+                for key in &st.bin_dirs {
+                    if !path_entries.iter().any(|(k, _)| k == key) {
+                        path_entries.push((key.clone(), l.name.clone()));
+                    }
+                }
+            }
         }
         for p in &cfg.packages {
             for entry in &p.path {

@@ -470,6 +470,101 @@ mod mirrors {
         );
     }
 
+    fn state_of(h: &bedouin_core::host::FakeHost) -> bedouin_core::state::State {
+        run::plan_for(
+            h,
+            Some(Path::new("/cfg/bedouin.yaml")),
+            Path::new("/cfg"),
+            Os::Linux,
+            Arch::X86_64,
+        )
+        .expect("re-plans")
+        .state
+    }
+
+    fn ran(h: &bedouin_core::host::FakeHost, display: &str) -> usize {
+        h.ran
+            .borrow()
+            .iter()
+            .filter(|c| c.display() == display)
+            .count()
+    }
+
+    #[test]
+    fn when_the_download_fails_everywhere_the_system_package_manager_is_used() {
+        // mise has nothing scripted, so every download attempt fails -- the
+        // machine whose dl.google.com is blocked. apt is the way out.
+        let h = machine_with(&cfg(""))
+            .with_command("sudo -n apt-get update", FakeRun::ok(""))
+            .with_command("sudo -n apt-get install -y golang-1.23-go", FakeRun::ok(""));
+        let report = run("", &h).expect("applies");
+        assert!(report.ok(), "{:?}", report.failure);
+        let st = state_of(&h);
+        let go = st.items.get("language/go").expect("go was recorded");
+        // Recorded as what actually installed it, so removal and a later
+        // reinstall decision look at the truth.
+        assert_eq!(go.method.as_deref(), Some("apt"));
+        // Versioned Debian packages do not put `go` on PATH, so where it
+        // landed is recorded for the steps that follow and the PATH file.
+        assert!(
+            go.bin_dirs.iter().any(|d| d == "/usr/lib/go-1.23/bin"),
+            "{:?}",
+            go.bin_dirs
+        );
+    }
+
+    #[test]
+    fn a_pin_the_system_cannot_meet_is_not_answered_with_another_version() {
+        // 1.23.4 is a patch pin; golang-1.23-go is "some 1.23". Installing it
+        // would be a wrong answer wearing the clothes of a fallback.
+        let c = "version: 0\nshell: bash\nlanguages:\n  - {name: go, version: \"1.23.4\", installer: mise}\n";
+        let h = machine_with(c)
+            .with_command("sudo -n apt-get update", FakeRun::ok(""))
+            .with_command("sudo -n apt-get install -y golang-1.23-go", FakeRun::ok(""));
+        let report = run("", &h).expect("apply returns a report");
+        let f = report.failure.expect("fails rather than substituting");
+        assert!(!f.message.contains("falling back"), "{}", f.message);
+        assert_eq!(ran(&h, "sudo -n apt-get install -y golang-1.23-go"), 0);
+    }
+
+    #[test]
+    fn a_fallback_that_also_fails_says_so_and_keeps_the_first_error() {
+        let h = machine_with(&cfg("")).with_command("sudo -n apt-get update", FakeRun::ok(""));
+        let report = run("", &h).expect("apply returns a report");
+        let msg = report.failure.expect("fails").message;
+        assert!(
+            msg.contains("falling back to apt golang-1.23-go failed too"),
+            "{msg}"
+        );
+        // The original failure leads: it is the one the person has to fix.
+        assert!(msg.starts_with("`mise use -g go@1.23`"), "{msg}");
+    }
+
+    #[test]
+    fn google_s_own_mirror_is_tried_without_being_configured() {
+        let h = machine_with(&cfg(""))
+            .with_command(
+                GO,
+                FakeRun {
+                    code: 1,
+                    ..Default::default()
+                },
+            )
+            .with_command_env(GO, VAR, "https://golang.google.cn/dl", FakeRun::ok(""));
+        let report = run("", &h).expect("applies");
+        assert!(report.ok(), "{:?}", report.failure);
+        // Rescued by the built-in, so the system was never touched.
+        assert_eq!(ran(&h, "sudo -n apt-get update"), 0);
+        assert_eq!(
+            state_of(&h)
+                .items
+                .get("language/go")
+                .and_then(|i| i.method.clone())
+                .as_deref(),
+            Some("mise")
+        );
+    }
+
     #[test]
     fn a_mirror_for_a_language_bedouin_cannot_redirect_is_refused_when_read() {
         let e = err(

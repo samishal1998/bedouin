@@ -317,6 +317,22 @@ impl Executor<'_> {
         .map_err(fail)
     }
 
+    /// Install a toolchain from the system's package manager.
+    fn install_native(
+        &mut self,
+        n: &recipe::Native,
+    ) -> std::result::Result<(), (String, Vec<String>)> {
+        self.refresh(n.manager)?;
+        for pkg in &n.packages {
+            let cmd = recipe::install(n.manager, pkg, None)
+                .expect("a system package manager is always one command");
+            let mut cmd = self.escalate(cmd);
+            cmd.env = step_env(&self.state, self.facts);
+            self.run(&cmd)?;
+        }
+        Ok(())
+    }
+
     /// Run a question and keep the answer, not the noise. A probe that cannot
     /// run at all is a "no", which is the old behaviour: install and find out.
     fn quiet(&mut self, cmd: &Cmd) -> bool {
@@ -604,23 +620,30 @@ impl Executor<'_> {
                     .expect("a toolchain installer is always one command");
                 let mut cmd = self.escalate(cmd);
                 cmd.env = step_env(&self.state, self.facts);
-                // The default source first, then each mirror in the order the
-                // config gives them. Only the first failure is reported: later
-                // ones are usually the same error against a worse host.
+                // Sources in order: the default, the config's own mirrors, then
+                // any built-in for this language. Only the first failure is
+                // reported: later ones are usually the same error from a worse
+                // host.
+                let mut sources: Vec<Option<String>> = vec![None];
+                sources.extend(mirrors.iter().cloned().map(Some));
+                for b in recipe::default_mirrors(&item.name, *installer) {
+                    if !mirrors.iter().any(|m| m == b) {
+                        sources.push(Some((*b).to_string()));
+                    }
+                }
                 let mut first_err = None;
-                let mut sources: Vec<Option<&String>> = vec![None];
-                sources.extend(mirrors.iter().map(Some));
+                let mut worked = false;
                 for (i, mirror) in sources.iter().enumerate() {
                     let mut attempt = cmd.clone();
                     if let (Some(url), Some(var)) =
                         (mirror, recipe::mirror_env(&item.name, *installer))
                     {
-                        attempt.env.insert(var.to_string(), (*url).clone());
+                        attempt.env.insert(var.to_string(), url.clone());
                         (self.out)(Line::Out(format!("   retrying from mirror {url}")));
                     }
                     match self.run(&attempt) {
                         Ok(()) => {
-                            first_err = None;
+                            worked = true;
                             break;
                         }
                         Err(e) => {
@@ -630,17 +653,63 @@ impl Executor<'_> {
                         }
                     }
                 }
-                if let Some((msg, tail)) = first_err {
-                    let tried = if mirrors.is_empty() {
+                let mut installed_by = *installer;
+                let mut bin_dirs: Vec<String> =
+                    bin_dirs.iter().map(|p| p.display().to_string()).collect();
+                if !worked {
+                    let (msg, tail) = first_err.expect("the default source was tried first");
+                    let tried: Vec<&String> = sources.iter().flatten().collect();
+                    let tried = if tried.is_empty() {
                         String::new()
                     } else {
-                        format!(" (and {} mirror(s): {})", mirrors.len(), mirrors.join(", "))
+                        format!(
+                            " (and {} mirror(s): {})",
+                            tried.len(),
+                            tried
+                                .iter()
+                                .map(|m| m.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        )
                     };
-                    return Err((format!("{msg}{tried}"), tail));
+                    // Last resort: the system's own package manager. Signed by
+                    // the distro rather than fetched from the host that just
+                    // failed, which is the point -- and refused where it could
+                    // only install a different version than the config asked for.
+                    let Some(native) = recipe::native_fallback(
+                        &item.name,
+                        version.as_deref(),
+                        &self.facts.managers,
+                    ) else {
+                        return Err((format!("{msg}{tried}"), tail));
+                    };
+                    (self.out)(Line::Out(format!(
+                        "   falling back to {}: {}",
+                        native.manager,
+                        native.packages.join(" ")
+                    )));
+                    if let Err((nmsg, _)) = self.install_native(&native) {
+                        return Err((
+                            format!(
+                                "{msg}{tried}\n  falling back to {} {} failed too: {nmsg}",
+                                native.manager,
+                                native.packages.join(" ")
+                            ),
+                            tail,
+                        ));
+                    }
+                    installed_by = native.manager;
+                    if let Some(d) = &native.bin_dir {
+                        bin_dirs.push(d.display().to_string());
+                        (self.out)(Line::Out(
+                            "   run `bedouin apply` once more to put it on your shell's PATH"
+                                .into(),
+                        ));
+                    }
                 }
                 rec.version = version.clone();
-                rec.method = Some(installer.to_string());
-                rec.bin_dirs = bin_dirs.iter().map(|p| p.display().to_string()).collect();
+                rec.method = Some(installed_by.to_string());
+                rec.bin_dirs = bin_dirs;
             }
 
             (_, Payload::ScriptPackage { name, script }) => {
