@@ -3,6 +3,50 @@
 Dates are release dates. Versions before 0.2.0 are omitted: they predate this
 file and nothing depended on them.
 
+## 0.23.2 — 2026-10-31
+
+Four reports from real machines. Each was reproduced in a container and checked
+against 0.23.1 before and after.
+
+**Homebrew's installer waited for a keypress.** It was run without
+`NONINTERACTIVE=1`, its documented switch, and stopped at "Press RETURN to
+continue". Every step now runs with `NONINTERACTIVE=1` and `MISE_YES=1` beside
+the existing `DEBIAN_FRONTEND`. But that alone just swaps a hang for a failure:
+non-interactive, Homebrew will not ask for the sudo it needs to create
+/home/linuxbrew, and its own apt prerequisites were root steps the plan never
+showed. 0.23.1 failed at `manager/brew` with "a password is required". Now sudo
+is asked for once, Homebrew installs, and `brew install hello` runs.
+
+**`--skip manager/brew` skips what needs brew.** Every `from: brew` package and
+every language brew would install are skipped with it, whether or not brew is
+already present. Before, each one failed on the missing brew, and the first
+failure stopped the run.
+
+**sudo is asked for wherever it is first needed.** Every root step runs as
+`sudo -n`, which never prompts, so it assumed the password had been asked for
+up front. That only happened when the plan could see a root step, and three
+paths reach one without the plan knowing: a language falling back to apt,
+Homebrew's prerequisites, and npm into a root-owned prefix. The question now
+lives in the one function every root step passes through, and is asked at most
+once a run. The keepalive that stops it expiring runs whenever sudo needs a
+password, not only when the plan shows a root step.
+
+A user granted sudo by a line in `/etc/sudoers.d` was told the machine "offers
+no way to escalate": the check went by group membership, and such a user is in
+no sudo group. Measured on Ubuntu 24.04: without a password, that user and one
+with no rights at all get the same answer from both `sudo -n true` and
+`sudo -n -l`. So a machine with sudo is now one where sudo is asked. A user with
+no rights hears "Sorry, user may not run sudo" from sudo and nothing changes.
+Only a machine with no sudo is refused without asking.
+
+**npm into a root-owned prefix is escalated.** `needs_root` for npm was a
+static `false`: right for a mise node, wrong for a distro node, whose globals go
+to /usr/local. That is exactly what the 0.23.0 apt fallback for node installs.
+0.23.1 failed with `EACCES, mkdir '/usr/local/lib/node_modules/…'`. Whether
+npm's directories are writable is now checked when the step runs, and npm goes
+through sudo only when they are not. Checked both ways: a distro npm prompts
+once and installs, and a mise npm (this machine's) is writable and never asks.
+
 ## 0.23.1 — 2026-10-03
 
 **The system-package fallback can ask for a sudo password.** It chose

@@ -305,9 +305,11 @@ fn run_apply(
 
     // sudo's timestamp expires after 15 minutes by default and a real apply can
     // outlast that, so "one prompt, up front" needs refreshing to stay true.
-    let _keepalive = (outcome.facts.privilege == bedouin_core::facts::Privilege::Password
-        && outcome.plan.changes().any(|i| i.needs_root))
-    .then(bedouin_core::host::SudoKeepalive::start);
+    // Whenever sudo needs a password, not only when the plan shows a root
+    // step: a fallback or a manager's own installer can ask halfway through.
+    // Refreshing a timestamp nobody has created yet is a harmless no-op.
+    let _keepalive = (outcome.facts.privilege == bedouin_core::facts::Privilege::Password)
+        .then(bedouin_core::host::SudoKeepalive::start);
 
     println!();
     let report = match bedouin_core::apply::apply(

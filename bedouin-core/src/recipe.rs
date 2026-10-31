@@ -18,18 +18,9 @@ use std::path::PathBuf;
 /// per-user ones do not, and running them as root would put files in the wrong
 /// home.
 pub fn needs_root(m: Manager) -> bool {
-    // npm is deliberately absent, and it is the one manager where that is a
-    // judgement rather than a fact. Under a node Bedouin manages -- mise, or
-    // any per-user install -- the global prefix belongs to the user and root
-    // would be wrong. Under a distro node it is /usr/local and root is needed.
-    //
-    // False is the safe half of that. Escalating would run `sudo npm` on the
-    // setup Bedouin itself recommends, where root has no mise and resolves a
-    // different node, or none. Not escalating fails a system-wide install
-    // loudly, with EACCES naming the path.
-    //
-    // ponytail: static answer to an environment-dependent question. The fix is
-    // a probe-time fact recording whether `npm root -g` is writable.
+    // npm is absent because its answer depends on the machine, not the
+    // manager: root under a distro node, the user under mise. The executor
+    // asks at run time instead -- see `writable_probe`.
     matches!(
         m,
         Manager::Apt | Manager::Zypper | Manager::Dnf | Manager::Pacman | Manager::Apk
@@ -658,6 +649,30 @@ pub fn native_fallback(
         }
     }
     None
+}
+
+/// A question whose exit status says whether this manager can install as the
+/// current user. `None` means the answer is fixed and `needs_root` already
+/// gives it.
+///
+/// npm is the one where it depends on the machine. Under a node mise (or nvm,
+/// or any per-user install) manages, the global prefix is the user's. Under a
+/// distro node -- including the one a language falls back to apt for -- it is
+/// /usr/local, and `npm install -g` fails with EACCES. Both directories npm
+/// writes are checked: the packages and the shims beside them.
+pub fn writable_probe(m: Manager) -> Option<Cmd> {
+    match m {
+        Manager::Npm => Some(Cmd::new([
+            "sh".to_string(),
+            "-c".into(),
+            // A directory that does not exist yet is writable if its nearest
+            // existing parent is.
+            r#"w() { [ -w "$1" ] || { [ ! -e "$1" ] && w "$(dirname "$1")"; }; }
+p=$(npm prefix -g) && w "$p/lib/node_modules" && w "$p/bin""#
+                .into(),
+        ])),
+        _ => None,
+    }
 }
 
 /// The package manager a language brings with it.

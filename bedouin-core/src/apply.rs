@@ -145,6 +145,12 @@ pub fn step_env(state: &State, facts: &Facts) -> BTreeMap<String, String> {
     env.insert("USER".into(), facts.user.clone());
     // Package managers get noisy or interactive without these.
     env.insert("DEBIAN_FRONTEND".into(), "noninteractive".into());
+    // Homebrew's installer stops at "Press RETURN to continue" without this,
+    // and its documented way out is exactly this variable. Any `script:` that
+    // honours the same convention gets the same courtesy.
+    env.insert("NONINTERACTIVE".into(), "1".into());
+    // mise asks before trusting a config file or installing a missing plugin.
+    env.insert("MISE_YES".into(), "1".into());
     // The only manager that needs an environment variable rather than a PATH
     // entry. `pnpm add -g` refuses outright unless $PNPM_HOME/bin is on PATH
     // ("ERR_PNPM_GLOBAL_BIN_DIR_NOT_IN_PATH"), and pnpm reads the variable
@@ -190,6 +196,10 @@ struct Executor<'a> {
     state: State,
     state_path: PathBuf,
     out: &'a mut dyn FnMut(Line),
+    /// Whether sudo has a live password this run. Every root step runs as
+    /// `sudo -n`, which never asks -- so whatever the path that leads to one,
+    /// the question has to have been asked first.
+    sudo_ready: bool,
 }
 
 impl Executor<'_> {
@@ -208,13 +218,63 @@ impl Executor<'_> {
     /// Escalation lives here rather than inside `Host` so it is visible in the
     /// argv a test asserts on -- a Host that silently rewrote commands would
     /// hide the one thing worth checking.
-    fn escalate(&self, mut cmd: Cmd) -> Cmd {
+    fn escalate(&mut self, mut cmd: Cmd) -> std::result::Result<Cmd, (String, Vec<String>)> {
         if cmd.root && self.facts.privilege != Privilege::Root {
+            self.ensure_sudo(&cmd.display())?;
             let mut argv = vec!["sudo".to_string(), "-n".to_string()];
             argv.append(&mut cmd.argv);
             cmd.argv = argv;
         }
-        cmd
+        Ok(cmd)
+    }
+
+    /// Whether this manager writes somewhere only root can, on this machine,
+    /// right now. See `recipe::writable_probe`.
+    fn needs_root_here(&mut self, m: Manager) -> bool {
+        match recipe::writable_probe(m) {
+            Some(mut probe) => {
+                probe.env = step_env(&self.state, self.facts);
+                !self.quiet(&probe)
+            }
+            None => false,
+        }
+    }
+
+    /// Make `sudo -n` work for the rest of the run, asking for the password
+    /// at most once.
+    ///
+    /// The plan asks up front when it can see a root step. It cannot always:
+    /// a toolchain that falls back to apt, Homebrew's own prerequisites, an npm
+    /// whose global directory turns out to be root's. Each of those used to
+    /// reach `sudo -n` unprimed and die on "a password is required". This is
+    /// the one place they all pass through.
+    fn ensure_sudo(&mut self, why: &str) -> std::result::Result<(), (String, Vec<String>)> {
+        match self.facts.privilege {
+            Privilege::Root | Privilege::Passwordless => Ok(()),
+            _ if self.sudo_ready => Ok(()),
+            Privilege::Unavailable => Err((
+                format!("`{why}` needs root, and there is no sudo on this machine to get it with"),
+                Vec::new(),
+            )),
+            Privilege::Password => {
+                (self.out)(Line::Out(format!(
+                    "   `{why}` needs root; asking sudo once"
+                )));
+                let mut v = Cmd::new(["sudo", "-v"]);
+                v.env = step_env(&self.state, self.facts);
+                self.run(&v).map_err(|(m, t)| {
+                    (
+                        format!(
+                            "{m}\n  sudo did not accept: a wrong password, or this user is \
+                             not allowed to use sudo"
+                        ),
+                        t,
+                    )
+                })?;
+                self.sudo_ready = true;
+                Ok(())
+            }
+        }
     }
 
     /// Refresh a manager's package lists, at most once per run.
@@ -225,7 +285,7 @@ impl Executor<'_> {
         let Some(cmd) = recipe::refresh(m) else {
             return Ok(());
         };
-        let mut cmd = self.escalate(cmd);
+        let mut cmd = self.escalate(cmd)?;
         cmd.env = step_env(&self.state, self.facts);
         self.run(&cmd)
     }
@@ -322,44 +382,11 @@ impl Executor<'_> {
         &mut self,
         n: &recipe::Native,
     ) -> std::result::Result<(), (String, Vec<String>)> {
-        // This is the one place bedouin discovers it needs root halfway
-        // through: the plan said "mise, no root", the download failed, and now
-        // the system's manager is the way out. So the question that is
-        // normally asked up front is asked here, at the moment it matters.
-        if recipe::needs_root(n.manager) {
-            match self.facts.privilege {
-                Privilege::Unavailable => {
-                    return Err((
-                        format!(
-                            "{} needs root, and this user has no sudo rights, so there is \
-                             nothing to fall back to. Install {} as root, or fix the \
-                             download",
-                            n.manager,
-                            n.packages.join(" ")
-                        ),
-                        Vec::new(),
-                    ));
-                }
-                Privilege::Password => {
-                    (self.out)(Line::Out(format!(
-                        "   {} needs root; asking sudo once",
-                        n.manager
-                    )));
-                    // `sudo -n` below never asks, so a password has to be
-                    // given now or not at all. sudo reads it from the terminal,
-                    // which is there under `bedouin ssh` because of -t.
-                    let mut v = Cmd::new(["sudo", "-v"]);
-                    v.env = step_env(&self.state, self.facts);
-                    self.run(&v)?;
-                }
-                Privilege::Root | Privilege::Passwordless => {}
-            }
-        }
         self.refresh(n.manager)?;
         for pkg in &n.packages {
             let cmd = recipe::install(n.manager, pkg, None)
                 .expect("a system package manager is always one command");
-            let mut cmd = self.escalate(cmd);
+            let mut cmd = self.escalate(cmd)?;
             cmd.env = step_env(&self.state, self.facts);
             self.run(&cmd)?;
         }
@@ -496,9 +523,11 @@ impl Executor<'_> {
                                 None => return Ok(rec),
                             }
                         } else {
-                            recipe::remove(m, &item.name)
+                            let mut c = recipe::remove(m, &item.name);
+                            c.root |= self.needs_root_here(m);
+                            c
                         };
-                        let mut cmd = self.escalate(base);
+                        let mut cmd = self.escalate(base)?;
                         cmd.env = step_env(&self.state, self.facts);
                         // A package already gone by other means must not wedge
                         // every future apply: stop-on-first-failure plus "drop
@@ -626,8 +655,15 @@ impl Executor<'_> {
                         Vec::new(),
                     ));
                 };
+                // Homebrew's installer runs sudo itself -- it creates
+                // /home/linuxbrew or /opt/homebrew -- and under NONINTERACTIVE
+                // it will not prompt for the password, it fails. So it is asked
+                // for here, once, the same way any root step would ask.
+                if *m == Manager::Brew {
+                    self.ensure_sudo("the Homebrew installer")?;
+                }
                 for cmd in steps {
-                    let mut cmd = self.escalate(cmd);
+                    let mut cmd = self.escalate(cmd)?;
                     cmd.env = step_env(&self.state, self.facts);
                     self.run(&cmd)?;
                 }
@@ -651,7 +687,7 @@ impl Executor<'_> {
                 // schema, and github is not one, so there is always a command.
                 let cmd = recipe::install(*installer, &item.name, version.as_deref())
                     .expect("a toolchain installer is always one command");
-                let mut cmd = self.escalate(cmd);
+                let mut cmd = self.escalate(cmd)?;
                 cmd.env = step_env(&self.state, self.facts);
                 // Sources in order: the default, the config's own mirrors, then
                 // any built-in for this language. Only the first failure is
@@ -775,7 +811,7 @@ impl Executor<'_> {
                 // A changed method means the old copy comes out first;
                 // installing twice would leave two, one of them unowned.
                 if let (Action::Reinstall { .. }, Some(old)) = (action, previous) {
-                    let mut cmd = self.escalate(recipe::remove(*old, &item.name));
+                    let mut cmd = self.escalate(recipe::remove(*old, &item.name))?;
                     cmd.env = step_env(&self.state, self.facts);
                     self.run(&cmd)?;
                 }
@@ -807,9 +843,10 @@ impl Executor<'_> {
                     rec.path = vec![placed];
                 } else {
                     self.refresh(*manager)?;
-                    let cmd = recipe::install(*manager, &item.name, version.as_deref())
+                    let mut cmd = recipe::install(*manager, &item.name, version.as_deref())
                         .expect("every manager but github is one command");
-                    let mut cmd = self.escalate(cmd);
+                    cmd.root |= self.needs_root_here(*manager);
+                    let mut cmd = self.escalate(cmd)?;
                     cmd.env = step_env(&self.state, self.facts);
                     self.run(&cmd)?;
                 }
@@ -1214,8 +1251,26 @@ pub fn apply(
     let all: Vec<&Item> = plan.changes().collect();
     // A step held back on purpose. One package from a third-party repository
     // that is not set up yet should not strand the other forty steps.
-    let (skipped, changes): (Vec<&Item>, Vec<&Item>) =
+    let (mut skipped, changes): (Vec<&Item>, Vec<&Item>) =
         all.into_iter().partition(|i| skips(skip, &i.id));
+    // Skipping a manager skips what needs it. `--skip manager/brew` used to
+    // leave every `from: brew` package in the run, each then failing on a brew
+    // that was never installed -- and the first failure stops everything after
+    // it, which is the opposite of what skipping was for.
+    // Read from what was asked rather than from the plan, so it holds whether
+    // or not the manager itself was due to be installed this run.
+    let gone: std::collections::BTreeSet<Manager> = Manager::ALL
+        .iter()
+        .copied()
+        .filter(|m| skips(skip, &format!("manager/{m}")))
+        .collect();
+    let (also, changes): (Vec<&Item>, Vec<&Item>) =
+        changes.into_iter().partition(|i| match &i.payload {
+            Payload::Package { manager, .. } => gone.contains(manager),
+            Payload::Language { installer, .. } => gone.contains(installer),
+            _ => false,
+        });
+    skipped.extend(also);
     let skipped: Vec<String> = skipped.iter().map(|i| i.id.clone()).collect();
     if changes.is_empty() {
         // Nothing to do is not nothing to record. Every item here is a NoOp,
@@ -1285,6 +1340,8 @@ pub fn apply(
         state,
         state_path,
         out,
+        // Asked just above whenever the plan could see a root step.
+        sudo_ready: !root_steps.is_empty() && facts.privilege == Privilege::Password,
     };
 
     let mut report = Report {

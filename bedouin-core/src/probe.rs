@@ -69,16 +69,14 @@ fn privilege(host: &dyn Host, path: &[PathBuf]) -> Privilege {
     if capture(host, &["sudo", "-n", "true"], path).is_some() {
         return Privilege::Passwordless;
     }
-    // `sudo -n -l` was the obvious second probe and it does not work: it exits
-    // nonzero both when the user has no rights AND when it merely wants a
-    // password, which is exactly the distinction being drawn. Group membership
-    // is the signal that separates them without prompting.
-    let sudoer = capture(host, &["id", "-nG"], path).is_some_and(|groups| {
-        groups
-            .split_whitespace()
-            .any(|g| matches!(g, "sudo" | "wheel" | "admin"))
-    });
-    if sudoer {
+    // Without a password there is no telling "needs one" from "has no rights":
+    // `sudo -n true` and `sudo -n -l` both say "a password is required" to
+    // either. Group membership looked like the separator and is not -- a user
+    // granted sudo by a line in /etc/sudoers.d is in no sudo group, and was
+    // being told the machine offered no way to escalate. So a machine with sudo
+    // is one where sudo is worth asking; a user who turns out to have no
+    // rights is told so by sudo itself, at the one prompt.
+    if host.which("sudo", path).is_some() {
         Privilege::Password
     } else {
         Privilege::Unavailable
@@ -378,20 +376,24 @@ mod tests {
             Privilege::Passwordless
         );
 
-        // A real machine: in the sudo group, but sudo wants a password. Both
-        // `sudo -n true` and `sudo -n -l` fail here, which is why the group is
-        // what decides.
-        let asks = base()
-            .with_command("id -u", FakeRun::ok("1000"))
-            .with_command("sudo -n true", FakeRun::fails(1, "a password is required"))
-            .with_command("sudo -n -l", FakeRun::fails(1, "a password is required"))
-            .with_command("id -nG", FakeRun::ok("someone sudo users docker"));
-        assert_eq!(facts(&asks, None).unwrap().privilege, Privilege::Password);
+        // sudo wants a password. In the sudo group or granted by a line in
+        // /etc/sudoers.d, the answers without a password are identical --
+        // measured on Ubuntu 24.04 -- so both are worth asking.
+        for groups in ["someone sudo users docker", "someone users"] {
+            let asks = base()
+                .with_binary("/usr/bin/sudo")
+                .with_command("id -u", FakeRun::ok("1000"))
+                .with_command("sudo -n true", FakeRun::fails(1, "a password is required"))
+                .with_command("id -nG", FakeRun::ok(groups));
+            assert_eq!(
+                facts(&asks, None).unwrap().privilege,
+                Privilege::Password,
+                "groups: {groups}"
+            );
+        }
 
-        // In no privileged group: genuinely cannot escalate.
-        let none = base()
-            .with_command("id -u", FakeRun::ok("1000"))
-            .with_command("id -nG", FakeRun::ok("someone users"));
+        // No sudo at all: genuinely cannot escalate.
+        let none = base().with_command("id -u", FakeRun::ok("1000"));
         assert_eq!(
             facts(&none, None).unwrap().privilege,
             Privilege::Unavailable

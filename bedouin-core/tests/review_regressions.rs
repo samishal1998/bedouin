@@ -529,14 +529,15 @@ mod mirrors {
 
     /// A machine whose user has sudo but needs a password for it.
     fn needs_a_sudo_password(h: bedouin_core::host::FakeHost) -> bedouin_core::host::FakeHost {
-        h.with_command(
-            "sudo -n true",
-            FakeRun {
-                code: 1,
-                ..Default::default()
-            },
-        )
-        .with_command("id -nG", FakeRun::ok("t sudo"))
+        h.with_binary("/usr/bin/sudo")
+            .with_command(
+                "sudo -n true",
+                FakeRun {
+                    code: 1,
+                    ..Default::default()
+                },
+            )
+            .with_command("id -nG", FakeRun::ok("t sudo"))
     }
 
     #[test]
@@ -577,19 +578,20 @@ mod mirrors {
     }
 
     #[test]
-    fn a_user_with_no_sudo_rights_is_told_so_rather_than_failing_on_sudo() {
-        let h = machine_with(&cfg(""))
-            .with_command(
-                "sudo -n true",
-                FakeRun {
-                    code: 1,
-                    ..Default::default()
-                },
-            )
-            .with_command("id -nG", FakeRun::ok("t"));
+    fn a_machine_with_no_sudo_says_so_rather_than_failing_on_sudo() {
+        // Whether a user who HAS sudo is allowed to use it cannot be told
+        // without a password -- sudo answers the same either way -- so that is
+        // left to sudo's own prompt. A machine with no sudo at all is known.
+        let h = machine_with(&cfg("")).with_command(
+            "sudo -n true",
+            FakeRun {
+                code: 1,
+                ..Default::default()
+            },
+        );
         let report = run("", &h).expect("apply returns a report");
         let msg = report.failure.expect("fails").message;
-        assert!(msg.contains("no sudo rights"), "{msg}");
+        assert!(msg.contains("no sudo on this machine"), "{msg}");
         assert_eq!(
             ran(&h, "sudo -v"),
             0,
@@ -642,5 +644,172 @@ mod mirrors {
         );
         assert!(e.contains("mirrors"), "{e}");
         assert!(e.contains("go and node"), "should say what does work: {e}");
+    }
+}
+
+/// Four reports from real machines, 2026-10-31.
+mod reported_1031 {
+    use super::*;
+    use bedouin_core::apply;
+    use bedouin_core::facts::Manager;
+    use bedouin_core::host::{FakeHost, Line};
+
+    fn apply_with(h: &FakeHost, skip: &[&str]) -> apply::Report {
+        let o = run::plan_for(
+            h,
+            Some(Path::new("/cfg/bedouin.yaml")),
+            Path::new("/cfg"),
+            Os::Linux,
+            Arch::X86_64,
+        )
+        .expect("plans");
+        let skip = skip.iter().map(|s| s.to_string()).collect();
+        apply::apply(
+            &o.plan,
+            &o.config,
+            &o.facts,
+            o.state,
+            h,
+            &skip,
+            &mut |_: Line| {},
+        )
+        .expect("applies")
+    }
+
+    fn ran(h: &FakeHost) -> Vec<String> {
+        h.ran.borrow().iter().map(|c| c.display()).collect()
+    }
+
+    fn passworded(h: FakeHost) -> FakeHost {
+        h.with_binary("/usr/bin/sudo")
+            .with_command(
+                "sudo -n true",
+                FakeRun {
+                    code: 1,
+                    ..Default::default()
+                },
+            )
+            .with_command("sudo -v", FakeRun::ok(""))
+    }
+
+    const BREW_PKG: &str = "version: 0\nshell: bash\npackages:\n  - {name: lazygit, from: brew}\n  - {name: jq, from: apt}\n";
+
+    #[test]
+    fn skipping_a_manager_skips_what_needs_it() {
+        // brew is absent, so the plan bootstraps it and then installs from it.
+        let h = machine(BREW_PKG)
+            .with_command("sudo -n apt-get update", FakeRun::ok(""))
+            .with_command("sudo -n apt-get install -y jq", FakeRun::ok(""));
+        let report = apply_with(&h, &["manager/brew"]);
+        assert!(report.ok(), "{:?}", report.failure);
+        assert!(
+            report.skipped.iter().any(|s| s == "package/lazygit"),
+            "{:?}",
+            report.skipped
+        );
+        assert!(
+            !ran(&h).iter().any(|c| c.contains("brew")),
+            "brew was touched: {:?}",
+            ran(&h)
+        );
+        // And the rest of the run still happened.
+        assert!(ran(&h).iter().any(|c| c == "sudo -n apt-get install -y jq"));
+    }
+
+    #[test]
+    fn skipping_a_manager_that_is_already_installed_still_skips_its_packages() {
+        let h = machine(BREW_PKG)
+            .with_binary("/home/linuxbrew/.linuxbrew/bin/brew")
+            .with_command("sudo -n apt-get update", FakeRun::ok(""))
+            .with_command("sudo -n apt-get install -y jq", FakeRun::ok(""));
+        let report = apply_with(&h, &["brew"]);
+        assert!(
+            report.skipped.iter().any(|s| s == "package/lazygit"),
+            "{:?}",
+            report.skipped
+        );
+    }
+
+    #[test]
+    fn the_homebrew_installer_cannot_wait_for_a_keypress_and_gets_sudo_first() {
+        let curl = bedouin_core::recipe::bootstrap(
+            Manager::Brew,
+            &bedouin_core::facts::Facts::fixture(
+                Os::Linux,
+                bedouin_core::facts::Distro::Ubuntu,
+                Arch::X86_64,
+            ),
+        )
+        .unwrap()
+        .into_iter()
+        .find(|c| c.argv[0] == "curl")
+        .unwrap()
+        .display();
+        let h = passworded(machine(BREW_PKG))
+            .with_command(
+                "sudo -n apt-get install -y build-essential procps curl file git unzip",
+                FakeRun::ok(""),
+            )
+            .with_command(&curl, FakeRun::ok(""));
+        let _ = apply_with(&h, &["package/jq", "package/lazygit"]);
+        let all = h.ran.borrow().clone();
+        let installer = all
+            .iter()
+            .find(|c| c.argv.first().map(String::as_str) == Some("bash"))
+            .expect("the Homebrew installer ran");
+        assert_eq!(
+            installer.env.get("NONINTERACTIVE").map(String::as_str),
+            Some("1")
+        );
+        // Its apt prerequisites are root steps the plan could not see, and
+        // NONINTERACTIVE means it will not ask for a password itself.
+        let at = |p: &dyn Fn(&str) -> bool| all.iter().position(|c| p(&c.display()));
+        let v = at(&|c| c == "sudo -v").expect("sudo was asked: {all:?}");
+        let pre =
+            at(&|c| c.starts_with("sudo -n apt-get install -y build-essential")).expect("prereqs");
+        assert!(v < pre, "sudo -n ran before sudo was asked");
+    }
+
+    const NPM_PKG: &str =
+        "version: 0\nshell: bash\npackages:\n  - {name: task-master-ai, from: npm}\n";
+
+    #[test]
+    fn npm_into_a_root_owned_prefix_is_escalated() {
+        // The probe is unscripted, so it fails: /usr/local/lib/node_modules is
+        // root's, which is the distro-node case that hit EACCES.
+        let h = passworded(machine(NPM_PKG).with_binary("/usr/bin/npm"))
+            .with_command("sudo -n npm install -g task-master-ai", FakeRun::ok(""));
+        let report = apply_with(&h, &[]);
+        assert!(report.ok(), "{:?}", report.failure);
+        let r = ran(&h);
+        assert!(
+            r.contains(&"sudo -n npm install -g task-master-ai".to_string()),
+            "{r:?}"
+        );
+        assert!(
+            r.iter().position(|c| c == "sudo -v")
+                < r.iter().position(|c| c.starts_with("sudo -n npm")),
+            "{r:?}"
+        );
+    }
+
+    #[test]
+    fn npm_into_the_users_own_prefix_is_not() {
+        let probe = bedouin_core::recipe::writable_probe(Manager::Npm)
+            .unwrap()
+            .display();
+        let h = passworded(machine(NPM_PKG).with_binary("/usr/bin/npm"))
+            .with_command(&probe, FakeRun::ok(""))
+            .with_command("npm install -g task-master-ai", FakeRun::ok(""));
+        let report = apply_with(&h, &[]);
+        assert!(report.ok(), "{:?}", report.failure);
+        // The fact probe's own `sudo -n true` aside, nothing asked for root.
+        assert!(
+            !ran(&h)
+                .iter()
+                .any(|c| c == "sudo -v" || c.starts_with("sudo -n npm")),
+            "{:?}",
+            ran(&h)
+        );
     }
 }

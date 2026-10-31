@@ -58,7 +58,13 @@ bedouin apply --skip 1password-cli,caddy
 bedouin apply --skip package/1password-cli   # the full id works too
 ```
 
-Takes the id a failure prints (`package/jq`) or just the name (`jq`). Skipped
+Takes the id a failure prints (`package/jq`) or just the name (`jq`).
+
+Skipping a **manager** skips everything that needs it. `--skip manager/brew`
+(or just `--skip brew`) leaves out every `from: brew` package and every language
+brew would install. Otherwise each would fail on a brew that was never set up,
+and the first failure would stop the rest of the run. This holds whether or not
+brew is already installed. Skipped
 steps are **named in the report**, never silently dropped: a run that quietly
 did less than the plan promised is the thing this tool exists not to do. They
 stay in the next plan, because nothing about the config changed.
@@ -96,3 +102,24 @@ process-scoped and otherwise unrecorded.
 `apply -f` re-checks the machine state and facts and refuses a stale plan. It
 does *not* re-check the environment: that is the thing the artifact exists to
 carry forward.
+
+### sudo
+
+Steps that need root run through `sudo -n`, which never prompts. Bedouin asks
+for your password **once**, before the first step that needs it:
+
+- up front, when the plan shows a root step;
+- otherwise at the moment one appears mid-run: a language falling back to apt,
+  Homebrew's installer and its prerequisites, or npm writing into a root-owned
+  directory.
+
+A machine with `sudo` is one where sudo is worth asking, whether you got it
+from the `sudo`/`wheel`/`admin` group or from a line in `/etc/sudoers.d`.
+Without a password the two cannot be told apart, so a user with no rights finds
+out from sudo itself ("Sorry, user may not run sudo") and nothing is changed. A
+machine with no `sudo` at all is refused without asking. Long runs keep the
+password fresh, so it is not asked for again partway through.
+
+Nothing waits on a keypress either: steps run with `DEBIAN_FRONTEND`,
+`NONINTERACTIVE` and `MISE_YES` set, which is what Homebrew's installer and
+mise each look for.

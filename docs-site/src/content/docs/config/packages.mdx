@@ -240,11 +240,12 @@ name. A declared manager that cannot exist on this OS is dropped from the plan
 rather than attempted.
 
 <Aside type="note" title="npm globals and root">
-Bedouin never runs `sudo npm`. Under a node it manages — or any per-user node
-— the global prefix is yours and root would be wrong. A distro-packaged node
-puts globals under `/usr/local`, where a non-root install fails with `EACCES`
-naming the path. Install node through `languages:` and the question does not
-arise.
+Whether `npm install -g` needs root depends on the node, so bedouin checks at
+run time rather than deciding once. Under a node it manages — mise, or any
+per-user node — the global directory is yours and npm runs as you. Under a
+distro node, including one a language fell back to apt for, globals go into
+root's `/usr/local`, and bedouin runs npm through sudo instead of failing with
+`EACCES`.
 </Aside>
 
 ## What apply actually does
