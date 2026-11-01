@@ -70,10 +70,12 @@ bedouin apply
 Or from the machine you already have, without logging in yourself:
 
 ```sh
-bedouin ssh you@new-host
+bedouin ssh you@new-host --env
 ```
 
-which installs bedouin there, clones this repo, and applies it. See
+which installs bedouin there, clones this repo, and applies it. `--env` brings
+`.env.bedouin` along (mode 600, kept out of that clone's git); leave it off and
+the machine gets no copy of your variables. See
 [ssh, cloudinit & self](/bedouin/commands/provision/).
 
 <Aside type="caution" title="Two copies of the config">
