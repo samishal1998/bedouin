@@ -226,7 +226,7 @@ enum Command {
     },
     /// Install bedouin on a machine over ssh, clone the config, apply.
     /// Your agent is forwarded for the first clone; nothing credential-shaped
-    /// is stored on the machine.
+    /// is stored on the machine unless you pass --env.
     Ssh {
         /// An ssh destination: user@host, or a Host alias from ~/.ssh/config.
         target: String,
@@ -249,6 +249,11 @@ enum Command {
         /// `--skip language/go`. Else $BEDOUIN_APPLY_OPTIONS.
         #[arg(long, value_name = "ARGS")]
         apply_options: Option<String>,
+        /// Also copy `.env.bedouin` from beside this config to the machine
+        /// (mode 600), so its applies see the same variables. Off by default:
+        /// the file usually holds secrets.
+        #[arg(long)]
+        env: bool,
         /// Extra arguments handed to ssh verbatim, e.g. `-- -p 2222 -i key`.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         ssh_args: Vec<String>,
@@ -826,6 +831,7 @@ fn main() -> ExitCode {
         ref install_options,
         ref clone_options,
         ref apply_options,
+        env,
         ref ssh_args,
     } = cli.command
     {
@@ -839,6 +845,7 @@ fn main() -> ExitCode {
             install: pick(install_options, "BEDOUIN_INSTALL_OPTIONS"),
             clone: pick(clone_options, "BEDOUIN_CLONE_OPTIONS"),
             apply: pick(apply_options, "BEDOUIN_APPLY_OPTIONS"),
+            env,
         };
         return provision::ssh(
             &host,

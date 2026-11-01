@@ -167,10 +167,13 @@ pub struct StageOptions {
     pub clone: Option<String>,
     /// Arguments to `bedouin sync -y`.
     pub apply: Option<String>,
+    /// Copy `.env.bedouin` to the machine. Off by default: it usually holds
+    /// a secret, and that should not reach another disk unless asked.
+    pub env: bool,
 }
 
 /// `bedouin ssh user@host` -- install, clone, apply, over one forwarded
-/// agent. Nothing credential-shaped lands on the machine.
+/// agent. Nothing credential-shaped lands on the machine unless `--env` says so.
 #[allow(clippy::too_many_arguments)]
 pub fn ssh(
     host: &OsHost,
@@ -204,12 +207,39 @@ pub fn ssh(
             repo
         }
     };
+    // Read before asking, so a missing file is said up front rather than
+    // after the install has already run.
+    let env_file = if opts.env {
+        let path = match run::load_only(host, config, cwd) {
+            Ok((loaded, _)) => bedouin_core::envfile::path_beside(&loaded.root),
+            Err(e) => {
+                eprintln!("bedouin: {e}");
+                return ExitCode::FAILURE;
+            }
+        };
+        match std::fs::read(&path) {
+            Ok(b) => Some(b),
+            Err(e) => {
+                eprintln!("bedouin: --env: {}: {e}", path.display());
+                return ExitCode::FAILURE;
+            }
+        }
+    } else {
+        None
+    };
     println!("  {} {target}", style::dim("target"));
     println!("  {} {repo}", style::dim("repo  "));
     println!(
         "  {} forwarded for the clone, stored nowhere",
         style::dim("keys  ")
     );
+    if env_file.is_some() {
+        println!(
+            "  {} {} copied to the machine, mode 600",
+            style::dim("env   "),
+            bedouin_core::envfile::FILE_NAME
+        );
+    }
     for (label, v) in [
         ("install", &opts.install),
         ("clone  ", &opts.clone),
@@ -225,9 +255,9 @@ pub fn ssh(
         return ExitCode::SUCCESS;
     }
 
-    // Four stages, each its own ssh: the failure names the stage, and a
+    // A stage at a time, each its own ssh: the failure names the stage, and a
     // person watching sees the walk rather than one long silence.
-    let stages: [(&str, String); 4] = [
+    let mut stages: Vec<(&str, String)> = vec![
         ("tools", BOOTSTRAP_TOOLS.to_string()),
         (
             "install bedouin",
@@ -262,19 +292,36 @@ GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND='ssh -o StrictHostKeyChecking=accept-new' 
                 q = sh_quote(&repo)
             ),
         ),
-        (
-            "apply",
-            // sync, not apply: on a machine provisioned before, this pulls
-            // what changed first, so `bedouin ssh` twice is pull-and-apply
-            // rather than apply-the-clone-from-last-time. On a fresh clone
-            // the pull is a no-op. PATH: a non-interactive shell has not
-            // read the rc files the install just wrote; the tty is for sudo.
-            format!(
-                "export PATH=\"$HOME/.local/bin:$PATH\"; bedouin sync -y {}",
-                opts.apply.as_deref().unwrap_or("")
-            ),
-        ),
     ];
+    if env_file.is_some() {
+        // Over stdin, so the contents are never on a command line, in a log,
+        // or in the remote shell's history. Excluded in that clone's own
+        // .git/info/exclude too: autosync commits and pushes what it finds,
+        // and a repo whose .gitignore forgot this file would publish it.
+        stages.push((
+            "copy env",
+            format!(
+                r#"d="$HOME/.config/bedouin"; f={name}; umask 077
+cat > "$d/$f" && chmod 600 "$d/$f" || exit 1
+if [ -d "$d/.git" ] && ! grep -qx "/$f" "$d/.git/info/exclude" 2>/dev/null; then
+  mkdir -p "$d/.git/info" && echo "/$f" >> "$d/.git/info/exclude"
+fi"#,
+                name = bedouin_core::envfile::FILE_NAME
+            ),
+        ));
+    }
+    stages.push((
+        "apply",
+        // sync, not apply: on a machine provisioned before, this pulls
+        // what changed first, so `bedouin ssh` twice is pull-and-apply
+        // rather than apply-the-clone-from-last-time. On a fresh clone
+        // the pull is a no-op. PATH: a non-interactive shell has not
+        // read the rc files the install just wrote; the tty is for sudo.
+        format!(
+            "export PATH=\"$HOME/.local/bin:$PATH\"; bedouin sync -y {}",
+            opts.apply.as_deref().unwrap_or("")
+        ),
+    ));
 
     let mux = Mux::open(target, ssh_args);
     for (name, script) in &stages {
@@ -282,17 +329,31 @@ GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND='ssh -o StrictHostKeyChecking=accept-new' 
         let started = std::time::Instant::now();
         // -A: the machine borrows this terminal's agent for exactly this
         // long. -t: sudo and git may need to ask a human something.
+        // The env stage reads the file from stdin instead, and a tty there
+        // would echo it back and mangle its line endings.
+        let payload = (*name == "copy env")
+            .then_some(env_file.as_deref())
+            .flatten();
         let mut cmd = Command::new("ssh");
-        cmd.args(["-A", "-t"]).args(ssh_args);
+        cmd.arg("-A")
+            .arg(if payload.is_some() { "-T" } else { "-t" })
+            .args(ssh_args);
         if let Some(m) = &mux {
             cmd.args(m.opts());
         }
-        let status = cmd
-            .args([target, script.as_str()])
-            .stdin(Stdio::inherit())
+        cmd.args([target, script.as_str()])
             .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit())
-            .status();
+            .stderr(Stdio::inherit());
+        let status = match payload {
+            None => cmd.stdin(Stdio::inherit()).status(),
+            Some(bytes) => cmd.stdin(Stdio::piped()).spawn().and_then(|mut child| {
+                use std::io::Write;
+                let mut stdin = child.stdin.take().expect("piped");
+                stdin.write_all(bytes)?;
+                drop(stdin);
+                child.wait()
+            }),
+        };
         match status {
             Ok(s) if s.success() => println!(
                 "{} {} {}",

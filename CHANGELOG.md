@@ -3,6 +3,17 @@
 Dates are release dates. Versions before 0.2.0 are omitted: they predate this
 file and nothing depended on them.
 
+## 0.24.0 — 2026-11-01
+
+**`bedouin ssh --env` copies `.env.bedouin` to the machine.** The clone never
+carried it, since it is gitignored, so on a provisioned machine every variable
+it set was unset: a target matching `BEDOUIN_PROFILE` silently did not apply.
+With `--env` the file beside this config is sent over the existing connection's
+stdin to `~/.config/bedouin/.env.bedouin`, mode 600, and listed in that clone's
+`.git/info/exclude` so autosync there cannot commit and push it, whatever the
+repo's `.gitignore` says. Off by default, because it is a secret landing on
+another disk.
+
 ## 0.23.2 — 2026-10-31
 
 Four reports from real machines. Each was reproduced in a container and checked

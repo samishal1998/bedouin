@@ -88,3 +88,19 @@ out=$(BEDOUIN_CLONE_OPTIONS="--depth 1" BEDOUIN_APPLY_OPTIONS="--skip package/no
 docker exec $N-tgt test -f /root/.config/bedouin/.git/shallow || { echo "FAIL: --depth 1 did not reach git clone"; exit 1; }
 if docker exec $N-tgt sh -c 'command -v jq >/dev/null'; then echo "FAIL: --skip package/jq did not reach sync (or lost to the environment)"; exit 1; fi
 echo "OK: clone options, apply options, flag over environment"
+
+echo "== .env.bedouin stays home without --env, and arrives mode 600 with it"
+printf 'BEDOUIN_PROFILE=work\nSECRET="a b"\n' > .env.bedouin
+fresh; eval "$(ssh-agent -s)" >/dev/null; ssh-add -q gitkey
+out=$(prov) || { echo "FAIL:"; echo "$out"; exit 1; }
+if docker exec $N-tgt test -e /root/.config/bedouin/.env.bedouin; then echo "FAIL: copied without --env"; exit 1; fi
+out=$("$B" --config cfg.yaml ssh root@127.0.0.1 --repo git@$N-git:/srv/p.git -y --env \
+  -- -p "$PORT" -i "$T/login" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR 2>&1) \
+  || { echo "FAIL:"; echo "$out"; exit 1; }
+docker exec $N-tgt cat /root/.config/bedouin/.env.bedouin | cmp -s - .env.bedouin \
+  || { echo "FAIL: contents differ"; exit 1; }
+mode=$(docker exec $N-tgt stat -c %a /root/.config/bedouin/.env.bedouin)
+[ "$mode" = 600 ] || { echo "FAIL: mode $mode"; exit 1; }
+docker exec $N-tgt sh -c 'cd /root/.config/bedouin && test -z "$(git status --porcelain)"' \
+  || { echo "FAIL: the env file is visible to git, so autosync would commit it"; exit 1; }
+echo "OK: byte for byte, mode 600, invisible to git"

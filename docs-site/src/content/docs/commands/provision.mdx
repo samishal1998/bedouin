@@ -52,6 +52,25 @@ Options for ssh itself still go after `--`.
 `bedouin sync` takes `--skip` for this reason: it is what the last stage runs,
 and a step the machine cannot do yet should not strand the other seventy-seven.
 
+### Your `.env.bedouin`
+
+The clone does not bring `.env.bedouin`: it is gitignored, and it is the file
+that holds what should not be in git. So on the machine those variables are
+unset, and a target that matches on `BEDOUIN_PROFILE` quietly does not apply.
+`--env` copies it:
+
+```sh
+bedouin ssh you@host --env
+```
+
+The file beside this machine's config goes to `~/.config/bedouin/.env.bedouin`
+there, mode 600, sent over the connection's stdin so its contents are never on
+a command line. It is also added to that clone's `.git/info/exclude`, so
+autosync on the machine cannot commit it even if your `.gitignore` forgot it.
+
+It is off by default because it is the one way `bedouin ssh` leaves a secret on
+another disk. Without it, the machine keeps nothing but the clone.
+
 ### A private repository
 
 The machine clones with a key *lent* by your ssh agent for the length of the
