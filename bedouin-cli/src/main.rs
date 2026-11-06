@@ -96,13 +96,19 @@ enum Command {
         #[arg(short = 'y', long)]
         yes: bool,
     },
-    /// Set a package's completion generator, then apply.
+    /// Set a package's completion generator, then apply. Or, with --adopt,
+    /// write the generators apply found by itself into the config.
     Completions {
         /// The package the completions belong to.
-        package: String,
+        #[arg(required_unless_present = "adopt")]
+        package: Option<String>,
         /// The command that prints them, e.g. `-- zellij setup --dump-completion {{ shell.name }}`.
-        #[arg(last = true, required = true)]
+        #[arg(last = true, required_unless_present = "adopt")]
         generate: Vec<String>,
+        /// Write every generator apply detected into the config, so the next
+        /// machine runs it without having to look.
+        #[arg(long, conflicts_with_all = ["package", "generate"])]
+        adopt: bool,
         #[arg(long)]
         no_apply: bool,
         #[arg(short = 'y', long)]
@@ -337,6 +343,53 @@ fn run_apply(
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
+    }
+}
+
+/// The machine already matches the plan. Still a pass through apply, quietly:
+/// nothing to do is not nothing to record -- a package `bedouin add` just
+/// declared and the machine already had must reach state -- and an already
+/// installed tool is where an undeclared completion generator is found.
+fn converged(
+    host: &OsHost,
+    outcome: run::Outcome,
+    skip: &std::collections::BTreeSet<String>,
+    nothing: &str,
+) -> ExitCode {
+    let _lock = match bedouin_core::host::StateLock::acquire(&bedouin_core::state::default_path(
+        &outcome.facts.home,
+    )) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("bedouin: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    match bedouin_core::apply::apply(
+        &outcome.plan,
+        &outcome.config,
+        &outcome.facts,
+        outcome.state,
+        host,
+        skip,
+        &mut print_line,
+    ) {
+        Ok(r) if r.ok() && r.completed.is_empty() => {
+            println!("{nothing}");
+            ExitCode::SUCCESS
+        }
+        Ok(r) => {
+            print!("{}", r.render());
+            if r.ok() {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            }
+        }
+        Err(e) => {
+            eprintln!("bedouin: the machine matches, but the record could not be saved: {e}");
+            ExitCode::FAILURE
+        }
     }
 }
 
@@ -1098,8 +1151,13 @@ fn main() -> ExitCode {
                 }
             };
             if !after.plan.has_changes() {
-                println!("Up to date; nothing to apply.");
-                return repos_code();
+                let skip: std::collections::BTreeSet<String> = skip.into_iter().collect();
+                let code = converged(&host, after, &skip, "Up to date; nothing to apply.");
+                return if code == ExitCode::SUCCESS {
+                    repos_code()
+                } else {
+                    code
+                };
             }
             print!("{}", after.plan.render(cli.verbose));
             if !yes && !confirm() {
@@ -1218,8 +1276,12 @@ fn main() -> ExitCode {
                 return ExitCode::SUCCESS;
             }
             if !after.plan.has_changes() {
-                println!("Already on this machine; nothing to do.");
-                return ExitCode::SUCCESS;
+                return converged(
+                    &host,
+                    after,
+                    &Default::default(),
+                    "Already on this machine; nothing to do.",
+                );
             }
             print!("{}", after.plan.render(cli.verbose));
             if !yes && !confirm() {
@@ -1473,21 +1535,109 @@ fn main() -> ExitCode {
         }
 
         Command::Completions {
+            adopt: true,
+            no_apply,
+            yes,
+            ..
+        } => {
+            let lock = bedouin_core::complete::load(&host, &outcome.facts.home);
+            let shell = outcome.config.shell.to_string();
+            let mut found: Vec<(String, Vec<String>)> = Vec::new();
+            for p in &outcome.config.packages {
+                if p.completions.is_some() || p.completions_off {
+                    continue;
+                }
+                let Some(e) = lock.get(&p.name).filter(|e| e.shell == shell) else {
+                    continue;
+                };
+                let Some(argv) = &e.generate else { continue };
+                // Written as `{{ shell.name }}` only when the form was seen to
+                // follow the shell. Otherwise the config would carry a
+                // generator that prints this shell's script on every machine.
+                if !e.portable {
+                    println!(
+                        "  {}: `{}` works here, but the tool did not answer it for \
+                         another shell, so it is not written for every machine. Add it \
+                         by hand if it is right: bedouin completions {} -- …",
+                        p.name,
+                        argv.join(" "),
+                        p.name
+                    );
+                    continue;
+                }
+                found.push((
+                    p.name.clone(),
+                    bedouin_core::complete::template(argv, &shell),
+                ));
+            }
+            if found.is_empty() {
+                println!(
+                    "Nothing to adopt: apply has not found a generator the config does not \
+                     already name."
+                );
+                return ExitCode::SUCCESS;
+            }
+            let entry = outcome.loaded.entry.clone();
+            let text = std::fs::read_to_string(&entry).unwrap_or_default();
+            // Packages declared in an include live in another file, and an
+            // edit here cannot reach them. Said, rather than failing the rest.
+            let (here, elsewhere): (Vec<_>, Vec<_>) = found.into_iter().partition(|(n, _)| {
+                bedouin_core::edit::has_entry(&text, bedouin_core::edit::Section::Packages, n)
+            });
+            for (n, argv) in &elsewhere {
+                println!(
+                    "  {n} is declared in an included file; add it there:\n    completions: {{ generate: [{}] }}",
+                    argv.iter()
+                        .map(|a| format!("\"{a}\""))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+            }
+            if here.is_empty() {
+                return ExitCode::SUCCESS;
+            }
+            let names = here
+                .iter()
+                .map(|(n, _)| n.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            edit_then_apply(
+                &host,
+                &outcome,
+                cli_config.as_deref(),
+                verbose,
+                &cwd,
+                no_apply,
+                yes,
+                |text| {
+                    here.iter().try_fold(text.to_string(), |t, (n, argv)| {
+                        set_completions(&t, n, argv)
+                    })
+                },
+                &format!("Wrote completions for {names} into the config."),
+            )
+        }
+
+        Command::Completions {
             package,
             generate,
             no_apply,
             yes,
-        } => edit_then_apply(
-            &host,
-            &outcome,
-            cli_config.as_deref(),
-            verbose,
-            &cwd,
-            no_apply,
-            yes,
-            |text| set_completions(text, &package, &generate),
-            &format!("Set completions for `{package}`: `{}`.", generate.join(" ")),
-        ),
+            ..
+        } => {
+            let package = package.unwrap_or_default();
+            edit_then_apply(
+                &host,
+                &outcome,
+                cli_config.as_deref(),
+                verbose,
+                &cwd,
+                no_apply,
+                yes,
+                |text| set_completions(text, &package, &generate),
+                &format!("Set completions for `{package}`: `{}`.", generate.join(" ")),
+            )
+        }
 
         Command::Install {
             spec,
@@ -1677,26 +1827,12 @@ fn main() -> ExitCode {
                 return ExitCode::from(outcome.plan.exit_code() as u8);
             }
             if !outcome.plan.has_changes() {
-                println!("No changes. The machine already matches the config.");
-                // Nothing to do is not nothing to record. This is the only
-                // path a converged machine takes, so returning here left a
-                // package that `bedouin add` had just declared -- and that the
-                // machine already had -- permanently unknown to state.
-                let _lock = bedouin_core::host::StateLock::acquire(
-                    &bedouin_core::state::default_path(&outcome.facts.home),
-                );
-                if let Err(e) = bedouin_core::apply::adopt_only(
-                    &outcome.plan,
-                    &outcome.facts,
-                    outcome.state,
+                return converged(
                     &host,
-                ) {
-                    eprintln!(
-                        "bedouin: the machine matches, but the record could not be saved: {e}"
-                    );
-                    return ExitCode::FAILURE;
-                }
-                return ExitCode::SUCCESS;
+                    outcome,
+                    &skip,
+                    "No changes. The machine already matches the config.",
+                );
             }
             print!("{}", outcome.plan.render(cli.verbose));
             if !yes && !confirm() {

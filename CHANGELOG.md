@@ -3,6 +3,63 @@
 Dates are release dates. Versions before 0.2.0 are omitted: they predate this
 file and nothing depended on them.
 
+## 0.25.0 — 2026-11-06
+
+**Completions are found without being declared.** For a package with no
+`completions:`, apply runs its `--help`, looks for a completion subcommand or
+flag (`completion`, `completions`, `autocomplete`, `generate-shell-completion`,
+`--completions`, ...), and tries the forms tools take the shell in:
+positional, `--shell`, `-s`, `--zsh`, `--flag=zsh`. Output counts only if the
+configured shell can load it (for zsh, `#compdef` on line one, the only line
+compinit reads). `gh completion zsh` exits 0 with a bash script, and npm
+prints a sourced bash script for every shell, so a zero exit alone was never
+going to be the test. A command counts only where help lists it as one, a
+name followed by a gap or a colon and a description: node's help wraps a bare
+`completion` onto a line of its own, and `node completion` would run
+`./completion.js`. Probes get no stdin, run from `/`, have their children killed at the
+timeout too, and never fail a run.
+
+Answers, a "no" included, are kept in `~/.local/state/bedouin/completions.lock`
+with the tool's `--version` and a fingerprint of the binary (real path, size,
+mtime), so a binary is asked once rather than on every apply. A changed
+fingerprint, or a package this run installed, asks again. A mise shim or
+rustup proxy is also compared by `--version`, because the shim does not change
+when the tool behind it does. A probe that timed out is not recorded as a
+"no".
+
+Found generators become ordinary `completion/<pkg>` items, so they regenerate
+on upgrade, repair drift, and go when the package goes. A lost lock does not
+remove them. A detected generator that stops working does not stop the run:
+it is reported, and the tool is asked again. A tool that drops its generator
+has the file removed in the run that finds out. A package held back with
+`--skip` (directly or through `--skip manager/...`) holds back its completion.
+`completions: false` opts a package out, and removes what detection set up.
+
+**`bedouin completions --adopt`** writes the detected generators into the
+config with the shell as `{{ shell.name }}`, so other machines run them
+without asking. Apply suggests it whenever it finds something new. Only forms
+seen to follow the shell are written. Each found form is also asked for a
+second shell, because a tool that ignores the word prints this machine's
+script everywhere.
+
+**Converged machines run through apply too.** `bedouin apply`, `sync` and
+`add` used to stop at "no changes", so they never reached detection. They now
+pass through apply's nothing-to-do path, which records adoptions as before
+and also finds completions. A state file that cannot be written there is now
+reported as a failure rather than passed over in silence.
+
+**One-line entries can be edited.** `set_field` added a new key on the line
+below `- { name: gh, from: apt }`, which is outside the mapping, so the edit
+was refused. In a typical config that is most packages. The key now goes
+inside the braces, and a trailing comment stays where it was. `bedouin
+completions`, `add --completions`/`--path` and the TUI form all use this.
+Changing a key that is already inside the braces is still refused, with a
+message saying so.
+
+**Timeouts hold.** A command that outran its timeout but left a child holding
+the output pipe kept bedouin waiting until that child finished. The children
+are killed now, and the pipe is no longer waited on after a timeout.
+
 ## 0.24.0 — 2026-11-01
 
 **`bedouin ssh --env` copies `.env.bedouin` to the machine.** The clone never

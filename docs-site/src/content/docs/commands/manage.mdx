@@ -49,7 +49,14 @@ not mean opening a file to write four lines.
 bedouin alias gs='git status'                  # global
 bedouin alias z=zellij --package zellij        # scoped to a package
 bedouin completions kubectl -- kubectl completion '{{ shell.name }}'
+bedouin completions --adopt                    # everything apply detected
 ```
+
+`--adopt` writes the generators `apply` found by itself, so it usually
+follows an apply that says `completions found and set up`. See
+[completions found without being told](/bedouin/config/aliases/#found-without-being-told).
+Both forms add the key inside a one-line `- { name: gh, from: apt }` entry
+rather than rewriting it.
 
 The same options ride along on `add`, so a new package arrives complete:
 

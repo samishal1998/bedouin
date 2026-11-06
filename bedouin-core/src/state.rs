@@ -94,6 +94,11 @@ pub struct StateItem {
     /// resolved differently than last apply".
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub resolved_from: Provenance,
+    /// A completion bedouin found by itself rather than one the config
+    /// declared. Only these outlive a missing lock entry: a declared one
+    /// whose line was deleted is meant to go.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub detected: bool,
 }
 
 impl StateItem {
@@ -113,6 +118,7 @@ impl StateItem {
             backup: None,
             mode: None,
             resolved_from: Provenance::new(),
+            detected: false,
         }
     }
 }

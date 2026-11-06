@@ -347,8 +347,8 @@ pub fn env_refs(
         if let Some(sc) = &p.script {
             walk!(sc, site);
         }
-        if let Some(c) = &p.completions {
-            walk_list!(&c.generate, site);
+        if let Some(crate::schema::RawCompletions::Generate(g)) = &p.completions {
+            walk_list!(g, site);
         }
     }
     for f in &raw.files {

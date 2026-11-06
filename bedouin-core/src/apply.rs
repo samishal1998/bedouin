@@ -48,6 +48,10 @@ pub struct Report {
     /// Steps after the failure. Naming them is the difference between "it
     /// broke" and "here is what did not happen".
     pub not_attempted: Vec<String>,
+    /// Packages whose completion generator this run found for the first time
+    /// and set up. Said, because the config does not say it yet.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub detected: Vec<String>,
 }
 
 impl Report {
@@ -93,6 +97,15 @@ impl Report {
                     bold(&format!("--skip {}", f.id))
                 ));
             }
+        }
+        if !self.detected.is_empty() {
+            out.push_str(&format!(
+                "{} completions found and set up: {}\n  {}  writes them into the \
+                 config, so other machines skip the check\n",
+                green("✓"),
+                self.detected.join(", "),
+                bold("bedouin completions --adopt")
+            ));
         }
         // Said in both outcomes: a run that silently did less than the plan
         // promised is exactly what this tool exists not to do.
@@ -200,9 +213,328 @@ struct Executor<'a> {
     /// `sudo -n`, which never asks -- so whatever the path that leads to one,
     /// the question has to have been asked first.
     sudo_ready: bool,
+    /// Packages whose detected completion failed this run. Detection asks
+    /// them again, whatever the lock says: the lock is what was wrong.
+    forget: std::collections::BTreeSet<String>,
 }
 
 impl Executor<'_> {
+    /// Ask a command something rather than have it do something: no stdin,
+    /// a short leash, run from `/` so an argument it misreads as a path finds
+    /// nothing of the user's, and its output kept rather than shown. `None`
+    /// when it could not be run at all.
+    fn ask(
+        &self,
+        argv: Vec<String>,
+        secs: u64,
+        stderr_too: bool,
+    ) -> Option<(crate::host::ExitStatus, String)> {
+        let mut cmd = Cmd::new(argv);
+        cmd.env = step_env(&self.state, self.facts);
+        cmd.stdin_null = true;
+        cmd.cwd = Some(PathBuf::from("/"));
+        cmd.timeout = Some(std::time::Duration::from_secs(secs));
+        let mut text = String::new();
+        let status = self
+            .host
+            .run(&cmd, &mut |l| match l {
+                Line::Out(s) => {
+                    text.push_str(&s);
+                    text.push('\n');
+                }
+                Line::Err(s) if stderr_too => {
+                    text.push_str(&s);
+                    text.push('\n');
+                }
+                _ => {}
+            })
+            .ok()?;
+        Some((status, text))
+    }
+
+    /// The first line of `<bin> --version`, for the lock.
+    fn version_of(&self, bin: &str) -> Option<String> {
+        self.ask(vec![bin.to_string(), "--version".into()], 5, true)
+            .filter(|(st, _)| st.ok())
+            .and_then(|(_, t)| {
+                t.lines()
+                    .map(str::trim)
+                    .find(|l| !l.is_empty())
+                    .map(|l| l.chars().take(200).collect())
+            })
+    }
+
+    /// Find completion generators the config does not name, and set them up.
+    ///
+    /// Only for packages that say nothing about completions: a declared
+    /// generator is the user's answer, and `completions: false` is theirs too.
+    /// The binary is looked for under the package's own name, which is the
+    /// common case (`gh`, `rustup`) and misses the rest (`ripgrep` is `rg`);
+    /// those still have `completions:`.
+    ///
+    /// Never fails the run. Nothing here was asked for, so nothing here may
+    /// stand between the person and the steps that were.
+    fn detect_completions(
+        &mut self,
+        skip: &std::collections::BTreeSet<String>,
+        report: &mut Report,
+    ) {
+        use crate::complete;
+        let shell = self.cfg.shell;
+        if shell == crate::facts::Shell::Other {
+            return;
+        }
+        let sh = shell.to_string();
+        let mut lock = complete::load(self.host, &self.facts.home);
+        let before = lock.len();
+        // Entries for packages that left the config go with them.
+        lock.retain(|k, _| self.cfg.packages.iter().any(|p| &p.name == k));
+        let mut dirty = lock.len() != before;
+        let env = step_env(&self.state, self.facts);
+        let path: Vec<PathBuf> = env
+            .get("PATH")
+            .map(|p| p.split(':').map(PathBuf::from).collect())
+            .unwrap_or_default();
+
+        // (package, binary, fingerprint, version when already asked)
+        let mut todo: Vec<(String, String, String, Option<String>)> = Vec::new();
+        for p in &self.cfg.packages {
+            if p.completions.is_some() || p.completions_off || p.name == "bedouin" {
+                continue;
+            }
+            // Holding a package back holds back what hangs off it, the way
+            // skipping a manager does.
+            if skips(skip, &format!("completion/{}", p.name))
+                || skips(skip, &format!("package/{}", p.name))
+            {
+                continue;
+            }
+            let bin = writers::file_stem(&p.name);
+            let Some(at) = self.host.which(bin, &path) else {
+                continue;
+            };
+            let Some(fp) = self.host.fingerprint(&at) else {
+                continue;
+            };
+            // Its detected completion failed earlier in this run: the lock's
+            // answer is what went wrong, so it goes, and the plan stops
+            // scheduling it even if the question cannot be settled now.
+            if self.forget.contains(&p.name) && lock.remove(&p.name).is_some() {
+                dirty = true;
+            }
+            // Installed or upgraded by this run: asked again whatever the lock
+            // says -- unless the plan already regenerated its completion in
+            // this run, in which case only the fingerprint is out of date.
+            let touched = report.completed.contains(&format!("package/{}", p.name));
+            let regenerated = report.completed.contains(&format!("completion/{}", p.name));
+            if touched && regenerated {
+                if let Some(e) = lock.get_mut(&p.name) {
+                    if e.binary != fp {
+                        e.binary = fp;
+                        dirty = true;
+                    }
+                }
+                continue;
+            }
+            let entry = lock
+                .get(&p.name)
+                .filter(|e| e.shell == sh && e.binary == fp);
+            match entry {
+                Some(_) if touched => todo.push((p.name.clone(), bin.into(), fp, None)),
+                None => todo.push((p.name.clone(), bin.into(), fp, None)),
+                // A mise shim or rustup proxy stays the same file while the
+                // tool behind it changes, so its version is the only thing
+                // that can say the answer still holds. One process, and only
+                // for those.
+                Some(e) if complete::shim(&fp, bin) => {
+                    let now = self.version_of(bin);
+                    if now != e.version {
+                        todo.push((
+                            p.name.clone(),
+                            bin.into(),
+                            fp,
+                            Some(now.unwrap_or_default()),
+                        ));
+                    }
+                }
+                Some(_) => {}
+            }
+        }
+        if todo.is_empty() {
+            if dirty {
+                self.save_lock(&lock);
+            }
+            return;
+        }
+        (self.out)(Line::Out(format!(
+            "Looking for shell completions in {} command(s).",
+            todo.len()
+        )));
+
+        let other = complete::other_shell(&sh);
+        let dir = writers::completions_dir(shell, &self.facts.shell.rc_dir, &self.facts.home);
+        for (name, bin, fp, asked) in todo {
+            let id = format!("completion/{name}");
+            let had = lock.get(&name).and_then(|e| e.generate.clone());
+            let version = match asked {
+                Some(v) => Some(v).filter(|v| !v.is_empty()),
+                None => self.version_of(&bin),
+            };
+            // Help goes to stderr as often as stdout, and some tools exit
+            // non-zero after printing it; what it says is what counts. One
+            // that could not be run, or did not finish, has said nothing --
+            // and nothing is not "no".
+            let help = match self.ask(vec![bin.clone(), "--help".into()], 5, true) {
+                Some((st, t)) if !st.timed_out => t,
+                _ => continue,
+            };
+            let mut found: Option<(Vec<String>, bool)> = None;
+            let mut cut_short = false;
+            'search: for prefix in complete::advertised(&help) {
+                for form in complete::forms(&prefix, &sh) {
+                    let argv: Vec<String> = std::iter::once(bin.clone()).chain(form).collect();
+                    match self.ask(argv.clone(), 10, false) {
+                        Some((st, text)) if st.ok() && complete::looks_like(&sh, &text) => {
+                            // The same form for another shell: if that prints
+                            // the other shell's script, the shell really is
+                            // the argument and the form can be shared.
+                            let swapped: Vec<String> = complete::template(&argv, &sh)
+                                .iter()
+                                .map(|a| a.replace("{{ shell.name }}", other))
+                                .collect();
+                            let portable = matches!(
+                                self.ask(swapped, 10, false),
+                                Some((st, t)) if st.ok() && complete::looks_like(other, &t)
+                            );
+                            if portable {
+                                found = Some((argv, true));
+                                break 'search;
+                            }
+                            found.get_or_insert((argv, false));
+                        }
+                        Some((st, _)) if st.timed_out => cut_short = true,
+                        None => cut_short = true,
+                        _ => {}
+                    }
+                }
+            }
+            if found.is_none() && cut_short {
+                continue; // inconclusive: ask again next run
+            }
+
+            match found {
+                Some((argv, portable)) => {
+                    let file = writers::completion_name(&name, &argv);
+                    let item = Item {
+                        id: id.clone(),
+                        kind: ItemKind::File,
+                        name: id.clone(),
+                        action: Action::Create,
+                        detail: String::new(),
+                        needs_root: false,
+                        arms: BTreeMap::new(),
+                        payload: Payload::Completions {
+                            argv: argv.clone(),
+                            dest: writers::completions_file(shell, &dir, file),
+                            detected: true,
+                        },
+                    };
+                    match self.step(&item) {
+                        Ok(rec) => {
+                            self.state.items.insert(id.clone(), rec);
+                            report.completed.push(id);
+                            (self.out)(Line::Out(format!(
+                                "  {name}: {sh} completions from `{}`",
+                                argv.join(" ")
+                            )));
+                            if had.is_none() {
+                                report.detected.push(name.clone());
+                            }
+                        }
+                        Err((message, _)) => {
+                            // Not recorded either way: next run asks again.
+                            (self.out)(Line::Err(format!(
+                                "  {name}: found `{}` but could not use it: {message}",
+                                argv.join(" ")
+                            )));
+                            continue;
+                        }
+                    }
+                    lock.insert(
+                        name,
+                        complete::Entry {
+                            shell: sh.clone(),
+                            binary: fp,
+                            version,
+                            generate: Some(argv),
+                            portable,
+                        },
+                    );
+                }
+                None => {
+                    // A real "no". If an earlier "yes" set something up, it
+                    // goes now, in the same pass -- left for the next plan, it
+                    // would be a removal nobody asked for, one run late.
+                    if self
+                        .state
+                        .items
+                        .get(&id)
+                        .is_some_and(|i| i.owner == Owner::Bedouin)
+                    {
+                        let gone = Item {
+                            id: id.clone(),
+                            kind: ItemKind::File,
+                            name: id.clone(),
+                            action: Action::Remove,
+                            detail: String::new(),
+                            needs_root: false,
+                            arms: BTreeMap::new(),
+                            payload: Payload::None,
+                        };
+                        match self.step(&gone) {
+                            Ok(_) => {
+                                self.state.items.remove(&id);
+                                report.completed.push(id);
+                            }
+                            // Not recorded as a "no" either: the file is still
+                            // there, so the question stays open.
+                            Err((message, _)) => {
+                                (self.out)(Line::Err(format!(
+                                    "  {name}: no longer has a generator, but its old \
+                                     completions could not be removed: {message}"
+                                )));
+                                continue;
+                            }
+                        }
+                    }
+                    lock.insert(
+                        name,
+                        complete::Entry {
+                            shell: sh.clone(),
+                            binary: fp,
+                            version,
+                            generate: None,
+                            portable: false,
+                        },
+                    );
+                }
+            }
+            dirty = true;
+        }
+        if dirty {
+            self.save_lock(&lock);
+        }
+        let _ = self.flush();
+    }
+
+    fn save_lock(&mut self, lock: &crate::complete::Lock) {
+        if let Err(e) = crate::complete::save(self.host, &self.facts.home, lock) {
+            (self.out)(Line::Err(format!(
+                "could not save what was learned about completions ({e}); it will be asked again"
+            )));
+        }
+    }
+
     /// Persist state. Called before and after every step, so an interrupted run
     /// leaves a truthful record rather than a stale one.
     fn flush(&self) -> Result<()> {
@@ -1122,7 +1454,14 @@ impl Executor<'_> {
                 rec.owned_files = vec![dest.display().to_string()];
             }
 
-            (_, Payload::Completions { argv, dest }) => {
+            (
+                _,
+                Payload::Completions {
+                    argv,
+                    dest,
+                    detected,
+                },
+            ) => {
                 let mut cmd = Cmd::new(argv.iter().cloned());
                 cmd.env = step_env(&self.state, self.facts);
                 // Capture stdout rather than streaming it: it IS the file.
@@ -1165,6 +1504,7 @@ impl Executor<'_> {
                 rec.hash = Some(writers::digest(&captured));
                 // The command is what the diff is addressed on (§16.2).
                 rec.method = Some(writers::digest(&argv.join(" ")));
+                rec.detected = *detected;
             }
 
             (_, Payload::PathFile { file, entries }) => {
@@ -1188,27 +1528,6 @@ impl Executor<'_> {
 /// remembers.
 fn skips(skip: &std::collections::BTreeSet<String>, id: &str) -> bool {
     skip.contains(id) || id.split_once('/').is_some_and(|(_, n)| skip.contains(n))
-}
-
-/// Adopt without applying: the whole of what an apply does when there is
-/// nothing to do.
-///
-/// A converged machine is exactly where this matters. `bedouin add` on a
-/// package that is already installed produces a plan with no changes at all,
-/// so there is no step to run -- only a record to keep, and without it the
-/// package stays permanently unknown to state. Callers hold the state lock.
-pub fn adopt_only(
-    plan: &crate::plan::Plan,
-    facts: &Facts,
-    state: State,
-    host: &dyn Host,
-) -> Result<()> {
-    let mut state = state;
-    adopt_preexisting(&mut state, plan, facts);
-    let json = serde_json::to_string_pretty(&state)
-        .map_err(|e| ConfigError::new(format!("serialising state: {e}")))?;
-    host.write(&state::default_path(&facts.home), json.as_bytes(), 0o600)
-        .map_err(|e| ConfigError::new(e.to_string()))
 }
 
 /// Record what is already on the machine that Bedouin did not put there.
@@ -1271,6 +1590,21 @@ pub fn apply(
             _ => false,
         });
     skipped.extend(also);
+    // A package held back holds back its completion: the generator is the
+    // package's own binary, and without the package it exits 127 and stops
+    // the run.
+    let held: std::collections::BTreeSet<String> = skipped
+        .iter()
+        .filter(|i| i.kind == ItemKind::Package)
+        .map(|i| i.id.trim_start_matches("package/").to_string())
+        .collect();
+    let (also, changes): (Vec<&Item>, Vec<&Item>) = changes.into_iter().partition(|i| {
+        matches!(i.payload, Payload::Completions { .. })
+            && i.id
+                .strip_prefix("completion/")
+                .is_some_and(|n| held.contains(n))
+    });
+    skipped.extend(also);
     let skipped: Vec<String> = skipped.iter().map(|i| i.id.clone()).collect();
     if changes.is_empty() {
         // Nothing to do is not nothing to record. Every item here is a NoOp,
@@ -1279,11 +1613,37 @@ pub fn apply(
         // hand-installed package that `bedouin add` had just declared
         // permanently unknown to state. That is the half of "Bedouin never
         // learns about it" that adding the line did not fix.
-        let _ = adopt_only(plan, facts, state, host);
-        return Ok(Report {
+        let mut state = state;
+        adopt_preexisting(&mut state, plan, facts);
+        let mut report = Report {
             skipped,
             ..Default::default()
-        });
+        };
+        // A converged machine is where most packages already are, so it is
+        // where most generators are found.
+        let mut ex = Executor {
+            refreshed: std::collections::BTreeSet::new(),
+            host,
+            facts,
+            cfg,
+            state,
+            state_path: state::default_path(&facts.home),
+            out,
+            sudo_ready: false,
+            forget: std::collections::BTreeSet::new(),
+        };
+        ex.detect_completions(skip, &mut report);
+        // Said, not swallowed: on a converged machine this flush is the whole
+        // record of what was adopted, and losing it silently is how a package
+        // ends up unknown to state for good.
+        if let Err(e) = ex.flush() {
+            report.failure = Some(Failure {
+                id: "state".into(),
+                message: format!("the machine matches, but the record could not be saved: {e}"),
+                output_tail: Vec::new(),
+            });
+        }
+        return Ok(report);
     }
 
     // Refuse to start rather than fail partway: a run that dies at step
@@ -1342,6 +1702,7 @@ pub fn apply(
         out,
         // Asked just above whenever the plan could see a root step.
         sudo_ready: !root_steps.is_empty() && facts.privilege == Privilege::Password,
+        forget: std::collections::BTreeSet::new(),
     };
 
     let mut report = Report {
@@ -1470,6 +1831,32 @@ pub fn apply(
                     id: item.id.clone(),
                     ok: false,
                 });
+                // A generator bedouin found by itself is a guess that went
+                // stale -- the tool was upgraded and dropped it, say. It does
+                // not get to stop a run nobody asked it into; detection asks
+                // the tool again below.
+                if let Payload::Completions { detected: true, .. } = &item.payload {
+                    (ex.out)(Line::Err(format!(
+                        "{}: {message}. It was detected rather than declared, so the run \
+                         goes on and the tool is asked again",
+                        item.id
+                    )));
+                    if let Some(n) = item.id.strip_prefix("completion/") {
+                        ex.forget.insert(n.to_string());
+                    }
+                    // Undo the intent mark: a file written by an earlier run
+                    // is still there and still bedouin's; one that never was
+                    // leaves no record. Left Incomplete, every later run would
+                    // retry it and doctor would report a run that never ended.
+                    match ex.state.items.get_mut(&item.id) {
+                        Some(r) if r.hash.is_some() => r.status = Status::Complete,
+                        _ => {
+                            ex.state.items.remove(&item.id);
+                        }
+                    }
+                    let _ = ex.flush();
+                    continue;
+                }
                 report.failure = Some(Failure {
                     id: item.id.clone(),
                     message,
@@ -1503,6 +1890,9 @@ pub fn apply(
         }
     }
 
+    if report.failure.is_none() {
+        ex.detect_completions(skip, &mut report);
+    }
     adopt_preexisting(&mut ex.state, plan, facts);
     // The adoption sweep. Everything ran by now, so a failure here costs the
     // record rather than the work -- but it still has to be said.

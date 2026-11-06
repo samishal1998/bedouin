@@ -266,12 +266,37 @@ pub struct Framework {
     pub plugins: Vec<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RawCompletions {
+/// `completions: { generate: [...] }`, or `completions: false`.
+#[derive(Debug, Clone)]
+pub enum RawCompletions {
     /// argv, run at apply time after this package is installed. Its stdout is
     /// written to the shell's completions directory and never evaluated.
-    pub generate: ValList,
+    Generate(ValList),
+    /// Do not look for a generator. Detection asks the tool's `--help`, and a
+    /// tool where that is unwelcome, or whose generator is wrong, needs a way
+    /// to be left alone.
+    Off,
+}
+
+impl<'de> serde::Deserialize<'de> for RawCompletions {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Block {
+            generate: ValList,
+        }
+        let v = serde_yaml_ng::Value::deserialize(d)?;
+        match v {
+            serde_yaml_ng::Value::Bool(false) => Ok(RawCompletions::Off),
+            serde_yaml_ng::Value::Mapping(_) => Block::deserialize(v)
+                .map(|b| RawCompletions::Generate(b.generate))
+                .map_err(serde::de::Error::custom),
+            _ => Err(serde::de::Error::custom(
+                "`completions:` is `{ generate: [command, ...] }`, or `false` to stop \
+                 bedouin looking for a generator. Leave it out to let it look",
+            )),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -326,6 +351,9 @@ pub struct Package {
     pub rc: Vec<RcBlock>,
     pub aliases: BTreeMap<String, String>,
     pub completions: Option<Vec<String>>,
+    /// `completions: false`: never detect a generator for this one.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub completions_off: bool,
     pub resolved_from: Provenance,
 }
 
@@ -714,11 +742,11 @@ pub fn resolve(raw: &RawConfig, vocab: &Vocabulary, facts: &Facts) -> Result<Con
             );
         }
         let completions = match &p.completions {
-            None => None,
-            Some(c) => Some(
-                r.many(&c.generate, "completions.generate", &mut prov)
+            Some(RawCompletions::Generate(g)) => Some(
+                r.many(g, "completions.generate", &mut prov)
                     .map_err(|e| e.in_item(&item))?,
             ),
+            None | Some(RawCompletions::Off) => None,
         };
         if completions.as_ref().is_some_and(Vec::is_empty) {
             return Err(ConfigError::new(
@@ -730,6 +758,7 @@ pub fn resolve(raw: &RawConfig, vocab: &Vocabulary, facts: &Facts) -> Result<Con
             name: p.name.clone(),
             aliases,
             completions,
+            completions_off: matches!(p.completions, Some(RawCompletions::Off)),
             from,
             script,
             version,

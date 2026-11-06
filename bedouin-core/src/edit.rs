@@ -591,6 +591,26 @@ pub fn set_field(
     let (from, to) = locate_entry(&lines, section, name)?;
     let nl = newline_of(text);
 
+    // `- { name: jq, from: apt }` -- most of a real config is written like
+    // this, one aligned line per package, and a key added on the line below
+    // it is not part of the mapping at all. The key goes inside the braces.
+    if to == from + 1 {
+        if let Some(edited) = set_in_flow(lines[from], name, key, value)? {
+            let mut out: Vec<String> = lines.iter().map(|s| (*s).to_string()).collect();
+            out[from] = edited;
+            let mut out = out.join(nl);
+            if text.ends_with('\n') {
+                out.push_str(nl);
+            }
+            verify_only_change(text, &out, |doc| {
+                entry_of(doc, section, name)
+                    .and_then(|e| e.get(key))
+                    .is_some()
+            })?;
+            return Ok(out);
+        }
+    }
+
     // The entry's own field indent, taken from a sibling rather than assumed.
     let indent = (from + 1..to)
         .find(|i| !lines[*i].trim().is_empty())
@@ -625,6 +645,38 @@ pub fn set_field(
             .is_some()
     })?;
     Ok(out)
+}
+
+/// `key: value` added inside a one-line flow entry, or `None` when the line
+/// is not one. A trailing comment stays where it was.
+fn set_in_flow(line: &str, name: &str, key: &str, value: &str) -> Result<Option<String>> {
+    let body = line.trim_start();
+    if !body.starts_with("- {") {
+        return Ok(None);
+    }
+    let Some(close) = line.rfind('}') else {
+        return Ok(None);
+    };
+    let (head, tail) = line.split_at(close);
+    if !(tail[1..].trim().is_empty() || tail[1..].trim_start().starts_with('#')) {
+        return Ok(None);
+    }
+    // The `{ ... }` itself, past the indent and the `- `.
+    let map = &line[line.len() - body.len() + 2..=close];
+    let parsed: Option<serde_yaml_ng::Value> = serde_yaml_ng::from_str(map).ok();
+    if parsed.as_ref().and_then(|v| v.get(key)).is_some() {
+        // Replacing a value inside braces means finding where it ends, past
+        // nested braces and quoted commas. Not guessed at.
+        return Err(ConfigError::new(format!(
+            "`{name}` is written on one line and already sets `{key}:`. Change it by \
+             hand, or write the entry one key per line and run this again"
+        )));
+    }
+    // Keep the line's own spacing inside the closing brace: `{ a: 1 }` stays
+    // spaced, `{a: 1}` stays tight.
+    let trimmed = head.trim_end();
+    let gap = &head[trimmed.len()..];
+    Ok(Some(format!("{trimmed}, {key}: {value}{gap}{tail}")))
 }
 
 /// Remove an alias, globally or from one package.
@@ -1607,6 +1659,34 @@ packages:
             "the sibling is untouched"
         );
         assert!(out.contains("# keep me"), "comments survive");
+    }
+
+    #[test]
+    fn a_one_line_entry_gets_the_key_inside_its_braces() {
+        // Most of a real config: aligned, one package per line.
+        let cfg =
+            "packages:\n  - { name: gh,         from: apt }\n  - {name: jq, from: apt} # json\n";
+        let out = set_field(
+            cfg,
+            Section::Packages,
+            "gh",
+            "completions",
+            "{ generate: [\"gh\", \"completion\"] }",
+        )
+        .unwrap();
+        assert_eq!(
+            out,
+            "packages:\n  - { name: gh,         from: apt, completions: { generate: [\"gh\", \"completion\"] } }\n  - {name: jq, from: apt} # json\n"
+        );
+        // Tight braces stay tight, and a trailing comment stays put.
+        let out = set_field(cfg, Section::Packages, "jq", "version", "\"1.7\"").unwrap();
+        assert!(
+            out.ends_with("  - {name: jq, from: apt, version: \"1.7\"} # json\n"),
+            "{out}"
+        );
+        // A key already inside the braces is not replaced by guesswork.
+        let e = set_field(cfg, Section::Packages, "gh", "from", "brew").unwrap_err();
+        assert!(e.to_string().contains("written on one line"), "{e}");
     }
 
     #[test]

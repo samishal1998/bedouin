@@ -143,6 +143,10 @@ pub enum Payload {
     Completions {
         argv: Vec<String>,
         dest: PathBuf,
+        /// Found by apply rather than declared. Its failure is then a stale
+        /// guess, not the user's instruction, and does not stop the run.
+        #[serde(default)]
+        detected: bool,
     },
     /// Nothing to execute -- a removal of an item whose kind the executor
     /// handles from state alone.
@@ -1214,7 +1218,7 @@ pub fn build(
         // when bedouin is upgraded -- the digest is over the argv, and the
         // path changes with the version only if it is versioned, so this is
         // best-effort rather than a guarantee.
-        let mut wanted: Vec<(String, Vec<String>, bool)> = vec![(
+        let mut wanted: Vec<(String, Vec<String>, bool, bool)> = vec![(
             "bedouin".to_string(),
             vec![
                 facts.exe.clone(),
@@ -1222,16 +1226,59 @@ pub fn build(
                 cfg.shell.to_string(),
             ],
             false,
+            false,
         )];
+        // What apply found for packages that name no generator. Read, never
+        // asked: plan runs nothing, so a binary nobody has asked about yet
+        // simply has no item until the next apply asks.
+        let lock = crate::complete::load(host, &facts.home);
+        let shell_name = cfg.shell.to_string();
+        let step_path: Vec<std::path::PathBuf> = crate::apply::step_env(state, facts)
+            .get("PATH")
+            .map(|p| p.split(':').map(std::path::PathBuf::from).collect())
+            .unwrap_or_default();
+        // Once, not once per package: a scan of every item for each of them
+        // is quadratic, and a config is allowed to be long.
+        let changing_ids: BTreeSet<&str> = items
+            .iter()
+            .filter(|i| i.action.is_change())
+            .map(|i| i.id.as_str())
+            .collect();
         for p in &cfg.packages {
-            let Some(argv) = &p.completions else { continue };
-            let changing = items
-                .iter()
-                .any(|i| i.id == format!("package/{}", p.name) && i.action.is_change());
-            wanted.push((p.name.clone(), argv.clone(), changing));
+            let changing = changing_ids.contains(format!("package/{}", p.name).as_str());
+            if let Some(argv) = &p.completions {
+                wanted.push((p.name.clone(), argv.clone(), changing, false));
+                continue;
+            }
+            if p.completions_off || p.name == "bedouin" {
+                continue;
+            }
+            // Trusted only while it is still about the binary that is there:
+            // a fingerprint that moved means apply will ask again, and until
+            // it has, the plan should not promise to run an old answer.
+            let here = host
+                .which(crate::writers::file_stem(&p.name), &step_path)
+                .and_then(|at| host.fingerprint(&at));
+            let usable = lock
+                .get(&p.name)
+                .filter(|e| e.shell == shell_name)
+                .filter(|e| changing || here.as_deref() == Some(e.binary.as_str()))
+                .and_then(|e| e.generate.clone());
+            match usable {
+                Some(argv) => wanted.push((p.name.clone(), argv, changing, true)),
+                // What detection set up stays until detection itself says
+                // otherwise. The lock is a cache; losing it, or an answer
+                // waiting to be re-asked, must not read as "remove this".
+                None => {
+                    let id = format!("completion/{}", p.name);
+                    if state.items.get(&id).is_some_and(|i| i.detected) {
+                        declared_ids.insert(id);
+                    }
+                }
+            }
         }
 
-        for (comp_name, argv, pkg_changing) in &wanted {
+        for (comp_name, argv, pkg_changing, detected) in &wanted {
             // The id stays the package -- that is the state identity -- while
             // the file is named for the command the shell will complete.
             let file_name = crate::writers::completion_name(comp_name, argv);
@@ -1270,12 +1317,22 @@ pub fn build(
                         _ => Action::NoOp,
                     },
                 },
-                detail: format!("{} completions from `{}`", cfg.shell, argv.join(" ")),
+                detail: format!(
+                    "{} completions from `{}`{}",
+                    cfg.shell,
+                    argv.join(" "),
+                    if *detected {
+                        " (detected; `bedouin completions --adopt` puts it in the config)"
+                    } else {
+                        ""
+                    }
+                ),
                 needs_root: false,
                 arms: BTreeMap::new(),
                 payload: Payload::Completions {
                     argv: argv.clone(),
                     dest,
+                    detected: *detected,
                 },
             });
             declared_ids.insert(id);

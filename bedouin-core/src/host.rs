@@ -22,6 +22,10 @@ pub struct Cmd {
     pub cwd: Option<PathBuf>,
     pub root: bool,
     pub timeout: Option<Duration>,
+    /// Give it /dev/null rather than this terminal. For commands bedouin runs
+    /// to *ask* something: a tool that ignores `--help` and starts a
+    /// full-screen UI must not take the keyboard while apply waits on it.
+    pub stdin_null: bool,
 }
 
 impl Cmd {
@@ -36,6 +40,7 @@ impl Cmd {
             cwd: None,
             root: false,
             timeout: Some(Duration::from_secs(600)),
+            stdin_null: false,
         }
     }
 
@@ -160,6 +165,11 @@ pub trait Host {
     /// Where a symlink points, or `None` if it is not one.
     fn read_link(&self, p: &Path) -> Result<Option<PathBuf>>;
     fn env(&self) -> &BTreeMap<String, String>;
+    /// What the file at `p` is right now, through any symlinks, as a string
+    /// that changes when the file is replaced: its real path, size and mtime.
+    /// How a cached answer about a binary knows it is still about the same
+    /// binary, without running it. `None` when there is nothing there.
+    fn fingerprint(&self, p: &Path) -> Option<String>;
 }
 
 // ------------------------------------------------------------------- OsHost
@@ -217,6 +227,9 @@ impl Host for OsHost {
             .envs(&cmd.env)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        if cmd.stdin_null {
+            c.stdin(Stdio::null());
+        }
         if let Some(dir) = &cmd.cwd {
             c.current_dir(dir);
         }
@@ -280,6 +293,15 @@ impl Host for OsHost {
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
             }
             if deadline.is_some_and(|d| std::time::Instant::now() > d) {
+                // Its children too: a wrapper script's child keeps the output
+                // pipe open after the wrapper is gone. Not a process group of
+                // its own -- that would also take it out of the terminal's,
+                // and Ctrl-C would leave it running. Best effort: no pkill,
+                // no sweep, and the pipe is not waited on below either way.
+                let _ = Command::new("pkill")
+                    .args(["-KILL", "-P", &child.id().to_string()])
+                    .stderr(Stdio::null())
+                    .status();
                 let _ = child.kill();
                 timed_out = true;
                 break;
@@ -288,8 +310,13 @@ impl Host for OsHost {
         for line in rx.try_iter() {
             out(line);
         }
-        for p in pumps {
-            let _ = p.join();
+        // After a timeout the pumps are left to finish on their own: one
+        // reading a pipe some grandchild still holds would block the join,
+        // and with it the timeout that was the point.
+        if !timed_out {
+            for p in pumps {
+                let _ = p.join();
+            }
         }
 
         let status = child
@@ -425,6 +452,26 @@ impl Host for OsHost {
     fn env(&self) -> &BTreeMap<String, String> {
         &self.env
     }
+
+    fn fingerprint(&self, p: &Path) -> Option<String> {
+        // The real path is part of it: brew, nix and mise keep each version
+        // in its own directory, so an upgrade moves the target of the link
+        // on PATH even when size and mtime happen to match.
+        let real = std::fs::canonicalize(p).ok()?;
+        let m = std::fs::metadata(&real).ok()?;
+        let mtime = m
+            .modified()
+            .ok()?
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?;
+        Some(format!(
+            "{} {} {}.{:09}",
+            real.display(),
+            m.len(),
+            mtime.as_secs(),
+            mtime.subsec_nanos()
+        ))
+    }
 }
 
 // ----------------------------------------------------------------- FakeHost
@@ -447,6 +494,9 @@ pub struct FakeHost {
     /// Paths whose writes fail. The state file failing mid-apply is the one
     /// I/O error with its own recovery story, and it needs to be reachable.
     pub unwritable: Vec<PathBuf>,
+    /// A binary's fingerprint, when a test needs it to change -- an upgrade
+    /// that happened outside bedouin. Otherwise it is the path.
+    pub fingerprints: BTreeMap<PathBuf, String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -518,6 +568,11 @@ impl FakeHost {
 
     pub fn with_env(mut self, k: &str, v: &str) -> Self {
         self.env.insert(k.into(), v.into());
+        self
+    }
+
+    pub fn with_fingerprint(mut self, p: impl Into<PathBuf>, fp: &str) -> Self {
+        self.fingerprints.insert(p.into(), fp.into());
         self
     }
 }
@@ -659,11 +714,41 @@ impl Host for FakeHost {
     fn env(&self) -> &BTreeMap<String, String> {
         &self.env
     }
+
+    fn fingerprint(&self, p: &Path) -> Option<String> {
+        if !self.binaries.iter().any(|b| b == p) && !self.files.borrow().contains_key(p) {
+            return None;
+        }
+        Some(
+            self.fingerprints
+                .get(p)
+                .cloned()
+                .unwrap_or_else(|| p.display().to_string()),
+        )
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_question_that_hangs_is_cut_off_with_everything_it_started() {
+        // The wrapper is killed at the deadline, but its child holds stdout
+        // open; joining that pipe used to wait out the child instead.
+        let mut cmd = Cmd::new(["sh", "-c", "sleep 30 & sleep 30"]);
+        cmd.env.insert("PATH".into(), "/usr/bin:/bin".into());
+        cmd.stdin_null = true;
+        cmd.timeout = Some(Duration::from_secs(1));
+        let started = std::time::Instant::now();
+        let st = OsHost::new().run(&cmd, &mut |_| {}).unwrap();
+        assert!(st.timed_out);
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+    }
 
     #[test]
     fn an_unscripted_command_is_a_machine_that_lacks_it() {

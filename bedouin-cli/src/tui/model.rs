@@ -692,10 +692,14 @@ impl App {
         let after = match edited {
             Ok(a) => a,
             // The common refusal by far: `- { name: jq, from: apt }` is a flow
-            // mapping, and the text surgery only edits block style. It refuses
-            // rather than corrupting, which is right -- but "did not find
-            // expected '-' indicator" is not what the reader needs to hear.
-            Err(e) if e.to_string().contains("no longer parses") => {
+            // mapping, and the text surgery can add a key to one but not
+            // change a key already inside the braces. It refuses rather than
+            // corrupting, which is right -- but "did not find expected '-'
+            // indicator" is not what the reader needs to hear.
+            Err(e)
+                if e.to_string().contains("no longer parses")
+                    || e.to_string().contains("written on one line") =>
+            {
                 return Err(format!(
                     "`{name}` is written inline (`- {{ … }}`), which a form cannot edit — press e"
                 ))
@@ -894,7 +898,7 @@ fn payload_details(p: &Payload) -> Vec<(String, String)> {
             ("block".into(), marker.clone()),
             ("content".into(), content.trim().to_string()),
         ],
-        Completions { argv, dest } => vec![
+        Completions { argv, dest, .. } => vec![
             ("generator".into(), argv.join(" ")),
             ("writes".into(), dest.display().to_string()),
         ],

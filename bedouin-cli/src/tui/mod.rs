@@ -590,8 +590,8 @@ links:
     #[test]
     fn an_inline_entry_says_to_use_the_editor_rather_than_a_yaml_error() {
         // Most real configs write packages as `- { name: jq, from: apt }`, and
-        // the text surgery only edits block style. It refuses rather than
-        // corrupting -- but the refusal has to be readable.
+        // the text surgery cannot change a key already inside the braces. It
+        // refuses rather than corrupting -- but the refusal has to be readable.
         const FLOW: &str = "version: 0\nshell: bash\npackages:\n  \
                             - { name: jq, from: apt, version: \"1.7\" }\n";
         let h = host().with_file("/cfg/bedouin.yaml", FLOW);

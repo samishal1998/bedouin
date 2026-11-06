@@ -69,6 +69,77 @@ template. It goes through the same argv-only path as every other step, so no
 shell ever sees it, and the output is written, never executed.
 </Aside>
 
+### Found without being told
+
+Most tools worth completing ship a generator, so you rarely need to write
+`generate:` yourself. For a package that says nothing about completions,
+`apply` asks the tool:
+
+1. It runs `<name> --help` and looks for a completion command: a
+   `completion`, `completions`, `autocomplete`, `generate-shell-completion`
+   (and the other spellings) subcommand, or a `--completions`-style flag.
+2. It tries the forms tools actually take: `completion zsh`,
+   `completion --shell zsh`, `completion -s zsh`, `completion --zsh`, and for a
+   flag `--completions zsh` and `--completions=zsh`.
+3. It keeps the first output that is a script **your shell can load**: zsh
+   needs `#compdef` on the first line, bash a `complete -F`, fish a
+   `complete -c`. A zero exit is not enough. `gh completion zsh` exits 0 and
+   prints a *bash* script, because gh wants `--shell zsh`.
+
+```console
+$ bedouin apply
+   Looking for shell completions in 3 command(s).
+     gh: zsh completions from `gh completion --shell zsh`
+     lazygit: zsh completions from `lazygit completion zsh`
+✓ Applied 2 changes.
+✓ completions found and set up: gh, lazygit
+  bedouin completions --adopt  writes them into the config, so other machines skip the check
+```
+
+The binary is looked for under the **package's name**. `gh` and `rustup` are
+found; `ripgrep`, whose binary is `rg`, is not, so it still needs
+`completions:`. So does a generator the tool's help does not list: docker
+hides its `completion` command. Bedouin only runs a command `--help` actually
+names, because guessing would mean running tools with an argument they never
+offered, and for a tool that takes a file or a pattern that is an action, not
+a question. A command counts only where `--help` lists it the way
+help pages list commands: a name, then a gap or a colon, then a description.
+Questions run with no terminal attached, from `/`, with a few seconds'
+timeout that ends everything the tool started. Nothing here can fail an
+apply. A tool that does not answer in time has given no answer, and is asked
+again next run.
+
+**Asked once per binary, not once per run.** Every answer, a "no" included,
+goes into `~/.local/state/bedouin/completions.lock` with the tool's
+`--version` and a fingerprint of the binary: its real path, size and mtime.
+A later run compares the fingerprint, which costs no process, and asks again
+only when the binary changed (an upgrade may have added a generator) or when
+this run installed or upgraded the package. A mise shim or rustup proxy stays
+the same file while the tool behind it changes, so for those the `--version`
+is compared as well. Deleting the lock makes it ask everything again; what it
+already set up stays in place meanwhile. If a tool later drops its generator,
+the file goes in the same run that finds out. If a detected generator stops
+working, the run carries on and the tool is asked again.
+
+`bedouin completions --adopt` writes every detected generator into the config,
+with the shell as `{{ shell.name }}`, so the next machine runs it without
+asking anything. It does this only for a form shown to follow the shell: when
+detected, the same form is also asked for a second shell, and only a tool that
+answers in that shell's syntax gets a template. One that prints the same
+script whatever it is asked works on this machine, and is left for you to
+write in by hand. Until then, a detected item that shows up in a plan (say,
+regenerated after an upgrade) says `detected` beside its command.
+
+To keep bedouin away from a tool entirely:
+
+```yaml
+packages:
+  - { name: gh, from: apt, completions: false }
+```
+
+Setting it on a package that already has detected completions removes them on
+the next apply.
+
 **Drift coverage is partial, and says so.** The item is addressed on the
 *command*, so editing `generate:` re-runs it, and a package upgrade re-runs it
 too. Whether re-running would now produce different output cannot be known

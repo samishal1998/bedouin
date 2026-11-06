@@ -1,6 +1,7 @@
 pub mod apply;
 pub mod arm;
 pub mod artifact;
+pub mod complete;
 pub mod daemon;
 pub mod doctor;
 pub mod edit;
